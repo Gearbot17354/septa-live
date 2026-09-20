@@ -568,12 +568,31 @@
 
   window.customCards = window.customCards || [];
   const cards = window.customCards;
+  function suggestSepta(hass, entityId) {
+    if (!entityId || !String(entityId).startsWith("sensor.septa_")) return null;
+    const id = String(entityId);
+    if (id.endsWith("_next_bus") || /_next_bus$/.test(id)) {
+      return { config: { type: "custom:septa-live-card", entity: id, name: "Next bus" } };
+    }
+    if (id.endsWith("_commute") || /_to_/.test(id)) {
+      return { config: { type: "custom:septa-live-card", entity: id } };
+    }
+    return {
+      config: {
+        type: "custom:septa-live-bubble",
+        layout: "bubbles",
+        modules: ["commute", "leave", "south", "north", "bus", "status"],
+      },
+    };
+  }
   if (!cards.some((c) => c.type === "septa-live-card")) {
     cards.push({
       type: "septa-live-card",
       name: "SEPTA Live",
       description: "Next SEPTA train or bus from a SEPTA Live sensor",
       preview: true,
+      documentationURL: "https://github.com/Gearbot17354/septa-live",
+      getEntitySuggestion: suggestSepta,
     });
   }
   if (!cards.some((c) => c.type === "septa-live-board")) {
@@ -582,6 +601,8 @@
       name: "SEPTA Live Board",
       description: "Pre-made commute dashboard: train, leave-now, both directions, and bus",
       preview: true,
+      documentationURL: "https://github.com/Gearbot17354/septa-live",
+      getEntitySuggestion: suggestSepta,
     });
   }
   if (!cards.some((c) => c.type === "septa-live-bubble")) {
@@ -590,6 +611,8 @@
       name: "SEPTA Live Bubble",
       description: "Pick commute, bus, Metro, trolley, and map bubbles for your dashboard",
       preview: true,
+      documentationURL: "https://github.com/Gearbot17354/septa-live",
+      getEntitySuggestion: suggestSepta,
     });
   }
 })();
