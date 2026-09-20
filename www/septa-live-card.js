@@ -329,6 +329,79 @@
 
   const MODULE_ORDER = ["commute", "leave", "south", "north", "bus", "status", "metro", "trolley", "map"];
   const DEFAULT_ON = ["commute", "leave", "south", "north", "bus", "status"];
+  const MODULE_LABELS = {
+    commute: "Commute",
+    leave: "Leave in",
+    south: "Southbound",
+    north: "Northbound",
+    bus: "Bus",
+    status: "Status",
+    metro: "Metro",
+    trolley: "Trolley",
+    map: "Live map",
+  };
+
+  function normalizeBubbleConfig(config) {
+    const next = { ...(config || {}) };
+    const hasFlag = MODULE_ORDER.some((id) => typeof next[`show_${id}`] === "boolean");
+    if (hasFlag) {
+      next.modules = MODULE_ORDER.filter((id) => {
+        const flag = next[`show_${id}`];
+        if (typeof flag === "boolean") return flag;
+        return Array.isArray(next.modules) ? next.modules.includes(id) : DEFAULT_ON.includes(id);
+      });
+    } else if (Array.isArray(next.modules) && next.modules.length) {
+      next.modules = next.modules.filter((id) => MODULE_ORDER.includes(id));
+    } else {
+      next.modules = DEFAULT_ON.slice();
+    }
+    for (const id of MODULE_ORDER) {
+      next[`show_${id}`] = next.modules.includes(id);
+    }
+    if (!next.layout) next.layout = "bubbles";
+    return next;
+  }
+
+  function bubbleSchema() {
+    return [
+      { name: "name", selector: { text: {} } },
+      {
+        name: "layout",
+        selector: {
+          select: {
+            mode: "dropdown",
+            options: [
+              { value: "bubbles", label: "Bubbles" },
+              { value: "stack", label: "Stack" },
+              { value: "hero", label: "Hero" },
+            ],
+          },
+        },
+      },
+      ...MODULE_ORDER.map((id) => ({
+        name: `show_${id}`,
+        selector: { boolean: {} },
+      })),
+      { name: "commute", selector: { entity: { domain: "sensor" } } },
+      { name: "leave", selector: { entity: { domain: "sensor" } } },
+      { name: "south", selector: { entity: { domain: "sensor" } } },
+      { name: "north", selector: { entity: { domain: "sensor" } } },
+      { name: "bus", selector: { entity: { domain: "sensor" } } },
+      { name: "status", selector: { entity: { domain: "sensor" } } },
+      { name: "metro", selector: { entity: { domain: "sensor" } } },
+      { name: "trolley", selector: { entity: { domain: "sensor" } } },
+      { name: "map_url", selector: { text: {} } },
+    ];
+  }
+
+  function bubbleLabel(schema) {
+    const name = schema && schema.name;
+    if (name === "name") return "Name";
+    if (name === "layout") return "Layout";
+    if (name === "map_url") return "Map URL";
+    if (name && name.startsWith("show_")) return MODULE_LABELS[name.slice(5)] || name;
+    return MODULE_LABELS[name] || name;
+  }
 
   class SeptaLiveBubble extends HTMLElement {
     constructor() {
@@ -340,21 +413,17 @@
     }
 
     setConfig(config) {
-      this._config = config || {};
+      this._config = normalizeBubbleConfig(config);
       this._last = "";
+      if (this._hass) this._render();
     }
 
     _modules() {
-      const cfg = this._config;
+      const cfg = this._config || {};
       if (Array.isArray(cfg.modules) && cfg.modules.length) {
         return cfg.modules.filter((id) => MODULE_ORDER.includes(id));
       }
-      return MODULE_ORDER.filter((id) => {
-        const flag = cfg[`show_${id}`];
-        if (flag === false) return false;
-        if (flag === true) return true;
-        return DEFAULT_ON.includes(id);
-      });
+      return MODULE_ORDER.filter((id) => cfg[`show_${id}`] === true || (cfg[`show_${id}`] !== false && DEFAULT_ON.includes(id)));
     }
 
     set hass(hass) {
@@ -383,7 +452,7 @@
     }
 
     static getStubConfig(hass) {
-      return {
+      const stub = {
         name: "SEPTA Live",
         layout: "bubbles",
         modules: DEFAULT_ON.slice(),
@@ -396,37 +465,18 @@
         metro: findEntity(hass, "_metro", "sensor.septa_lansdale_metro"),
         trolley: findEntity(hass, "_trolley", "sensor.septa_lansdale_trolley"),
       };
+      for (const id of MODULE_ORDER) stub[`show_${id}`] = DEFAULT_ON.includes(id);
+      return stub;
+    }
+
+    static getConfigElement() {
+      return document.createElement("septa-live-bubble-editor");
     }
 
     static getConfigForm() {
       return {
-        schema: [
-          { name: "name", selector: { text: {} } },
-          {
-            name: "layout",
-            selector: {
-              select: { options: ["bubbles", "stack", "hero"], mode: "dropdown" },
-            },
-          },
-          { name: "show_commute", selector: { boolean: {} } },
-          { name: "show_leave", selector: { boolean: {} } },
-          { name: "show_south", selector: { boolean: {} } },
-          { name: "show_north", selector: { boolean: {} } },
-          { name: "show_bus", selector: { boolean: {} } },
-          { name: "show_status", selector: { boolean: {} } },
-          { name: "show_metro", selector: { boolean: {} } },
-          { name: "show_trolley", selector: { boolean: {} } },
-          { name: "show_map", selector: { boolean: {} } },
-          { name: "commute", selector: { entity: { domain: "sensor" } } },
-          { name: "leave", selector: { entity: { domain: "sensor" } } },
-          { name: "south", selector: { entity: { domain: "sensor" } } },
-          { name: "north", selector: { entity: { domain: "sensor" } } },
-          { name: "bus", selector: { entity: { domain: "sensor" } } },
-          { name: "status", selector: { entity: { domain: "sensor" } } },
-          { name: "metro", selector: { entity: { domain: "sensor" } } },
-          { name: "trolley", selector: { entity: { domain: "sensor" } } },
-          { name: "map_url", selector: { text: {} } },
-        ],
+        schema: bubbleSchema(),
+        computeLabel: bubbleLabel,
       };
     }
 
@@ -557,6 +607,48 @@
     }
   }
 
+  class SeptaLiveBubbleEditor extends HTMLElement {
+    constructor() {
+      super();
+      this._config = {};
+      this._hass = null;
+      this._form = null;
+    }
+
+    set hass(hass) {
+      this._hass = hass;
+      if (this._form) this._form.hass = hass;
+    }
+
+    setConfig(config) {
+      this._config = normalizeBubbleConfig(config);
+      if (!this._form) {
+        this._form = document.createElement("ha-form");
+        this._form.computeLabel = bubbleLabel;
+        this._form.addEventListener("value-changed", (ev) => {
+          const next = normalizeBubbleConfig(ev.detail.value);
+          if (JSON.stringify(next) === JSON.stringify(this._config)) return;
+          this._config = next;
+          this._form.data = next;
+          this.dispatchEvent(
+            new CustomEvent("config-changed", {
+              bubbles: true,
+              composed: true,
+              detail: { config: next },
+            }),
+          );
+        });
+        this.appendChild(this._form);
+      }
+      this._form.schema = bubbleSchema();
+      this._form.data = this._config;
+      if (this._hass) this._form.hass = this._hass;
+    }
+  }
+
+  if (!customElements.get("septa-live-bubble-editor")) {
+    customElements.define("septa-live-bubble-editor", SeptaLiveBubbleEditor);
+  }
   if (!customElements.get("septa-live-card")) {
     customElements.define("septa-live-card", SeptaLiveCard);
   }
@@ -611,6 +703,9 @@
       setConfig(config) {
         const next = { name: displayName, layout: layout || "bubbles", ...config };
         if (!next.modules || !next.modules.length) next.modules = mods.slice();
+        for (const id of MODULE_ORDER) {
+          if (typeof next[`show_${id}`] !== "boolean") next[`show_${id}`] = next.modules.includes(id);
+        }
         super.setConfig(next);
       }
       static getStubConfig(hass) {

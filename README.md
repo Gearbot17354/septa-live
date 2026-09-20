@@ -12,7 +12,7 @@ This is a **custom repository** — the same way most community plugins are inst
 2. Open the three-dot menu → **Custom repositories**.
 3. Paste `https://github.com/Gearbot17354/septa-live`.
 4. Category: **Integration**.
-5. **Add**, then find **SEPTA Live** and **Download** **1.4.4**.
+5. **Add**, then find **SEPTA Live** and **Download** **1.4.5**.
 6. **Restart Home Assistant**.
 7. **Settings → Devices & Services → Add Integration → SEPTA Live**.
 8. Pick a station (for example Lansdale) and commute destination (Jefferson Station).
@@ -23,7 +23,7 @@ Repo: [github.com/Gearbot17354/septa-live](https://github.com/Gearbot17354/septa
 If Add card still does not list SEPTA Live, enable Advanced Mode in your profile, then **Settings → Dashboards → ⋮ → Resources → Add**:
 
 ```
-/local/septa-live-card.js?v=1.4.4
+/local/septa-live-card.js?v=1.4.5
 type: module
 ```
 
