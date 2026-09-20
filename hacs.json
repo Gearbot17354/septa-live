@@ -1,5 +1,6 @@
 {
   "name": "SEPTA Live",
+  "content_in_root": true,
   "filename": "septa_live.zip",
   "zip_release": true,
   "hide_default_branch": true,
