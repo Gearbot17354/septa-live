@@ -1,6 +1,8 @@
 {
   "name": "SEPTA Live",
+  "filename": "septa_live.zip",
+  "zip_release": true,
+  "hide_default_branch": true,
   "render_readme": true,
-  "homeassistant": "2024.8.0",
-  "content_in_root": false
+  "homeassistant": "2024.8.0"
 }

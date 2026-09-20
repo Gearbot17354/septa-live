@@ -21,6 +21,8 @@ After restart, edit a dashboard → **Add card** → search **SEPTA Live**.
 
 Repo: [github.com/Gearbot17354/septa-live](https://github.com/Gearbot17354/septa-live)
 
+If HACS says `custom_components/None/manifest.json`, remove this custom repository, restart Home Assistant, then add it again as type **Integration**. That happens if it was added while the repo was private.
+
 ## Manual install (zip)
 
 1. Copy `custom_components/septa_live` into your Home Assistant `config/custom_components/` folder.
