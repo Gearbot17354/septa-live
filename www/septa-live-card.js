@@ -1,4 +1,5 @@
 (() => {
+  const CARD_VERSION = "1.4.6";
   const ONTIME = "#7dba98";
   const LATE = "#d4a054";
   const CRIT = "#d0726a";
@@ -343,21 +344,15 @@
 
   function normalizeBubbleConfig(config) {
     const next = { ...(config || {}) };
-    const hasFlag = MODULE_ORDER.some((id) => typeof next[`show_${id}`] === "boolean");
-    if (hasFlag) {
-      next.modules = MODULE_ORDER.filter((id) => {
-        const flag = next[`show_${id}`];
-        if (typeof flag === "boolean") return flag;
-        return Array.isArray(next.modules) ? next.modules.includes(id) : DEFAULT_ON.includes(id);
-      });
-    } else if (Array.isArray(next.modules) && next.modules.length) {
+    if (Array.isArray(next.modules)) {
       next.modules = next.modules.filter((id) => MODULE_ORDER.includes(id));
     } else {
-      next.modules = DEFAULT_ON.slice();
+      const flagged = MODULE_ORDER.some((id) => typeof next[`show_${id}`] === "boolean");
+      next.modules = flagged
+        ? MODULE_ORDER.filter((id) => next[`show_${id}`] === true)
+        : DEFAULT_ON.slice();
     }
-    for (const id of MODULE_ORDER) {
-      next[`show_${id}`] = next.modules.includes(id);
-    }
+    for (const id of MODULE_ORDER) next[`show_${id}`] = next.modules.includes(id);
     if (!next.layout) next.layout = "bubbles";
     return next;
   }
@@ -378,10 +373,16 @@
           },
         },
       },
-      ...MODULE_ORDER.map((id) => ({
-        name: `show_${id}`,
-        selector: { boolean: {} },
-      })),
+      {
+        name: "modules",
+        selector: {
+          select: {
+            multiple: true,
+            mode: "list",
+            options: MODULE_ORDER.map((id) => ({ value: id, label: MODULE_LABELS[id] })),
+          },
+        },
+      },
       { name: "commute", selector: { entity: { domain: "sensor" } } },
       { name: "leave", selector: { entity: { domain: "sensor" } } },
       { name: "south", selector: { entity: { domain: "sensor" } } },
@@ -415,15 +416,15 @@
     setConfig(config) {
       this._config = normalizeBubbleConfig(config);
       this._last = "";
-      if (this._hass) this._render();
+      this._render();
     }
 
     _modules() {
       const cfg = this._config || {};
-      if (Array.isArray(cfg.modules) && cfg.modules.length) {
+      if (Array.isArray(cfg.modules)) {
         return cfg.modules.filter((id) => MODULE_ORDER.includes(id));
       }
-      return MODULE_ORDER.filter((id) => cfg[`show_${id}`] === true || (cfg[`show_${id}`] !== false && DEFAULT_ON.includes(id)));
+      return MODULE_ORDER.filter((id) => cfg[`show_${id}`] === true);
     }
 
     set hass(hass) {
@@ -451,8 +452,19 @@
       return { grid_columns: 4, grid_rows: 3, grid_min_columns: 2, grid_min_rows: 2 };
     }
 
+    static getConfigForm() {
+      return {
+        schema: bubbleSchema(),
+        computeLabel: bubbleLabel,
+      };
+    }
+
+    static getConfigElement() {
+      return document.createElement("septa-live-bubble-editor");
+    }
+
     static getStubConfig(hass) {
-      const stub = {
+      return {
         name: "SEPTA Live",
         layout: "bubbles",
         modules: DEFAULT_ON.slice(),
@@ -462,21 +474,8 @@
         bus: findEntity(hass, "_next_bus", "sensor.septa_lansdale_next_bus"),
         leave: findEntity(hass, "_leave_in", "sensor.septa_lansdale_leave_in"),
         status: findEntity(hass, "_status", "sensor.septa_lansdale_status"),
-        metro: findEntity(hass, "_metro", "sensor.septa_lansdale_metro"),
-        trolley: findEntity(hass, "_trolley", "sensor.septa_lansdale_trolley"),
-      };
-      for (const id of MODULE_ORDER) stub[`show_${id}`] = DEFAULT_ON.includes(id);
-      return stub;
-    }
-
-    static getConfigElement() {
-      return document.createElement("septa-live-bubble-editor");
-    }
-
-    static getConfigForm() {
-      return {
-        schema: bubbleSchema(),
-        computeLabel: bubbleLabel,
+        metro: findEntity(hass, "_metro", ""),
+        trolley: findEntity(hass, "_trolley", ""),
       };
     }
 
@@ -613,6 +612,8 @@
       this._config = {};
       this._hass = null;
       this._form = null;
+      this._ready = false;
+      this.attachShadow({ mode: "open" });
     }
 
     set hass(hass) {
@@ -621,28 +622,91 @@
     }
 
     setConfig(config) {
-      this._config = normalizeBubbleConfig(config);
-      if (!this._form) {
-        this._form = document.createElement("ha-form");
-        this._form.computeLabel = bubbleLabel;
-        this._form.addEventListener("value-changed", (ev) => {
-          const next = normalizeBubbleConfig(ev.detail.value);
-          if (JSON.stringify(next) === JSON.stringify(this._config)) return;
-          this._config = next;
-          this._form.data = next;
-          this.dispatchEvent(
-            new CustomEvent("config-changed", {
-              bubbles: true,
-              composed: true,
-              detail: { config: next },
-            }),
-          );
+      const next = normalizeBubbleConfig(config);
+      const same = JSON.stringify(next) === JSON.stringify(this._config);
+      this._config = next;
+      if (!this._ready) this._build();
+      else if (!same) this._sync();
+    }
+
+    _emit(partial) {
+      const next = normalizeBubbleConfig({ ...this._config, ...partial });
+      if (JSON.stringify(next) === JSON.stringify(this._config)) return;
+      this._config = next;
+      this.dispatchEvent(
+        new CustomEvent("config-changed", {
+          bubbles: true,
+          composed: true,
+          detail: { config: next },
+        }),
+      );
+      this._sync();
+    }
+
+    _build() {
+      this._ready = true;
+      this.shadowRoot.innerHTML = `
+        <style>
+          :host { display: block; }
+          .cap { font-size: 12px; opacity: 0.65; margin: 4px 0 10px; }
+          .row {
+            display: flex; align-items: center; justify-content: space-between;
+            min-height: 48px; cursor: pointer; user-select: none;
+          }
+          .row span { font-size: 14px; }
+          .sw {
+            width: 36px; height: 20px; border-radius: 12px; position: relative;
+            background: var(--switch-unchecked-track-color, #63666b);
+            flex-shrink: 0; transition: background 0.15s;
+          }
+          .sw.on { background: var(--switch-checked-color, var(--primary-color, #03a9f4)); }
+          .knob {
+            position: absolute; top: 2px; left: 2px; width: 16px; height: 16px;
+            border-radius: 50%; background: #fff; transition: left 0.15s;
+          }
+          .sw.on .knob { left: 18px; }
+          .form { margin-top: 12px; }
+        </style>
+        <div class="cap">Show on card</div>
+        <div class="mods"></div>
+        <div class="form"></div>
+      `;
+      const mods = this.shadowRoot.querySelector(".mods");
+      mods.innerHTML = MODULE_ORDER.map(
+        (id) => `
+        <div class="row" data-mod="${id}">
+          <span>${MODULE_LABELS[id]}</span>
+          <div class="sw"><div class="knob"></div></div>
+        </div>`,
+      ).join("");
+      mods.querySelectorAll(".row").forEach((row) => {
+        row.addEventListener("click", () => {
+          const id = row.getAttribute("data-mod");
+          const on = new Set(this._config.modules || []);
+          const modules = MODULE_ORDER.filter((m) => (m === id ? !on.has(id) : on.has(m)));
+          this._emit({ modules });
         });
-        this.appendChild(this._form);
+      });
+      this._form = document.createElement("ha-form");
+      this._form.schema = bubbleSchema().filter((item) => item.name !== "modules");
+      this._form.computeLabel = bubbleLabel;
+      this._form.addEventListener("value-changed", (ev) => {
+        const value = ev.detail.value || {};
+        this._emit({ ...value, modules: this._config.modules });
+      });
+      this.shadowRoot.querySelector(".form").appendChild(this._form);
+      this._sync();
+    }
+
+    _sync() {
+      const on = new Set(this._config.modules || []);
+      this.shadowRoot.querySelectorAll(".row").forEach((row) => {
+        row.querySelector(".sw").classList.toggle("on", on.has(row.getAttribute("data-mod")));
+      });
+      if (this._form) {
+        this._form.data = this._config;
+        if (this._hass) this._form.hass = this._hass;
       }
-      this._form.schema = bubbleSchema();
-      this._form.data = this._config;
-      if (this._hass) this._form.hass = this._hass;
     }
   }
 
