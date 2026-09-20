@@ -5,10 +5,10 @@
 
   function esc(value) {
     return String(value ?? "")
-      .replace(/&/g, "&")
-      .replace(/</g, "<")
-      .replace(/>/g, ">")
-      .replace(/"/g, """);
+      .replace(/&/g, "\u0026amp;")
+      .replace(/</g, "\u0026lt;")
+      .replace(/>/g, "\u0026gt;")
+      .replace(/"/g, "\u0026quot;");
   }
 
   function tone(delayMin, cancelled) {
@@ -81,9 +81,31 @@
     .status { font-size: 12px; font-weight: 500; }
     .hint { margin-top: 4px; font-size: 12px; opacity: 0.6; }
     .label { font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; opacity: 0.5; }
+    .bubbles { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 12px 14px; }
+    .bubble {
+      flex: 1 1 138px;
+      min-height: 84px;
+      border-radius: 18px;
+      background: #12171f;
+      box-shadow: inset 0 0 0 1px #2a3340;
+      padding: 12px 14px;
+      text-align: left;
+      color: inherit;
+      cursor: pointer;
+      font: inherit;
+      border: 0;
+    }
+    .bubble.is-hero { flex: 1 1 100%; min-height: 108px; border-radius: 22px; }
+    .bubble.is-map { flex: 1 1 100%; min-height: 180px; padding: 0; overflow: hidden; }
+    .bubble .value { font-size: 22px; font-variant-numeric: tabular-nums; font-weight: 500; letter-spacing: -0.03em; margin-top: 4px; }
+    .bubble.is-hero .value { font-size: 32px; }
+    .bubble-map { width: 100%; height: 180px; border: 0; display: block; background: #0b0e13; }
+    .stack { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 8px 12px 14px; }
+    .stack .bubble { min-width: 0; }
     @media (max-width: 420px) {
       .grid { grid-template-columns: 1fr; }
       .cell.wide { grid-column: auto; }
+      .stack { grid-template-columns: 1fr; }
     }
   `;
 
@@ -304,11 +326,244 @@
     }
   }
 
+  const MODULE_ORDER = ["commute", "leave", "south", "north", "bus", "status", "metro", "trolley", "map"];
+  const DEFAULT_ON = ["commute", "leave", "south", "north", "bus", "status"];
+
+  class SeptaLiveBubble extends HTMLElement {
+    constructor() {
+      super();
+      this._config = {};
+      this._hass = null;
+      this._last = "";
+      this.attachShadow({ mode: "open" });
+    }
+
+    setConfig(config) {
+      this._config = config || {};
+      this._last = "";
+    }
+
+    _modules() {
+      const cfg = this._config;
+      if (Array.isArray(cfg.modules) && cfg.modules.length) {
+        return cfg.modules.filter((id) => MODULE_ORDER.includes(id));
+      }
+      return MODULE_ORDER.filter((id) => {
+        const flag = cfg[`show_${id}`];
+        if (flag === false) return false;
+        if (flag === true) return true;
+        return DEFAULT_ON.includes(id);
+      });
+    }
+
+    set hass(hass) {
+      this._hass = hass;
+      const keys = this._modules().map((k) => this._config[k] || "");
+      const sig = keys
+        .concat([this._config.layout || "", this._config.map_url || "", this._modules().join(",")])
+        .map((id) => {
+          if (!id || id.startsWith("http") || MODULE_ORDER.includes(id)) return id;
+          const s = stateOf(hass, id);
+          return s ? `${s.state}|${JSON.stringify(s.attributes)}` : "";
+        })
+        .join("#");
+      if (sig === this._last) return;
+      this._last = sig;
+      this._render();
+    }
+
+    getCardSize() {
+      const n = this._modules().length;
+      return Math.max(2, Math.ceil(n / 2) + 1);
+    }
+
+    static getLayoutOptions() {
+      return { grid_columns: 4, grid_rows: 3, grid_min_columns: 2, grid_min_rows: 2 };
+    }
+
+    static getStubConfig(hass) {
+      return {
+        name: "SEPTA Live",
+        layout: "bubbles",
+        modules: DEFAULT_ON.slice(),
+        commute: findEntity(hass, "_commute", "sensor.septa_lansdale_commute"),
+        south: findEntity(hass, "_next_southbound", "sensor.septa_lansdale_next_southbound"),
+        north: findEntity(hass, "_next_northbound", "sensor.septa_lansdale_next_northbound"),
+        bus: findEntity(hass, "_next_bus", "sensor.septa_lansdale_next_bus"),
+        leave: findEntity(hass, "_leave_in", "sensor.septa_lansdale_leave_in"),
+        status: findEntity(hass, "_status", "sensor.septa_lansdale_status"),
+        metro: findEntity(hass, "_metro", "sensor.septa_lansdale_metro"),
+        trolley: findEntity(hass, "_trolley", "sensor.septa_lansdale_trolley"),
+      };
+    }
+
+    static getConfigForm() {
+      return {
+        schema: [
+          { name: "name", selector: { text: {} } },
+          {
+            name: "layout",
+            selector: {
+              select: { options: ["bubbles", "stack", "hero"], mode: "dropdown" },
+            },
+          },
+          { name: "show_commute", selector: { boolean: {} } },
+          { name: "show_leave", selector: { boolean: {} } },
+          { name: "show_south", selector: { boolean: {} } },
+          { name: "show_north", selector: { boolean: {} } },
+          { name: "show_bus", selector: { boolean: {} } },
+          { name: "show_status", selector: { boolean: {} } },
+          { name: "show_metro", selector: { boolean: {} } },
+          { name: "show_trolley", selector: { boolean: {} } },
+          { name: "show_map", selector: { boolean: {} } },
+          { name: "commute", selector: { entity: { domain: "sensor" } } },
+          { name: "leave", selector: { entity: { domain: "sensor" } } },
+          { name: "south", selector: { entity: { domain: "sensor" } } },
+          { name: "north", selector: { entity: { domain: "sensor" } } },
+          { name: "bus", selector: { entity: { domain: "sensor" } } },
+          { name: "status", selector: { entity: { domain: "sensor" } } },
+          { name: "metro", selector: { entity: { domain: "sensor" } } },
+          { name: "trolley", selector: { entity: { domain: "sensor" } } },
+          { name: "map_url", selector: { text: {} } },
+        ],
+      };
+    }
+
+    _face(id) {
+      const cfg = this._config;
+      const entity = cfg[id];
+      const state = stateOf(this._hass, entity);
+      const delay = Number(attr(state, "delay_min") || 0);
+      const color = tone(delay, Boolean(state && state.attributes && state.attributes.cancelled));
+      if (id === "commute") {
+        return {
+          label: "Commute",
+          value: attr(state, "depart") || minutesOf(state),
+          hint: state ? `${minutesOf(state)}${attr(state, "train_id") ? " · #" + attr(state, "train_id") : ""}` : "Missing",
+          color,
+          entity,
+        };
+      }
+      if (id === "leave") {
+        const n = state && state.state !== "unknown" ? Number(state.state) : null;
+        return {
+          label: "Leave in",
+          value: n == null || Number.isNaN(n) ? "—" : n <= 0 ? "Now" : `${n} min`,
+          hint: attr(state, "walk_minutes") ? `${attr(state, "walk_minutes")} min walk` : "Walk window",
+          color: n != null && n <= 2 ? LATE : ONTIME,
+          entity,
+        };
+      }
+      if (id === "south" || id === "north") {
+        return {
+          label: id === "south" ? "Southbound" : "Northbound",
+          value: attr(state, "clock") || minutesOf(state),
+          hint: minutesOf(state),
+          color,
+          entity,
+        };
+      }
+      if (id === "bus") {
+        return {
+          label: attr(state, "route") ? `Bus ${attr(state, "route")}` : "Next bus",
+          value: attr(state, "clock") || minutesOf(state),
+          hint: `${minutesOf(state)}${attr(state, "destination") ? " · " + attr(state, "destination") : ""}`,
+          color,
+          entity,
+        };
+      }
+      if (id === "status") {
+        const text = state ? state.state : "—";
+        return {
+          label: "Status",
+          value: text,
+          hint: "Line",
+          color: /suspend|alert|delay/i.test(text) ? LATE : ONTIME,
+          entity,
+        };
+      }
+      if (id === "metro") {
+        return {
+          label: "Metro",
+          value: state && state.state !== "unknown" ? state.state : "—",
+          hint: attr(state, "summary") || "L · B · M",
+          color: ONTIME,
+          entity,
+        };
+      }
+      if (id === "trolley") {
+        return {
+          label: "Trolley",
+          value: state && state.state !== "unknown" ? state.state : "—",
+          hint: attr(state, "summary") || "T · G · D",
+          color: ONTIME,
+          entity,
+        };
+      }
+      return { label: id, value: "—", hint: "", color: ONTIME, entity };
+    }
+
+    _bubble(face, extraClass) {
+      return `
+        <button class="bubble ${extraClass || ""}" type="button" data-entity="${esc(face.entity || "")}">
+          <div class="label">${esc(face.label)}</div>
+          <div class="value" style="color:${face.color}">${esc(face.value)}</div>
+          <div class="hint">${esc(face.hint)}</div>
+        </button>
+      `;
+    }
+
+    _render() {
+      const modules = this._modules();
+      const layout = this._config.layout === "stack" || this._config.layout === "hero" ? this._config.layout : "bubbles";
+      const name = this._config.name || "SEPTA Live";
+      let body = "";
+      if (!modules.length) {
+        body = `<div class="wrap"><div class="empty">Pick at least one module.</div></div>`;
+      } else if (layout === "hero") {
+        const first = modules[0];
+        const rest = modules.slice(1);
+        body = `<div class="bubbles">${this._moduleHtml(first, "is-hero")}${rest.map((id) => this._moduleHtml(id, "")).join("")}</div>`;
+      } else if (layout === "stack") {
+        body = `<div class="stack">${modules.map((id) => this._moduleHtml(id, "")).join("")}</div>`;
+      } else {
+        body = `<div class="bubbles">${modules.map((id) => this._moduleHtml(id, "")).join("")}</div>`;
+      }
+      this.shadowRoot.innerHTML = `
+        <style>${BASE_CSS}</style>
+        <ha-card>
+          <div class="head">
+            <div class="kicker">${esc(name)}</div>
+            <div class="status">${esc(modules.length)} items</div>
+          </div>
+          ${body}
+        </ha-card>
+      `;
+      this.shadowRoot.querySelectorAll("[data-entity]").forEach((btn) => {
+        btn.addEventListener("click", () => moreInfo(this, btn.getAttribute("data-entity")));
+      });
+    }
+
+    _moduleHtml(id, extraClass) {
+      if (id === "map") {
+        const url = this._config.map_url || "";
+        if (!url) {
+          return this._bubble({ label: "Live map", value: "Set map_url", hint: "Paste the embed map URL", color: LATE, entity: "" }, extraClass);
+        }
+        return `<div class="bubble is-map ${extraClass || ""}"><iframe class="bubble-map" src="${esc(url)}" title="SEPTA live map" loading="lazy" referrerpolicy="no-referrer"></iframe></div>`;
+      }
+      return this._bubble(this._face(id), extraClass);
+    }
+  }
+
   if (!customElements.get("septa-live-card")) {
     customElements.define("septa-live-card", SeptaLiveCard);
   }
   if (!customElements.get("septa-live-board")) {
     customElements.define("septa-live-board", SeptaLiveBoard);
+  }
+  if (!customElements.get("septa-live-bubble")) {
+    customElements.define("septa-live-bubble", SeptaLiveBubble);
   }
 
   window.customCards = window.customCards || [];
@@ -326,6 +581,14 @@
       type: "septa-live-board",
       name: "SEPTA Live Board",
       description: "Pre-made commute dashboard: train, leave-now, both directions, and bus",
+      preview: true,
+    });
+  }
+  if (!cards.some((c) => c.type === "septa-live-bubble")) {
+    cards.push({
+      type: "septa-live-bubble",
+      name: "SEPTA Live Bubble",
+      description: "Pick commute, bus, Metro, trolley, and map bubbles for your dashboard",
       preview: true,
     });
   }

@@ -22,6 +22,9 @@ STOPS_URL: Final = "https://www3.septa.org/api/Stops/index.php"
 LOCATIONS_URL: Final = "https://www3.septa.org/api/locations/get_locations.php"
 BUS_SCHEDULES_URL: Final = "https://www3.septa.org/api/BusSchedules/index.php"
 TRANSITVIEW_URL: Final = "https://www3.septa.org/api/TransitView/index.php"
+V2_TRIPS_URL: Final = "https://www3.septa.org/api/v2/trips/"
+METRO_ROUTE_IDS: Final = ["L1", "B1", "B2", "B3", "M1"]
+TROLLEY_ROUTE_IDS: Final = ["T1", "T2", "T3", "T4", "T5", "G1", "D1", "D2"]
 RAIL_LINES: Final = [
     "AIR",
     "CHE",

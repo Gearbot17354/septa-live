@@ -28,6 +28,8 @@ async def async_setup_entry(
             SeptaLeaveSensor(coordinator),
             SeptaStatusSensor(coordinator),
             SeptaNextBusSensor(coordinator),
+            SeptaServiceCountSensor(coordinator, "metro", "Metro", "mdi:subway-variant"),
+            SeptaServiceCountSensor(coordinator, "trolley", "Trolley", "mdi:tram"),
         ]
     )
 
@@ -45,7 +47,7 @@ class _Base(CoordinatorEntity[SeptaCoordinator], SensorEntity):
             identifiers={(DOMAIN, f"{slug(station)}_{slug(dest)}")},
             name=f"SEPTA {station}",
             manufacturer="SEPTA",
-            model="Regional Rail + Bus",
+            model="Regional Rail + Bus + Metro",
         )
 
 
@@ -163,4 +165,38 @@ class SeptaNextBusSensor(_Base):
             "clock": row.get("clock"),
             "delay_min": row.get("delay_min"),
             "live": row.get("live"),
+        }
+
+
+class SeptaServiceCountSensor(_Base):
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self, coordinator: SeptaCoordinator, key: str, name: str, icon: str
+    ) -> None:
+        super().__init__(coordinator, key)
+        self._attr_name = name
+        self._attr_icon = icon
+
+    def _pack(self) -> dict[str, Any]:
+        return (self.coordinator.data or {}).get(self._key) or {}
+
+    @property
+    def native_value(self) -> int:
+        pack = self._pack()
+        try:
+            return int(pack.get("count") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        pack = self._pack()
+        return {
+            "summary": pack.get("summary"),
+            "routes": pack.get("routes"),
+            "l": pack.get("l"),
+            "b": pack.get("b"),
+            "m": pack.get("m"),
+            "gps": pack.get("gps"),
         }

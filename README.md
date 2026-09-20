@@ -2,7 +2,7 @@
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
 
-Pulls live SEPTA Regional Rail arrivals, nearby bus departures, commute times, delays, and alerts into Home Assistant. Ships with pre-made Lovelace cards that appear under **Add card**.
+Pulls live SEPTA Regional Rail arrivals, nearby bus departures, Metro, trolley, commute times, delays, and alerts into Home Assistant. Ships with a Bubble-style Lovelace card you can fill with only the data you want.
 
 ## Install with HACS (recommended)
 
@@ -29,12 +29,34 @@ Repo: [github.com/Gearbot17354/septa-live](https://github.com/Gearbot17354/septa
 
 ## Pre-made dashboard cards
 
-After restart, Lovelace registers two cards automatically. Edit a dashboard → **Add card** → search **SEPTA Live**:
+After restart, Lovelace registers three cards automatically. Edit a dashboard → **Add card** → search **SEPTA Live**:
 
 | Card | What you get |
 | --- | --- |
-| **SEPTA Live Board** | One card: commute, leave-now, southbound, northbound, and next bus |
+| **SEPTA Live Bubble** | Pick commute, leave-in, trains, bus, Metro, trolley, and map as bubbles |
+| **SEPTA Live Board** | Fixed commute board: train, leave-now, both directions, bus |
 | **SEPTA Live** | A single train or bus sensor as a hero card |
+
+Build the bubble card in the SEPTA Live app (**Build a card**), then paste the YAML:
+
+```yaml
+type: custom:septa-live-bubble
+name: Lansdale → Jefferson
+layout: bubbles
+modules:
+  - commute
+  - leave
+  - south
+  - north
+  - bus
+  - metro
+commute: sensor.septa_lansdale_commute
+leave: sensor.septa_lansdale_leave_in
+south: sensor.septa_lansdale_next_southbound
+north: sensor.septa_lansdale_next_northbound
+bus: sensor.septa_lansdale_next_bus
+metro: sensor.septa_lansdale_metro
+```
 
 If they do not appear, copy `www/septa-live-card.js` (or `custom_components/septa_live/www/septa-live-card.js`) to `config/www/`, add a Lovelace resource (`/local/septa-live-card.js`, type Module), then:
 
@@ -83,9 +105,11 @@ Each station creates a device with:
 | Leave in | commute minus your walk time |
 | Status | On Time / delay / alert |
 | Next Bus | minutes until the next bus near the station |
+| Metro | number of L / B / M trips in service |
+| Trolley | number of T / G / D vehicles reporting |
 
 Train attributes include train number, destination, track, scheduled time, and delay. The Next Bus sensor includes route, destination, stop name, clock, live delay, and whether the time is GPS-backed.
 
 Nearby bus stops are discovered from the rail station coordinates. Routes such as 132 and 96 at Lansdale show up automatically.
 
-Data is fetched from SEPTA’s public Arrivals, NextToArrive, TrainView, Alerts, BusSchedules, locations, and TransitView APIs.
+Data is fetched from SEPTA’s public Arrivals, NextToArrive, TrainView, Alerts, BusSchedules, locations, TransitView, and Metro v2 trip APIs.

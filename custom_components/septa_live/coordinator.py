@@ -27,10 +27,13 @@ from .const import (
     DEFAULT_WALK,
     DOMAIN,
     LOCATIONS_URL,
+    METRO_ROUTE_IDS,
     NTA_URL,
     RAIL_LINES,
     STOPS_URL,
     TRANSITVIEW_URL,
+    TROLLEY_ROUTE_IDS,
+    V2_TRIPS_URL,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -229,6 +232,60 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     buses.append(item)
         return buses
 
+    async def _load_metro(self) -> tuple[dict[str, Any], dict[str, Any]]:
+        empty = {"count": 0, "summary": "None reporting", "routes": {}}
+        metro = {"count": 0, "summary": "None reporting", "l": 0, "b": 0, "m": 0, "routes": {}}
+        trolley = {"count": 0, "summary": "None reporting", "gps": 0, "routes": {}}
+        try:
+            ids = METRO_ROUTE_IDS + TROLLEY_ROUTE_IDS
+            rows: list[dict[str, Any]] = []
+            for route_id in ids:
+                try:
+                    raw = await self._get(V2_TRIPS_URL, {"route_id": route_id})
+                except Exception:  # noqa: BLE001
+                    continue
+                if isinstance(raw, list):
+                    rows.extend(item for item in raw if isinstance(item, dict))
+            metro_routes: dict[str, int] = {}
+            trolley_routes: dict[str, int] = {}
+            l = b = m_count = gps = 0
+            metro_n = trolley_n = 0
+            for item in rows:
+                route = str(item.get("route_id") or "")
+                if route in METRO_ROUTE_IDS:
+                    metro_n += 1
+                    metro_routes[route] = metro_routes.get(route, 0) + 1
+                    if route.startswith("L"):
+                        l += 1
+                    elif route.startswith("B"):
+                        b += 1
+                    elif route.startswith("M"):
+                        m_count += 1
+                elif route in TROLLEY_ROUTE_IDS:
+                    trolley_n += 1
+                    trolley_routes[route] = trolley_routes.get(route, 0) + 1
+                    lat = item.get("lat")
+                    if lat not in (None, "", "None"):
+                        gps += 1
+            metro = {
+                "count": metro_n,
+                "summary": f"{l} L · {b} B · {m_count} M" if metro_n else "None reporting",
+                "l": l,
+                "b": b,
+                "m": m_count,
+                "routes": metro_routes,
+            }
+            trolley = {
+                "count": trolley_n,
+                "summary": f"{gps} with GPS" if trolley_n else "None reporting",
+                "gps": gps,
+                "routes": trolley_routes,
+            }
+            return metro, trolley
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Metro lookup failed: %s", err)
+            return empty | {"l": 0, "b": 0, "m": 0}, empty | {"gps": 0}
+
     async def _station_coords(self) -> tuple[float, float] | None:
         want = _norm_name(self.station)
         for line in RAIL_LINES:
@@ -288,6 +345,7 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         commute = _parse_nta(nta_raw, now)
         alerts = _parse_alerts(alerts_raw, self.station)
         buses = await self._load_buses(now)
+        metro, trolley = await self._load_metro()
 
         next_s = south[0] if south else None
         next_n = north[0] if north else None
@@ -324,6 +382,8 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "buses": buses,
             "leave_in": leave,
             "status": status,
+            "metro": metro,
+            "trolley": trolley,
             "updated": now.isoformat(),
         }
 
