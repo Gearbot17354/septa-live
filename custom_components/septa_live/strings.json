@@ -1,0 +1,31 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "SEPTA Live",
+        "description": "Pick the station to track. Destination builds a commute sensor. Nearby buses are included automatically.",
+        "data": {
+          "station": "Station",
+          "destination": "Destination",
+          "walk_minutes": "Walk to station (minutes)",
+          "scan_interval": "Refresh interval (seconds)"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "That station and destination are already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "SEPTA Live options",
+        "data": {
+          "destination": "Destination",
+          "walk_minutes": "Walk to station (minutes)",
+          "scan_interval": "Refresh interval (seconds)"
+        }
+      }
+    }
+  }
+}

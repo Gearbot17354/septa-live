@@ -1,0 +1,57 @@
+title: SEPTA
+views:
+  - title: Transit
+    path: septa
+    icon: mdi:train
+    type: sections
+    max_columns: 2
+    sections:
+      - type: grid
+        column_span: 2
+        cards:
+          - type: heading
+            heading: Lansdale
+            heading_style: title
+          - type: custom:septa-live-board
+            name: Lansdale → Jefferson
+            commute: sensor.septa_lansdale_commute
+            south: sensor.septa_lansdale_next_southbound
+            north: sensor.septa_lansdale_next_northbound
+            bus: sensor.septa_lansdale_next_bus
+            leave: sensor.septa_lansdale_leave_in
+            status: sensor.septa_lansdale_status
+      - type: grid
+        cards:
+          - type: heading
+            heading: Next trains
+            heading_style: subtitle
+          - type: tile
+            entity: sensor.septa_lansdale_next_southbound
+            name: Southbound
+            icon: mdi:train
+          - type: tile
+            entity: sensor.septa_lansdale_next_northbound
+            name: Northbound
+            icon: mdi:train
+          - type: tile
+            entity: sensor.septa_lansdale_leave_in
+            name: Leave in
+            icon: mdi:walk
+          - type: tile
+            entity: sensor.septa_lansdale_status
+            name: Line status
+            icon: mdi:alert-circle-outline
+      - type: grid
+        cards:
+          - type: heading
+            heading: Bus
+            heading_style: subtitle
+          - type: custom:septa-live-card
+            entity: sensor.septa_lansdale_next_bus
+            name: Next bus
+          - type: markdown
+            content: |
+              **Lansdale → Jefferson Station**
+              Leave in {{ states('sensor.septa_lansdale_leave_in') }} min
+              Train {{ state_attr('sensor.septa_lansdale_commute', 'train_id') }}
+              {{ state_attr('sensor.septa_lansdale_commute', 'depart') }} → {{ state_attr('sensor.septa_lansdale_commute', 'arrive') }}
