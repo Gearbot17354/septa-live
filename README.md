@@ -2,7 +2,7 @@
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
 
-Pulls live SEPTA Regional Rail arrivals, nearby bus departures, Metro, trolley, commute times, delays, and alerts into Home Assistant. Ships with a Bubble-style Lovelace card you can fill with only the data you want.
+Pulls live SEPTA Regional Rail arrivals, nearby bus departures, Metro, trolley, commute times, delays, and alerts into Home Assistant. Ships with ready-made Lovelace cards and a Bubble-style builder.
 
 ## Install with HACS (recommended)
 
@@ -12,27 +12,22 @@ This is a **custom repository** — the same way most community plugins are inst
 2. Open the three-dot menu → **Custom repositories**.
 3. Paste `https://github.com/Gearbot17354/septa-live`.
 4. Category: **Integration**.
-5. **Add**, then find **SEPTA Live** and **Download**.
+5. **Add**, then find **SEPTA Live** and **Download** **1.4.4**.
 6. **Restart Home Assistant**.
 7. **Settings → Devices & Services → Add Integration → SEPTA Live**.
 8. Pick a station (for example Lansdale) and commute destination (Jefferson Station).
-
-After restart, edit a dashboard → **Add card** → search **SEPTA Live**.
+9. Edit a dashboard → **Add card** → search **SEPTA**.
 
 Repo: [github.com/Gearbot17354/septa-live](https://github.com/Gearbot17354/septa-live)
 
-If HACS errors with `custom_components/None/manifest.json`, remove this custom repository, restart Home Assistant, add `https://github.com/Gearbot17354/septa-live` again as **Integration**, and download **1.4.3**.
-
-After download: **restart Home Assistant**, then **Settings → Devices & Services → Add Integration → SEPTA Live** (if it is not already added). The cards register when that integration loads.
-
-If Add card still does not list SEPTA Live, enable Advanced Mode in your profile, then **Settings → Dashboards → three dots → Resources → Add**:
+If Add card still does not list SEPTA Live, enable Advanced Mode in your profile, then **Settings → Dashboards → ⋮ → Resources → Add**:
 
 ```
-/local/septa-live-card.js?v=1.4.3
+/local/septa-live-card.js?v=1.4.4
 type: module
 ```
 
-Hard-refresh the dashboard (or open it in a private window). Search **SEPTA** in Add card.
+Hard-refresh the dashboard (or open it in a private window).
 
 ## Manual install (zip)
 
@@ -41,38 +36,25 @@ Hard-refresh the dashboard (or open it in a private window). Search **SEPTA** in
 3. Restart Home Assistant.
 4. **Settings → Devices & Services → Add Integration → SEPTA Live**.
 
-## Pre-made dashboard cards
+## Ready-made cards
 
-After restart, Lovelace registers three cards automatically. Edit a dashboard → **Add card** → search **SEPTA Live**:
+Search **SEPTA** in Add card. These drop in with your sensors already wired:
 
 | Card | What you get |
 | --- | --- |
-| **SEPTA Live Bubble** | Pick commute, leave-in, trains, bus, Metro, trolley, and map as bubbles |
-| **SEPTA Live Board** | Fixed commute board: train, leave-now, both directions, bus |
-| **SEPTA Live** | A single train or bus sensor as a hero card |
+| **SEPTA Live Commute** | Hero card for your next train |
+| **SEPTA Live Next Bus** | Next bus at the nearest stop |
+| **SEPTA Live Leave** | Walk-window countdown |
+| **SEPTA Live Southbound** | Next inbound / south |
+| **SEPTA Live Northbound** | Next outbound / north |
+| **SEPTA Live Status** | On time, delay, or alert |
+| **SEPTA Live Board** | Train, leave-now, both directions, bus |
+| **SEPTA Live Glance** | Commute, leave, bus, status in one row |
+| **SEPTA Live Metro** | L, B, M plus trolleys |
+| **SEPTA Live Trolley** | T, G, and D |
+| **SEPTA Live Bubble** | Build your own from those pieces |
 
-Build the bubble card in the SEPTA Live app (**Build a card**), then paste the YAML:
-
-```yaml
-type: custom:septa-live-bubble
-name: Lansdale → Jefferson
-layout: bubbles
-modules:
-  - commute
-  - leave
-  - south
-  - north
-  - bus
-  - metro
-commute: sensor.septa_lansdale_commute
-leave: sensor.septa_lansdale_leave_in
-south: sensor.septa_lansdale_next_southbound
-north: sensor.septa_lansdale_next_northbound
-bus: sensor.septa_lansdale_next_bus
-metro: sensor.septa_lansdale_metro
-```
-
-If they do not appear, copy `www/septa-live-card.js` (or `custom_components/septa_live/www/septa-live-card.js`) to `config/www/`, add a Lovelace resource (`/local/septa-live-card.js`, type Module), then:
+YAML if you want to paste:
 
 ```yaml
 type: custom:septa-live-board
@@ -86,26 +68,15 @@ status: sensor.septa_lansdale_status
 ```
 
 ```yaml
-type: custom:septa-live-card
-entity: sensor.septa_lansdale_commute
+type: custom:septa-live-metro
+name: SEPTA Metro
+modules:
+  - metro
+  - trolley
+  - status
 ```
 
-```yaml
-type: custom:septa-live-card
-entity: sensor.septa_lansdale_next_bus
-name: Next bus
-```
-
-Tile fallbacks (no custom card needed):
-
-```yaml
-type: tile
-entity: sensor.septa_lansdale_next_southbound
-name: Next southbound
-icon: mdi:train
-```
-
-A full view YAML is in `dashboards/septa.yaml`. Paste it as a new dashboard view, or copy a card from the SEPTA Live app’s **Ready-made cards** tab.
+A full view YAML is in `dashboards/septa.yaml`.
 
 ## Entities
 

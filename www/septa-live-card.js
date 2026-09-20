@@ -44,7 +44,8 @@
   function minutesOf(state) {
     if (!state) return "—";
     if (state.state === "unknown" || state.state === "unavailable" || state.state === "") return "—";
-    return `${state.state} min`;
+    if (/^-?\d+(\.\d+)?$/.test(String(state.state))) return `${state.state} min`;
+    return String(state.state);
   }
 
   function attr(state, key) {
@@ -566,53 +567,125 @@
     customElements.define("septa-live-bubble", SeptaLiveBubble);
   }
 
+  function entitiesStub(hass) {
+    return {
+      commute: findEntity(hass, "_commute", "sensor.septa_lansdale_commute"),
+      south: findEntity(hass, "_next_southbound", "sensor.septa_lansdale_next_southbound"),
+      north: findEntity(hass, "_next_northbound", "sensor.septa_lansdale_next_northbound"),
+      bus: findEntity(hass, "_next_bus", "sensor.septa_lansdale_next_bus"),
+      leave: findEntity(hass, "_leave_in", "sensor.septa_lansdale_leave_in"),
+      status: findEntity(hass, "_status", "sensor.septa_lansdale_status"),
+      metro: findEntity(hass, "_metro", "sensor.septa_lansdale_metro"),
+      trolley: findEntity(hass, "_trolley", "sensor.septa_lansdale_trolley"),
+    };
+  }
+
+  function registerCard(tag, Ctor, name, description, suggestion) {
+    if (!customElements.get(tag)) customElements.define(tag, Ctor);
+    if (!cards.some((c) => c.type === tag)) {
+      cards.push({
+        type: tag,
+        name,
+        description,
+        preview: true,
+        documentationURL: "https://github.com/Gearbot17354/septa-live",
+        getEntitySuggestion: suggestion || suggestSepta,
+      });
+    }
+  }
+
+  function heroPreset(suffix, fallback, displayName) {
+    return class extends SeptaLiveCard {
+      setConfig(config) {
+        super.setConfig({ name: displayName, ...config });
+      }
+      static getStubConfig(hass) {
+        return { entity: findEntity(hass, suffix, fallback), name: displayName };
+      }
+    };
+  }
+
+  function bubblePreset(displayName, modules, layout) {
+    const mods = modules.slice();
+    return class extends SeptaLiveBubble {
+      setConfig(config) {
+        const next = { name: displayName, layout: layout || "bubbles", ...config };
+        if (!next.modules || !next.modules.length) next.modules = mods.slice();
+        super.setConfig(next);
+      }
+      static getStubConfig(hass) {
+        return { name: displayName, layout: layout || "bubbles", modules: mods.slice(), ...entitiesStub(hass) };
+      }
+    };
+  }
+
   window.customCards = window.customCards || [];
   const cards = window.customCards;
   function suggestSepta(hass, entityId) {
     if (!entityId || !String(entityId).startsWith("sensor.septa_")) return null;
     const id = String(entityId);
-    if (id.endsWith("_next_bus") || /_next_bus$/.test(id)) {
-      return { config: { type: "custom:septa-live-card", entity: id, name: "Next bus" } };
+    const e = entitiesStub(hass);
+    if (id.endsWith("_next_bus")) {
+      return [
+        { label: "Next bus", config: { type: "custom:septa-live-bus", entity: id, name: "Next bus" } },
+        { label: "Board", config: { type: "custom:septa-live-board", name: "SEPTA Live", ...e } },
+      ];
     }
-    if (id.endsWith("_commute") || /_to_/.test(id)) {
-      return { config: { type: "custom:septa-live-card", entity: id } };
+    if (id.endsWith("_metro")) {
+      return {
+        label: "Metro",
+        config: { type: "custom:septa-live-metro", name: "SEPTA Metro", layout: "bubbles", modules: ["metro", "trolley", "status"], ...e },
+      };
     }
-    return {
-      config: {
-        type: "custom:septa-live-bubble",
-        layout: "bubbles",
-        modules: ["commute", "leave", "south", "north", "bus", "status"],
-      },
-    };
+    if (id.endsWith("_trolley")) {
+      return {
+        label: "Trolley",
+        config: { type: "custom:septa-live-trolley", name: "SEPTA Trolley", layout: "bubbles", modules: ["trolley"], ...e },
+      };
+    }
+    if (id.endsWith("_leave_in")) {
+      return { label: "Leave now", config: { type: "custom:septa-live-leave", entity: id, name: "Leave in" } };
+    }
+    if (id.endsWith("_next_southbound")) {
+      return { label: "Southbound", config: { type: "custom:septa-live-south", entity: id, name: "Southbound" } };
+    }
+    if (id.endsWith("_next_northbound")) {
+      return { label: "Northbound", config: { type: "custom:septa-live-north", entity: id, name: "Northbound" } };
+    }
+    if (id.endsWith("_status")) {
+      return { label: "Status", config: { type: "custom:septa-live-status", entity: id, name: "Line status" } };
+    }
+    return [
+      { label: "Commute", config: { type: "custom:septa-live-card", entity: id } },
+      { label: "Board", config: { type: "custom:septa-live-board", name: "SEPTA Live", ...e } },
+      { label: "Glance", config: { type: "custom:septa-live-glance", name: "SEPTA", layout: "bubbles", modules: ["commute", "leave", "bus", "status"], ...e } },
+    ];
   }
-  if (!cards.some((c) => c.type === "septa-live-card")) {
-    cards.push({
-      type: "septa-live-card",
-      name: "SEPTA Live",
-      description: "Next SEPTA train or bus from a SEPTA Live sensor",
-      preview: true,
-      documentationURL: "https://github.com/Gearbot17354/septa-live",
-      getEntitySuggestion: suggestSepta,
-    });
-  }
-  if (!cards.some((c) => c.type === "septa-live-board")) {
-    cards.push({
-      type: "septa-live-board",
-      name: "SEPTA Live Board",
-      description: "Pre-made commute dashboard: train, leave-now, both directions, and bus",
-      preview: true,
-      documentationURL: "https://github.com/Gearbot17354/septa-live",
-      getEntitySuggestion: suggestSepta,
-    });
-  }
-  if (!cards.some((c) => c.type === "septa-live-bubble")) {
-    cards.push({
-      type: "septa-live-bubble",
-      name: "SEPTA Live Bubble",
-      description: "Pick commute, bus, Metro, trolley, and map bubbles for your dashboard",
-      preview: true,
-      documentationURL: "https://github.com/Gearbot17354/septa-live",
-      getEntitySuggestion: suggestSepta,
-    });
-  }
+
+  registerCard("septa-live-card", SeptaLiveCard, "SEPTA Live Commute", "Hero card for your next train");
+  registerCard("septa-live-bus", heroPreset("_next_bus", "sensor.septa_lansdale_next_bus", "Next bus"), "SEPTA Live Next Bus", "Next bus at the stop nearest your station");
+  registerCard("septa-live-leave", heroPreset("_leave_in", "sensor.septa_lansdale_leave_in", "Leave in"), "SEPTA Live Leave", "Walk-window countdown so you know when to head out");
+  registerCard("septa-live-south", heroPreset("_next_southbound", "sensor.septa_lansdale_next_southbound", "Southbound"), "SEPTA Live Southbound", "Next inbound / southbound train");
+  registerCard("septa-live-north", heroPreset("_next_northbound", "sensor.septa_lansdale_next_northbound", "Northbound"), "SEPTA Live Northbound", "Next outbound / northbound train");
+  registerCard("septa-live-status", heroPreset("_status", "sensor.septa_lansdale_status", "Line status"), "SEPTA Live Status", "On time, delay, alert, or suspended");
+  registerCard("septa-live-board", SeptaLiveBoard, "SEPTA Live Board", "Commute board: train, leave-now, both directions, and bus");
+  registerCard(
+    "septa-live-glance",
+    bubblePreset("SEPTA", ["commute", "leave", "bus", "status"], "bubbles"),
+    "SEPTA Live Glance",
+    "Four sensors in one compact row",
+  );
+  registerCard(
+    "septa-live-metro",
+    bubblePreset("SEPTA Metro", ["metro", "trolley", "status"], "bubbles"),
+    "SEPTA Live Metro",
+    "L, B, and M in service, plus trolleys",
+  );
+  registerCard(
+    "septa-live-trolley",
+    bubblePreset("SEPTA Trolley", ["trolley"], "bubbles"),
+    "SEPTA Live Trolley",
+    "T, G, and D live",
+  );
+  registerCard("septa-live-bubble", SeptaLiveBubble, "SEPTA Live Bubble", "Pick commute, bus, Metro, trolley, and map bubbles");
 })();
