@@ -1,5 +1,5 @@
 (() => {
-  const CARD_VERSION = "1.8.7";
+  const CARD_VERSION = "1.8.8";
 
 const RAIL_STATIONS = [
     {name:'9th St',api:'9th St'},
@@ -403,11 +403,11 @@ const RAIL_STATIONS = [
       </div>`;
   }
 
-  function heroInner(title, trains, entity) {
-    const first = trains[0];
-    const second = trains[1];
+  function heroInner(title, trains, entity, limit) {
+    const list = Array.isArray(trains) ? trains.slice(0, Number(limit) > 0 ? Number(limit) : 2) : [];
+    const first = list[0];
     const body = first
-      ? `${bubbleTrain(first, "lg")}${second ? bubbleTrain(second, "sm") : ""}`
+      ? list.map((t, i) => bubbleTrain(t, i === 0 ? "lg" : "sm")).join("")
       : `<div class="empty">${esc(overnightEmpty(title))}</div>`;
     return `
       <button class="hit bubble" type="button" data-entity="${esc(entity || "")}">
@@ -727,7 +727,8 @@ const RAIL_STATIONS = [
       background: transparent; color: inherit; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
     }
     .size-pills button.on { background: var(--secondary-background-color, #11161e); border-color: transparent; }
-    .dep-card.is-compact .dep-cols { padding: 4px 12px; grid-template-columns: 3.6rem minmax(0,1fr) 3.2rem 4.6rem; }
+    .dep-card.is-compact .dep-cols { padding: 4px 12px; grid-template-columns: 3.75rem minmax(0,1fr) 1.75rem 4.85rem; gap: 8px; }
+    .dep-card.is-compact .dep-cols.is-head { letter-spacing: 0.08em; }
     .dep-card.is-compact .dep-time { font-size: 12px; }
     .dep-card.is-compact .dep-dest .to { font-size: 12px; }
     .dep-card.is-compact .dep-trk { width: 18px; height: 18px; font-size: 10px; }
@@ -1105,6 +1106,9 @@ const RAIL_STATIONS = [
     }
 
     getCardSize() {
+      const n = Number(this._config && this._config.count);
+      if (n >= 5) return 6;
+      if (n >= 3) return 4;
       return 3;
     }
 
@@ -1130,6 +1134,17 @@ const RAIL_STATIONS = [
             required: true,
             selector: { entity: { domain: "sensor" } },
           },
+          {
+            name: "count",
+            selector: {
+              select: {
+                options: [
+                  { value: "2", label: "Next 2 trains" },
+                  { value: "5", label: "Next 5 trains" },
+                ],
+              },
+            },
+          },
         ],
       };
     }
@@ -1151,8 +1166,9 @@ const RAIL_STATIONS = [
         const dir = dirFromEntity(entity);
         const pack = trainsForDirection(this._hass, entity, dir);
         const title = name || (dir === "north" ? "Next outbound" : "Next inbound");
+        const count = Number(this._config.count) > 0 ? Number(this._config.count) : 2;
         this.shadowRoot.innerHTML = `<style>${BASE_CSS}</style>
-          <ha-card>${heroInner(title, pack.trains, pack.entity || entity)}</ha-card>`;
+          <ha-card>${heroInner(title, pack.trains, pack.entity || entity, count)}</ha-card>`;
         this.shadowRoot.querySelector("button")?.addEventListener("click", () => moreInfo(this, pack.entity || entity));
         return;
       }

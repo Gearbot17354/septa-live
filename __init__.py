@@ -17,7 +17,7 @@ from .coordinator import SeptaCoordinator
 _LOGGER = logging.getLogger(__name__)
 _FRONTEND = f"{DOMAIN}_frontend_registered"
 _CARD_JS = "septa-live-card.js"
-_CARD_VERSION = "1.8.7"
+_CARD_VERSION = "1.8.8"
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
