@@ -116,4 +116,11 @@ Train attributes include train number, destination, track / platform, scheduled 
 
 Nearby bus stops are discovered from the rail station coordinates. Routes such as 132 and 96 at Lansdale show up automatically.
 
-Data is fetched from SEPTA’s public Arrivals, NextToArrive, TrainView, Alerts, BusSchedules, locations, TransitView, and Metro v2 trip APIs.
+Data is fetched from SEPTA’s public Arrivals, NextToArrive, TrainView, Alerts, BusSchedules, locations, TransitView, and Metro v2 trip APIs. No SEPTA, map, or Home Assistant token is stored in this repository.
+
+## Privacy
+
+- **No API keys.** Maps use OpenStreetMap (Esri as a fallback). SEPTA’s live APIs are public.
+- **No Home Assistant tokens.** Lovelace cards read sensors already in your HA; they do not need a long-lived access token.
+- **Your commute stays in Home Assistant.** Station and destination are config-entry options on your machine, not committed here. Sample YAML uses Lansdale only as an example.
+- **Map GPS is vehicles, not you.** The map plots SEPTA train/bus/trolley positions. It does not upload phone location.
