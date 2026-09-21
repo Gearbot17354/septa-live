@@ -13,26 +13,27 @@ views:
             heading: Lansdale
             heading_style: title
           - type: custom:septa-live-board
-            name: Lansdale → Jefferson
-            commute: sensor.septa_lansdale_commute
+            name: Lansdale
             south: sensor.septa_lansdale_next_southbound
             north: sensor.septa_lansdale_next_northbound
             bus: sensor.septa_lansdale_next_bus
             leave: sensor.septa_lansdale_leave_in
             status: sensor.septa_lansdale_status
+          - type: custom:septa-live-departures
+            name: Lansdale Regional Rail
+            south: sensor.septa_lansdale_southbound_board
+            north: sensor.septa_lansdale_northbound_board
       - type: grid
         cards:
           - type: heading
             heading: Next trains
             heading_style: subtitle
-          - type: tile
+          - type: custom:septa-live-south
             entity: sensor.septa_lansdale_next_southbound
-            name: Southbound
-            icon: mdi:train
-          - type: tile
+            name: Next inbound
+          - type: custom:septa-live-north
             entity: sensor.septa_lansdale_next_northbound
-            name: Northbound
-            icon: mdi:train
+            name: Next outbound
           - type: tile
             entity: sensor.septa_lansdale_leave_in
             name: Leave in
@@ -53,5 +54,14 @@ views:
             content: |
               **Lansdale → Jefferson Station**
               Leave in {{ states('sensor.septa_lansdale_leave_in') }} min
-              Train {{ state_attr('sensor.septa_lansdale_commute', 'train_id') }}
-              {{ state_attr('sensor.septa_lansdale_commute', 'depart') }} → {{ state_attr('sensor.septa_lansdale_commute', 'arrive') }}
+              Train {{ state_attr('sensor.septa_lansdale_next_southbound', 'train_id') }}
+              {{ state_attr('sensor.septa_lansdale_next_southbound', 'clock') }} · {{ state_attr('sensor.septa_lansdale_next_southbound', 'destination') }}
+      - type: grid
+        column_span: 2
+        cards:
+          - type: heading
+            heading: Live map
+            heading_style: subtitle
+          - type: custom:septa-live-map
+            entity: sensor.septa_lansdale_map
+            name: Live map

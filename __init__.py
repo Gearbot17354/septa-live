@@ -1,4 +1,4 @@
-"""SEPTA Live integration."""
+"""SEPTA Transit integration."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from .coordinator import SeptaCoordinator
 _LOGGER = logging.getLogger(__name__)
 _FRONTEND = f"{DOMAIN}_frontend_registered"
 _CARD_JS = "septa-live-card.js"
-_CARD_VERSION = "1.4.7"
+_CARD_VERSION = "1.8.4"
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -40,7 +40,7 @@ def _card_source() -> Path:
 async def _async_register_lovelace_cards(hass: HomeAssistant) -> None:
     source = _card_source()
     if not source.exists():
-        _LOGGER.warning("SEPTA Live card file missing at %s", source)
+        _LOGGER.warning("SEPTA Transit card file missing at %s", source)
         return
 
     await hass.async_add_executor_job(_install_local_card, hass, source)
@@ -56,7 +56,7 @@ async def _async_register_lovelace_cards(hass: HomeAssistant) -> None:
             [StaticPathConfig(f"/{DOMAIN}", str(www), False)]
         )
     except Exception as err:  # noqa: BLE001
-        _LOGGER.debug("SEPTA Live static path already set or unavailable: %s", err)
+        _LOGGER.debug("SEPTA Transit static path already set or unavailable: %s", err)
 
     already = bool(hass.data.get(_FRONTEND))
     if not already:
@@ -66,15 +66,15 @@ async def _async_register_lovelace_cards(hass: HomeAssistant) -> None:
             add_extra_js_url(hass, url_local)
             add_extra_js_url(hass, url_int)
         except Exception as err:  # noqa: BLE001
-            _LOGGER.debug("SEPTA Live extra JS url failed: %s", err)
+            _LOGGER.debug("SEPTA Transit extra JS url failed: %s", err)
 
     registered = await _async_ensure_lovelace_resource(hass, url_local)
     hass.data[_FRONTEND] = True
     if registered:
-        _LOGGER.info("SEPTA Live Lovelace cards registered (%s)", url_local)
+        _LOGGER.info("SEPTA Transit Lovelace cards registered (%s)", url_local)
     else:
         _LOGGER.info(
-            "SEPTA Live card served at %s — add a Lovelace resource if it does not appear",
+            "SEPTA Transit card served at %s — add a Lovelace resource if it does not appear",
             url_local,
         )
 
@@ -113,7 +113,7 @@ async def _async_ensure_lovelace_resource(hass: HomeAssistant, url: str) -> bool
             await resources.async_create_item({"res_type": "module", "url": url})
             return True
     except Exception as err:  # noqa: BLE001
-        _LOGGER.debug("SEPTA Live could not write Lovelace resource: %s", err)
+        _LOGGER.debug("SEPTA Transit could not write Lovelace resource: %s", err)
     return False
 
 

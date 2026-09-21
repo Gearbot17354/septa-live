@@ -1,7 +1,8 @@
-"""Sensors for SEPTA Live."""
+"""Sensors for SEPTA Transit."""
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
@@ -13,25 +14,38 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
-from .coordinator import SeptaCoordinator, slug
+from .coordinator import NY, SeptaCoordinator, slug
+
+
+def _overnight(now: datetime | None = None) -> bool:
+    hour = (now or datetime.now(NY)).hour
+    return hour >= 21 or hour < 5
 
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     coordinator: SeptaCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities(
-        [
-            SeptaMinutesSensor(coordinator, "south", "Next Southbound", "mdi:train"),
-            SeptaMinutesSensor(coordinator, "north", "Next Northbound", "mdi:train"),
-            SeptaMinutesSensor(coordinator, "commute", "Commute", "mdi:city-variant-outline"),
-            SeptaLeaveSensor(coordinator),
-            SeptaStatusSensor(coordinator),
-            SeptaNextBusSensor(coordinator),
-            SeptaServiceCountSensor(coordinator, "metro", "Metro", "mdi:subway-variant"),
-            SeptaServiceCountSensor(coordinator, "trolley", "Trolley", "mdi:tram"),
-        ]
-    )
+    entities: list[SensorEntity] = []
+    if coordinator.show_rail:
+        entities.extend(
+            [
+                SeptaMinutesSensor(coordinator, "south", "Next Inbound", "mdi:train"),
+                SeptaMinutesSensor(coordinator, "north", "Next Outbound", "mdi:train"),
+                SeptaRailBoardSensor(coordinator, "south", "Inbound Board"),
+                SeptaRailBoardSensor(coordinator, "north", "Outbound Board"),
+                SeptaLeaveSensor(coordinator),
+                SeptaStatusSensor(coordinator),
+            ]
+        )
+    if coordinator.show_bus:
+        entities.append(SeptaNextBusSensor(coordinator))
+    if coordinator.show_metro:
+        entities.append(SeptaServiceCountSensor(coordinator, "metro", "Metro", "mdi:subway-variant"))
+    if coordinator.show_trolley:
+        entities.append(SeptaServiceCountSensor(coordinator, "trolley", "Trolley", "mdi:tram"))
+    entities.append(SeptaMapSensor(coordinator))
+    async_add_entities(entities)
 
 
 class _Base(CoordinatorEntity[SeptaCoordinator], SensorEntity):
@@ -69,7 +83,7 @@ class SeptaMinutesSensor(_Base):
             return data.get("next_south")
         if self._key == "north":
             return data.get("next_north")
-        return data.get("next_commute")
+        return None
 
     @property
     def native_value(self) -> int | None:
@@ -87,17 +101,61 @@ class SeptaMinutesSensor(_Base):
             "delay": row.get("status") or row.get("delay"),
             "delay_min": row.get("delay_min"),
             "cancelled": row.get("cancelled"),
+            "destination": row.get("destination"),
+            "track": row.get("track"),
+            "platform": row.get("track"),
+            "clock": row.get("clock"),
         }
-        if self._key == "commute":
-            attrs.update({"depart": row.get("depart"), "arrive": row.get("arrive")})
-        else:
-            attrs.update(
-                {
-                    "destination": row.get("destination"),
-                    "track": row.get("track"),
-                }
-            )
         return attrs
+
+
+class SeptaRailBoardSensor(_Base):
+    """Next five Regional Rail trains in one direction, with platform when posted."""
+
+    def __init__(self, coordinator: SeptaCoordinator, direction: str, name: str) -> None:
+        super().__init__(coordinator, f"{direction}_board")
+        self._direction = direction
+        self._attr_name = name
+        self._attr_icon = "mdi:bulletin-board"
+
+    def _trains(self) -> list[dict[str, Any]]:
+        data = self.coordinator.data or {}
+        key = "southbound_board" if self._direction == "south" else "northbound_board"
+        rows = data.get(key) or []
+        return rows if isinstance(rows, list) else []
+
+    @property
+    def native_value(self) -> str:
+        trains = self._trains()
+        if not trains:
+            return "No more trains" if _overnight() else "No trains"
+        first = trains[0]
+        clock = str(first.get("clock") or "").strip()
+        track = str(first.get("track") or "").strip()
+        if clock and track:
+            return f"{clock} · Trk {track}"
+        if clock:
+            return clock
+        dest = str(first.get("destination") or "").strip()
+        return dest or "Scheduled"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        trains = self._trains()
+        first = trains[0] if trains else {}
+        ended = not trains
+        return {
+            "trains": trains,
+            "count": len(trains),
+            "direction": "inbound" if self._direction == "south" else "outbound",
+            "next_train": first.get("train_id"),
+            "next_destination": first.get("destination"),
+            "next_track": first.get("track"),
+            "platform": first.get("track"),
+            "clock": first.get("clock"),
+            "station": (self.coordinator.data or {}).get("station") or self.coordinator.station,
+            "service_ended": ended,
+        }
 
 
 class SeptaLeaveSensor(_Base):
@@ -116,7 +174,16 @@ class SeptaLeaveSensor(_Base):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        return {"walk_minutes": self.coordinator.walk}
+        data = self.coordinator.data or {}
+        row = data.get("next_commute") or {}
+        return {
+            "walk_minutes": self.coordinator.walk,
+            "destination": self.coordinator.destination,
+            "train_id": row.get("train_id"),
+            "depart": row.get("depart"),
+            "arrive": row.get("arrive"),
+            "line": row.get("line"),
+        }
 
 
 class SeptaStatusSensor(_Base):
@@ -199,4 +266,38 @@ class SeptaServiceCountSensor(_Base):
             "b": pack.get("b"),
             "m": pack.get("m"),
             "gps": pack.get("gps"),
+            "home": pack.get("home"),
+            "destination": pack.get("destination"),
+        }
+
+
+class SeptaMapSensor(_Base):
+    _attr_name = "Map"
+    _attr_icon = "mdi:map-marker-path"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: SeptaCoordinator) -> None:
+        super().__init__(coordinator, "map")
+        self.entity_id = f"sensor.septa_{slug(coordinator.station)}_map"
+
+    def _pack(self) -> dict[str, Any]:
+        return (self.coordinator.data or {}).get("map") or {}
+
+    @property
+    def native_value(self) -> int:
+        vehicles = self._pack().get("vehicles") or []
+        return len(vehicles) if isinstance(vehicles, list) else 0
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        pack = self._pack()
+        home = pack.get("home") or {}
+        vehicles = pack.get("vehicles") or []
+        return {
+            "station": self.coordinator.station,
+            "home_lat": home.get("lat") if isinstance(home, dict) else None,
+            "home_lon": home.get("lon") if isinstance(home, dict) else None,
+            "latitude": home.get("lat") if isinstance(home, dict) else None,
+            "longitude": home.get("lon") if isinstance(home, dict) else None,
+            "vehicles": vehicles if isinstance(vehicles, list) else [],
         }

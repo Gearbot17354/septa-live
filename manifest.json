@@ -1,6 +1,6 @@
 {
   "domain": "septa_live",
-  "name": "SEPTA Live",
+  "name": "SEPTA Transit",
   "codeowners": ["@Gearbot17354"],
   "config_flow": true,
   "dependencies": ["http", "frontend", "lovelace"],
@@ -8,5 +8,5 @@
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/Gearbot17354/septa-live/issues",
   "requirements": [],
-  "version": "1.4.7"
+  "version": "1.8.4"
 }

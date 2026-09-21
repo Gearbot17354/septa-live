@@ -2,13 +2,22 @@
   "config": {
     "step": {
       "user": {
-        "title": "SEPTA Live",
-        "description": "Pick the station to track. Destination builds a commute sensor. Nearby buses are included automatically.",
+        "title": "SEPTA Transit",
+        "description": "Pick the station to track, then turn on only the services you use. Suburban stations like Lansdale typically want Regional Rail and buses — leave Metro and trolley off.",
         "data": {
           "station": "Station",
-          "destination": "Destination",
+          "destination": "Regional Rail destination",
+          "bus_destination": "Bus commute destination (optional)",
+          "metro_station": "Metro home station (optional)",
+          "metro_destination": "Metro commute destination (optional)",
+          "trolley_station": "Trolley home stop (optional)",
+          "trolley_destination": "Trolley commute destination (optional)",
           "walk_minutes": "Walk to station (minutes)",
-          "scan_interval": "Refresh interval (seconds)"
+          "scan_interval": "Refresh interval (seconds)",
+          "show_rail": "Regional Rail",
+          "show_bus": "Buses",
+          "show_metro": "Metro (L, B, M)",
+          "show_trolley": "Trolley (T, G, D)"
         }
       }
     },
@@ -19,11 +28,21 @@
   "options": {
     "step": {
       "init": {
-        "title": "SEPTA Live options",
+        "title": "SEPTA Transit options",
+        "description": "Turn services on or off. Disabled services are not fetched and their sensors are removed.",
         "data": {
-          "destination": "Destination",
+          "destination": "Regional Rail destination",
+          "bus_destination": "Bus commute destination (optional)",
+          "metro_station": "Metro home station (optional)",
+          "metro_destination": "Metro commute destination (optional)",
+          "trolley_station": "Trolley home stop (optional)",
+          "trolley_destination": "Trolley commute destination (optional)",
           "walk_minutes": "Walk to station (minutes)",
-          "scan_interval": "Refresh interval (seconds)"
+          "scan_interval": "Refresh interval (seconds)",
+          "show_rail": "Regional Rail",
+          "show_bus": "Buses",
+          "show_metro": "Metro (L, B, M)",
+          "show_trolley": "Trolley (T, G, D)"
         }
       }
     }

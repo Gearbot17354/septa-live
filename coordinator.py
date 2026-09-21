@@ -1,8 +1,9 @@
-"""Data update coordinator for SEPTA Live."""
+"""Data update coordinator for SEPTA Transit."""
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 import json
@@ -18,12 +19,25 @@ from .const import (
     ALERTS_URL,
     ARRIVALS_URL,
     BUS_SCHEDULES_URL,
+    CONF_BUS_DEST,
     CONF_DESTINATION,
+    CONF_METRO_DEST,
+    CONF_METRO_STATION,
     CONF_SCAN,
+    CONF_SHOW_BUS,
+    CONF_SHOW_METRO,
+    CONF_SHOW_RAIL,
+    CONF_SHOW_TROLLEY,
     CONF_STATION,
+    CONF_TROLLEY_DEST,
+    CONF_TROLLEY_STATION,
     CONF_WALK,
     DEFAULT_DESTINATION,
     DEFAULT_SCAN,
+    DEFAULT_SHOW_BUS,
+    DEFAULT_SHOW_METRO,
+    DEFAULT_SHOW_RAIL,
+    DEFAULT_SHOW_TROLLEY,
     DEFAULT_WALK,
     DOMAIN,
     LOCATIONS_URL,
@@ -31,6 +45,7 @@ from .const import (
     NTA_URL,
     RAIL_LINES,
     STOPS_URL,
+    TRAINVIEW_URL,
     TRANSITVIEW_URL,
     TROLLEY_ROUTE_IDS,
     V2_TRIPS_URL,
@@ -89,6 +104,162 @@ def minutes_until(dt: datetime | None, now: datetime) -> int | None:
     if dt is None:
         return None
     return int(round((dt - now).total_seconds() / 60))
+
+
+def format_clock(dt: datetime | None) -> str:
+    if dt is None:
+        return ""
+    hour = dt.hour % 12 or 12
+    ap = "AM" if dt.hour < 12 else "PM"
+    return f"{hour}:{dt.minute:02d} {ap}"
+
+
+BOARD_LIMIT = 5
+_LINE_NAMES = {
+    "AIR": "Airport",
+    "CHE": "Chestnut Hill East",
+    "CHW": "Chestnut Hill West",
+    "CYN": "Cynwyd",
+    "FOX": "Fox Chase",
+    "LAN": "Lansdale/Doylestown",
+    "MED": "Media/Wawa",
+    "NOR": "Manayunk/Norristown",
+    "PAO": "Paoli/Thorndale",
+    "TRE": "Trenton",
+    "WAR": "Warminster",
+    "WTR": "West Trenton",
+    "WIL": "Wilmington/Newark",
+}
+_SCHEDULE: dict[str, Any] | None = None
+
+
+def _load_schedule() -> dict[str, Any]:
+    global _SCHEDULE
+    if _SCHEDULE is None:
+        path = Path(__file__).with_name("rail-schedule.json")
+        try:
+            _SCHEDULE = json.loads(path.read_text())
+        except OSError:
+            _SCHEDULE = {"stations": {}}
+    return _SCHEDULE
+
+
+def _station_schedule(station: str) -> dict[str, Any] | None:
+    stations = (_load_schedule().get("stations") or {}) if isinstance(_load_schedule(), dict) else {}
+    if not isinstance(stations, dict):
+        return None
+    want = station.strip().lower()
+    for key, pack in stations.items():
+        if str(key).lower() == want:
+            return pack if isinstance(pack, dict) else None
+    for key, pack in stations.items():
+        k = str(key).lower()
+        if want in k or k in want:
+            return pack if isinstance(pack, dict) else None
+    return None
+
+
+def _trip_dt(service_day: date, hhmm: str) -> datetime | None:
+    parts = hhmm.split(":")
+    if len(parts) < 2:
+        return None
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+    except ValueError:
+        return None
+    extra = 0
+    if hour >= 24:
+        extra = hour // 24
+        hour %= 24
+    dt = datetime(service_day.year, service_day.month, service_day.day, hour, minute, tzinfo=NY)
+    if extra:
+        dt += timedelta(days=extra)
+    return dt
+
+
+def _scheduled_fill(station: str, direction: str, now: datetime) -> list[dict[str, Any]]:
+    pack = _station_schedule(station)
+    if not pack:
+        return []
+    trips = pack.get(direction) or []
+    if not isinstance(trips, list):
+        return []
+    today = now.date()
+    found: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for offset in (-1, 0, 1):
+        day = today + timedelta(days=offset)
+        js_dow = (day.weekday() + 1) % 7
+        for trip in trips:
+            if not isinstance(trip, dict):
+                continue
+            days = int(trip.get("days") or 0)
+            if not days & (1 << js_dow):
+                continue
+            dt = _trip_dt(day, str(trip.get("t") or ""))
+            if dt is None or dt <= now:
+                continue
+            key = f"{dt.isoformat()}-{trip.get('n')}-{trip.get('d')}"
+            if key in seen:
+                continue
+            seen.add(key)
+            line_id = str(trip.get("line") or "")
+            found.append(
+                {
+                    "train_id": str(trip.get("n") or ""),
+                    "destination": str(trip.get("d") or ""),
+                    "origin": "",
+                    "line": _LINE_NAMES.get(line_id, line_id),
+                    "status": "Scheduled",
+                    "delay_min": 0,
+                    "cancelled": False,
+                    "track": "",
+                    "clock": format_clock(dt),
+                    "sched_dt": dt,
+                    "minutes": minutes_until(dt, now),
+                    "scheduled": True,
+                }
+            )
+    found.sort(key=lambda row: row.get("sched_dt") or now)
+    return found[:BOARD_LIMIT]
+
+
+def _pad_schedule(
+    station: str, direction: str, live: list[dict[str, Any]], now: datetime
+) -> list[dict[str, Any]]:
+    for row in live:
+        if row.get("minutes") is None:
+            row["minutes"] = minutes_until(row.get("sched_dt"), now)
+    if len(live) >= BOARD_LIMIT:
+        return live[:BOARD_LIMIT]
+    extra = _scheduled_fill(station, direction, now)
+    last = live[-1].get("sched_dt") if live else None
+    seen = {str(row.get("train_id") or "") for row in live}
+    for row in extra:
+        tid = str(row.get("train_id") or "")
+        when = row.get("sched_dt")
+        if tid in seen:
+            continue
+        if last is not None and when is not None and when <= last:
+            continue
+        live.append(row)
+        if len(live) >= BOARD_LIMIT:
+            break
+    return live[:BOARD_LIMIT]
+
+
+def _ll(item: dict[str, Any]) -> tuple[float, float] | None:
+    try:
+        lat = float(item.get("lat"))
+        lon = float(item.get("lng") or item.get("lon") or item.get("longitude"))
+    except (TypeError, ValueError):
+        return None
+    if lat == 0 and lon == 0:
+        return None
+    if not -90 <= lat <= 90 or not -180 <= lon <= 180:
+        return None
+    return lat, lon
 
 
 def slug(name: str) -> str:
@@ -205,6 +376,17 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 seen.add(key)
                 unique.append(trip)
             unique.sort(key=lambda t: t.get("sched_dt") or now + timedelta(days=30))
+            if self.bus_dest:
+                want = _norm_name(self.bus_dest)
+                unique = [
+                    t
+                    for t in unique
+                    if want
+                    and (
+                        want in _norm_name(str(t.get("destination") or ""))
+                        or _norm_name(str(t.get("destination") or "")) in want
+                    )
+                ]
             return unique[:12]
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("Bus lookup failed: %s", err)
@@ -232,12 +414,70 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     buses.append(item)
         return buses
 
-    async def _load_metro(self) -> tuple[dict[str, Any], dict[str, Any]]:
-        empty = {"count": 0, "summary": "None reporting", "routes": {}}
-        metro = {"count": 0, "summary": "None reporting", "l": 0, "b": 0, "m": 0, "routes": {}}
-        trolley = {"count": 0, "summary": "None reporting", "gps": 0, "routes": {}}
+    async def _load_map_vehicles(
+        self, buses: list[dict[str, Any]], metro_vehicles: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        vehicles: list[dict[str, Any]] = list(metro_vehicles)
+        if self.show_rail:
+            try:
+                raw = await self._get(TRAINVIEW_URL, {})
+                rows = raw if isinstance(raw, list) else []
+                for item in rows:
+                    if not isinstance(item, dict):
+                        continue
+                    point = _ll(item)
+                    if not point:
+                        continue
+                    vehicles.append(
+                        {
+                            "id": str(item.get("trainno") or item.get("train_id") or ""),
+                            "kind": "rail",
+                            "lat": point[0],
+                            "lon": point[1],
+                            "dest": str(item.get("dest") or item.get("destination") or ""),
+                            "line": str(item.get("line") or ""),
+                            "late": item.get("late") or 0,
+                            "next": str(item.get("nextstop") or item.get("next_stop") or ""),
+                        }
+                    )
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("TrainView failed: %s", err)
+        if self.show_bus:
+            try:
+                live = await self._live_buses(buses)
+                for item in live:
+                    point = _ll(item)
+                    if not point:
+                        continue
+                    vehicles.append(
+                        {
+                            "id": str(item.get("VehicleID") or item.get("label") or ""),
+                            "kind": "bus",
+                            "lat": point[0],
+                            "lon": point[1],
+                            "dest": str(item.get("destination") or ""),
+                            "line": str(item.get("route_id") or item.get("Route") or ""),
+                            "late": item.get("late") or 0,
+                            "next": str(item.get("next_stop_name") or item.get("nextstop") or ""),
+                        }
+                    )
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("Bus map lookup failed: %s", err)
+        return vehicles[:120]
+
+    async def _load_metro(self) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+        empty = {"count": 0, "summary": "Off", "routes": {}}
+        metro = {"count": 0, "summary": "Off", "l": 0, "b": 0, "m": 0, "routes": {}}
+        trolley = {"count": 0, "summary": "Off", "gps": 0, "routes": {}}
+        vehicles: list[dict[str, Any]] = []
+        ids: list[str] = []
+        if self.show_metro:
+            ids.extend(METRO_ROUTE_IDS)
+        if self.show_trolley:
+            ids.extend(TROLLEY_ROUTE_IDS)
+        if not ids:
+            return metro, trolley, vehicles
         try:
-            ids = METRO_ROUTE_IDS + TROLLEY_ROUTE_IDS
             rows: list[dict[str, Any]] = []
             for route_id in ids:
                 try:
@@ -252,6 +492,10 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             metro_n = trolley_n = 0
             for item in rows:
                 route = str(item.get("route_id") or "")
+                home = self.metro_home if route in METRO_ROUTE_IDS else self.trolley_home
+                dest = self.metro_dest if route in METRO_ROUTE_IDS else self.trolley_dest
+                if not _matches_commute(item, home, dest):
+                    continue
                 if route in METRO_ROUTE_IDS:
                     metro_n += 1
                     metro_routes[route] = metro_routes.get(route, 0) + 1
@@ -267,6 +511,20 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     lat = item.get("lat")
                     if lat not in (None, "", "None"):
                         gps += 1
+                point = _ll(item)
+                if point:
+                    vehicles.append(
+                        {
+                            "id": str(item.get("trip_id") or item.get("vehicle_id") or route),
+                            "kind": "metro" if route in METRO_ROUTE_IDS else "trolley",
+                            "lat": point[0],
+                            "lon": point[1],
+                            "dest": str(item.get("destination") or item.get("headsign") or ""),
+                            "line": route,
+                            "late": item.get("late") or 0,
+                            "next": str(item.get("next_stop_name") or ""),
+                        }
+                    )
             metro = {
                 "count": metro_n,
                 "summary": f"{l} L · {b} B · {m_count} M" if metro_n else "None reporting",
@@ -274,17 +532,21 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "b": b,
                 "m": m_count,
                 "routes": metro_routes,
+                "home": self.metro_home,
+                "destination": self.metro_dest,
             }
             trolley = {
                 "count": trolley_n,
                 "summary": f"{gps} with GPS" if trolley_n else "None reporting",
                 "gps": gps,
                 "routes": trolley_routes,
+                "home": self.trolley_home,
+                "destination": self.trolley_dest,
             }
-            return metro, trolley
+            return metro, trolley, vehicles
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("Metro lookup failed: %s", err)
-            return empty | {"l": 0, "b": 0, "m": 0}, empty | {"gps": 0}
+            return empty | {"l": 0, "b": 0, "m": 0}, empty | {"gps": 0}, []
 
     async def _station_coords(self) -> tuple[float, float] | None:
         want = _norm_name(self.station)
@@ -316,9 +578,53 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             CONF_DESTINATION, self.entry.data.get(CONF_DESTINATION, DEFAULT_DESTINATION)
         )
 
+    def _opt_str(self, key: str) -> str:
+        return str(self.entry.options.get(key, self.entry.data.get(key, "")) or "").strip()
+
+    @property
+    def bus_dest(self) -> str:
+        return self._opt_str(CONF_BUS_DEST)
+
+    @property
+    def metro_home(self) -> str:
+        return self._opt_str(CONF_METRO_STATION)
+
+    @property
+    def metro_dest(self) -> str:
+        return self._opt_str(CONF_METRO_DEST)
+
+    @property
+    def trolley_home(self) -> str:
+        return self._opt_str(CONF_TROLLEY_STATION)
+
+    @property
+    def trolley_dest(self) -> str:
+        return self._opt_str(CONF_TROLLEY_DEST)
+
     @property
     def walk(self) -> int:
         return int(self.entry.options.get(CONF_WALK, self.entry.data.get(CONF_WALK, DEFAULT_WALK)))
+
+    def _flag(self, key: str, default: bool) -> bool:
+        if key in self.entry.options:
+            return bool(self.entry.options[key])
+        return bool(self.entry.data.get(key, default))
+
+    @property
+    def show_rail(self) -> bool:
+        return self._flag(CONF_SHOW_RAIL, DEFAULT_SHOW_RAIL)
+
+    @property
+    def show_bus(self) -> bool:
+        return self._flag(CONF_SHOW_BUS, DEFAULT_SHOW_BUS)
+
+    @property
+    def show_metro(self) -> bool:
+        return self._flag(CONF_SHOW_METRO, DEFAULT_SHOW_METRO)
+
+    @property
+    def show_trolley(self) -> bool:
+        return self._flag(CONF_SHOW_TROLLEY, DEFAULT_SHOW_TROLLEY)
 
     async def _get(self, url: str, params: dict[str, Any]) -> Any:
         async with self.session.get(url, params=params, timeout=20) as resp:
@@ -329,23 +635,33 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _async_update_data(self) -> dict[str, Any]:
         now = datetime.now(NY)
-        try:
-            arrivals_raw = await self._get(
-                ARRIVALS_URL, {"station": self.station, "results": 8}
-            )
-            nta_raw = await self._get(
-                NTA_URL,
-                {"req1": self.station, "req2": self.destination, "req3": 6},
-            )
-            alerts_raw = await self._get(ALERTS_URL, {})
-        except Exception as err:  # noqa: BLE001
-            raise UpdateFailed(f"SEPTA request failed: {err}") from err
+        north: list[dict[str, Any]] = []
+        south: list[dict[str, Any]] = []
+        commute: list[dict[str, Any]] = []
+        alerts: list[dict[str, Any]] = []
+        if self.show_rail:
+            try:
+                arrivals_raw = await self._get(
+                    ARRIVALS_URL, {"station": self.station, "results": BOARD_LIMIT}
+                )
+                nta_raw = await self._get(
+                    NTA_URL,
+                    {"req1": self.station, "req2": self.destination, "req3": 6},
+                )
+                alerts_raw = await self._get(ALERTS_URL, {})
+            except Exception as err:  # noqa: BLE001
+                raise UpdateFailed(f"SEPTA request failed: {err}") from err
 
-        north, south = _parse_arrivals(arrivals_raw)
-        commute = _parse_nta(nta_raw, now)
-        alerts = _parse_alerts(alerts_raw, self.station)
-        buses = await self._load_buses(now)
-        metro, trolley = await self._load_metro()
+            north, south = _parse_arrivals(arrivals_raw)
+            north = _pad_schedule(self.station, "N", north, now)
+            south = _pad_schedule(self.station, "S", south, now)
+            commute = _parse_nta(nta_raw, now)
+            alerts = _parse_alerts(alerts_raw, self.station)
+
+        buses = await self._load_buses(now) if self.show_bus else []
+        metro, trolley, metro_vehicles = await self._load_metro()
+        coords = await self._station_coords()
+        map_vehicles = await self._load_map_vehicles(buses, metro_vehicles)
 
         next_s = south[0] if south else None
         next_n = north[0] if north else None
@@ -359,7 +675,9 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         for row in north + south:
             worst = max(worst, int(row.get("delay_min") or 0))
         status = "On Time"
-        if any(a.get("suspended") for a in alerts):
+        if not self.show_rail:
+            status = "Rail off"
+        elif any(a.get("suspended") for a in alerts):
             status = "Suspended"
         elif worst >= 10:
             status = f"{worst} min delay"
@@ -373,10 +691,11 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "destination": self.destination,
             "northbound": north,
             "southbound": south,
-            "commute": commute,
             "alerts": alerts,
             "next_south": next_s,
             "next_north": next_n,
+            "southbound_board": _board_pack(south),
+            "northbound_board": _board_pack(north),
             "next_commute": next_c,
             "next_bus": next_bus,
             "buses": buses,
@@ -384,6 +703,10 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "status": status,
             "metro": metro,
             "trolley": trolley,
+            "map": {
+                "home": {"lat": coords[0], "lon": coords[1]} if coords else None,
+                "vehicles": map_vehicles,
+            },
             "updated": now.isoformat(),
         }
 
@@ -400,10 +723,33 @@ def _train(raw: dict[str, Any]) -> dict[str, Any]:
         "status": status,
         "delay_min": delay,
         "cancelled": cancelled,
-        "track": str(raw.get("track_change") or raw.get("track") or ""),
+        "track": str(raw.get("track_change") or raw.get("track") or "").strip(),
+        "clock": format_clock(sched),
         "sched_dt": sched,
         "minutes": None,
     }
+
+
+def _board_pack(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in rows[:BOARD_LIMIT]:
+        track = str(row.get("track") or "").strip()
+        out.append(
+            {
+                "train_id": row.get("train_id") or "",
+                "destination": row.get("destination") or "",
+                "line": row.get("line") or "",
+                "clock": row.get("clock") or "",
+                "minutes": row.get("minutes"),
+                "track": track,
+                "platform": track,
+                "status": row.get("status") or "",
+                "delay_min": row.get("delay_min") or 0,
+                "cancelled": bool(row.get("cancelled")),
+                "scheduled": bool(row.get("scheduled")),
+            }
+        )
+    return out
 
 
 def _parse_arrivals(raw: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -430,6 +776,22 @@ def _parse_arrivals(raw: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]
                 row["minutes"] = minutes_until(row["sched_dt"], now)
                 south.append(row)
     return north, south
+
+
+def _matches_commute(item: dict[str, Any], home: str, dest: str) -> bool:
+    hn = _norm_name(home)
+    dn = _norm_name(dest)
+    if not hn and not dn:
+        return True
+    nxt = _norm_name(str(item.get("next_stop_name") or ""))
+    head = _norm_name(str(item.get("trip_headsign") or item.get("destination") or ""))
+    at_home = bool(hn) and (hn in nxt or nxt in hn or hn in head or head in hn)
+    to_dest = bool(dn) and (dn in head or head in dn)
+    if hn and dn:
+        return to_dest or at_home
+    if dn:
+        return to_dest
+    return at_home
 
 
 def _parse_nta(raw: Any, now: datetime) -> list[dict[str, Any]]:
