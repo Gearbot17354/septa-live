@@ -1,8 +1,31 @@
 (() => {
-  const CARD_VERSION = "1.4.6";
+  const CARD_VERSION = "1.4.7";
   const ONTIME = "#7dba98";
   const LATE = "#d4a054";
   const CRIT = "#d0726a";
+  const LINE = {
+    L: { bg: "#1c9ad6", fg: "#fff" },
+    B: { bg: "#f26100", fg: "#fff" },
+    M: { bg: "#613393", fg: "#fff" },
+    T: { bg: "#5a960a", fg: "#fff" },
+    G: { bg: "#fcd602", fg: "#1a1919" },
+    D: { bg: "#e5427b", fg: "#fff" },
+  };
+  const MODE_FOR = {
+    commute: "rail",
+    south: "rail",
+    north: "rail",
+    bus: "bus",
+    metro: "metro",
+    trolley: "trolley",
+    leave: "walk",
+    status: "status",
+    map: "map",
+  };
+  const LETTERS_FOR = {
+    metro: ["L", "B", "M"],
+    trolley: ["T", "G", "D"],
+  };
 
   function esc(value) {
     return String(value ?? "")
@@ -51,6 +74,39 @@
 
   function attr(state, key) {
     return (state && state.attributes && state.attributes[key]) || "";
+  }
+
+  function circleIcon(inner) {
+    return `<svg class="mode" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="11" fill="#231f20" stroke="#fff" stroke-width="1.15"/>${inner}</svg>`;
+  }
+
+  const MODE_SVG = {
+    metro: `<svg class="mode" viewBox="0 0 500 500" aria-hidden="true"><circle cx="250" cy="250" r="240" fill="#231f20" stroke="#fff" stroke-width="16"/><path fill="#fff" d="M197.7 412.9l125.2-107.4H166.6L56 194.5 162.7 86.8h139.4L176.8 194.2h156.3l110.7 111.1-106.6 107.5H197.7Zm115.8-117.9-86.5-86.5c-2.3-2.3-5.5-3.6-8.7-3.7h-32l86.1 86.1c2.6 2.6 6.1 4 9.7 4h31.4z"/></svg>`,
+    bus: circleIcon(`<rect x="5.4" y="8.4" width="13.2" height="6.6" rx="1.15" fill="#fff"/><rect x="6.15" y="9.05" width="4.7" height="2.7" rx="0.35" fill="#231f20"/><rect x="11.5" y="9.05" width="6.2" height="2.7" rx="0.35" fill="#231f20"/><circle cx="8.15" cy="15.7" r="1.2" fill="#fff"/><circle cx="15.85" cy="15.7" r="1.2" fill="#fff"/><circle cx="8.15" cy="15.7" r="0.55" fill="#231f20"/><circle cx="15.85" cy="15.7" r="0.55" fill="#231f20"/>`),
+    rail: circleIcon(`<path fill="#fff" d="M6.2 9.1h11.6c.7 0 1.2.5 1.2 1.15v4.4c0 .55-.35 1.02-.86 1.18l-1.34.4H7.2l-1.34-.4A1.24 1.24 0 0 1 5 14.65v-4.4c0-.65.5-1.15 1.2-1.15Z"/><rect x="6.5" y="9.7" width="4.1" height="2.55" rx="0.35" fill="#231f20"/><rect x="11.2" y="9.7" width="6.2" height="2.55" rx="0.35" fill="#231f20"/><circle cx="8.3" cy="16.15" r="1.15" fill="#fff"/><circle cx="15.7" cy="16.15" r="1.15" fill="#fff"/><circle cx="8.3" cy="16.15" r="0.5" fill="#231f20"/><circle cx="15.7" cy="16.15" r="0.5" fill="#231f20"/>`),
+    trolley: circleIcon(`<path stroke="#fff" stroke-width="1.1" stroke-linecap="round" d="M12 4.6v3.4M12 4.6 16.4 6" fill="none"/><rect x="5.5" y="8.2" width="13" height="6.5" rx="1.1" fill="#fff"/><rect x="6.3" y="8.9" width="3.7" height="2.5" rx="0.3" fill="#231f20"/><rect x="10.5" y="8.9" width="3.4" height="2.5" rx="0.3" fill="#231f20"/><rect x="14.4" y="8.9" width="3.2" height="2.5" rx="0.3" fill="#231f20"/><circle cx="8.2" cy="15.5" r="1.15" fill="#fff"/><circle cx="15.8" cy="15.5" r="1.15" fill="#fff"/><circle cx="8.2" cy="15.5" r="0.5" fill="#231f20"/><circle cx="15.8" cy="15.5" r="0.5" fill="#231f20"/>`),
+    walk: circleIcon(`<circle cx="13.1" cy="7.05" r="1.35" fill="#fff"/><path fill="#fff" d="M12.2 9.1 9.4 11.2l.85 1.05 1.7-1.25v2.55l-2.35 4.05 1.2.7 1.85-3.2 1.55 3.2 1.2-.7-2.05-4.3.25-2.35 1.7 1.4.85-1.1-2.95-2.25z"/>`),
+    status: circleIcon(`<path fill="#fff" d="M12 6.2 17.6 16.4H6.4L12 6.2z"/><rect x="11.35" y="9.5" width="1.3" height="3.4" rx="0.4" fill="#231f20"/><circle cx="12" cy="14.35" r="0.7" fill="#231f20"/>`),
+    map: circleIcon(`<path fill="#fff" d="M8.2 6.6 12 8.1l3.8-1.5 2.4 1.1v9.7l-2.4-1.1-3.8 1.5-3.8-1.5-2.4 1.1V7.7l2.4-1.1z"/>`),
+  };
+
+  function modeIcon(kind) {
+    return MODE_SVG[kind] || MODE_SVG.rail;
+  }
+
+  function bullet(letter) {
+    const c = LINE[letter] || { bg: "#333", fg: "#fff" };
+    return `<span class="bullet" style="background:${c.bg};color:${c.fg}">${esc(letter)}</span>`;
+  }
+
+  function bulletRow(letters) {
+    if (!letters || !letters.length) return "";
+    return `<span class="bullets">${letters.map(bullet).join("")}</span>`;
+  }
+
+  function pill(text) {
+    if (!text) return "";
+    return `<span class="pill">${esc(text)}</span>`;
   }
 
   const BASE_CSS = `
@@ -104,6 +160,27 @@
     .bubble-map { width: 100%; height: 180px; border: 0; display: block; background: #0b0e13; }
     .stack { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 8px 12px 14px; }
     .stack .bubble { min-width: 0; }
+    .mode {
+      width: 28px; height: 28px; display: block; flex-shrink: 0;
+    }
+    .bubble .mode { width: 26px; height: 26px; }
+    .title-row {
+      display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    }
+    .title-row .left { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .bullets { display: inline-flex; gap: 3px; flex-shrink: 0; }
+    .bullet {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 20px; height: 20px; border-radius: 2px;
+      font-family: Roboto, IBM Plex Sans, system-ui, sans-serif;
+      font-weight: 700; font-size: 12px; line-height: 1;
+    }
+    .pill {
+      display: inline-flex; align-items: center; justify-content: center;
+      height: 18px; padding: 0 8px; border-radius: 999px;
+      background: #111; color: #fff; font-size: 11px; font-weight: 700; letter-spacing: 0.02em;
+    }
+    .kicker-row { display: flex; align-items: center; gap: 8px; }
     @media (max-width: 420px) {
       .grid { grid-template-columns: 1fr; }
       .cell.wide { grid-column: auto; }
@@ -119,6 +196,19 @@
       detail: { entityId },
     });
     host.dispatchEvent(ev);
+  }
+
+  function modeForEntity(state, fallback) {
+    if (fallback) return fallback;
+    if (!state) return "rail";
+    if (attr(state, "route")) return "bus";
+    const id = String(state.entity_id || "");
+    if (id.endsWith("_metro")) return "metro";
+    if (id.endsWith("_trolley")) return "trolley";
+    if (id.endsWith("_leave_in")) return "walk";
+    if (id.endsWith("_status")) return "status";
+    if (id.endsWith("_next_bus")) return "bus";
+    return "rail";
   }
 
   class SeptaLiveCard extends HTMLElement {
@@ -195,12 +285,18 @@
       const live = attr(state, "live") ? " · live" : "";
       const kicker = name || (isBus ? "SEPTA Bus" : "SEPTA Live");
       const color = tone(delay, cancelled);
+      const kind = modeForEntity(state, isBus ? "bus" : "rail");
+      const letters = LETTERS_FOR[kind] || [];
+      const extra = isBus ? pill(attr(state, "route")) : bulletRow(letters);
       this.shadowRoot.innerHTML = `
         <style>${BASE_CSS}</style>
         <ha-card>
           <button class="hit" type="button">
             <div class="wrap">
-              <div class="kicker">${esc(kicker)}</div>
+              <div class="title-row">
+                <div class="kicker-row">${modeIcon(kind)}<div class="kicker">${esc(kicker)}</div></div>
+                ${extra}
+              </div>
               <div class="row">
                 <div class="clock">${esc(clock || minutesOf(state))}</div>
                 <div class="mins" style="color:${color}">${esc(minutesOf(state))}</div>
@@ -276,10 +372,13 @@
       };
     }
 
-    _cell(label, entity, value, hint, color) {
+    _cell(label, entity, value, hint, color, kind, extra) {
       return `
         <button class="hit cell" type="button" data-entity="${esc(entity)}">
-          <div class="label">${esc(label)}</div>
+          <div class="title-row">
+            <div class="kicker-row">${modeIcon(kind)}<div class="label">${esc(label)}</div></div>
+            ${extra || ""}
+          </div>
           <div class="clock" style="font-size:24px;margin-top:6px;color:${color || "inherit"}">${esc(value)}</div>
           ${hint ? `<div class="hint">${esc(hint)}</div>` : ""}
         </button>
@@ -304,21 +403,21 @@
       const southClock = attr(south, "clock") || minutesOf(south);
       const northClock = attr(north, "clock") || minutesOf(north);
       const busClock = attr(bus, "clock") || minutesOf(bus);
-      const busRoute = attr(bus, "route") ? `Route ${attr(bus, "route")}` : "Next bus";
+      const busRoute = attr(bus, "route") ? `Bus ${attr(bus, "route")}` : "Next bus";
 
       this.shadowRoot.innerHTML = `
         <style>${BASE_CSS}</style>
         <ha-card>
           <div class="head">
-            <div class="kicker">${esc(cfg.name || "SEPTA Live")}</div>
+            <div class="kicker-row">${modeIcon("rail")}<div class="kicker">${esc(cfg.name || "SEPTA Live")}</div></div>
             <div class="status" style="color:${statusColor}">${esc(statusText)}</div>
           </div>
           <div class="grid">
-            ${this._cell("Commute", cfg.commute, commuteClock, `${minutesOf(commute)} · ${delayLabel(commuteDelay, false, attr(commute, "delay"))}`, tone(commuteDelay, false))}
-            ${this._cell("Leave in", cfg.leave, leave ? minutesOf(leave) : "—", attr(leave, "walk_minutes") ? `${attr(leave, "walk_minutes")} min walk` : "Walk window", leaveColor)}
-            ${this._cell("Southbound", cfg.south, southClock, minutesOf(south), tone(Number(attr(south, "delay_min") || 0), false))}
-            ${this._cell("Northbound", cfg.north, northClock, minutesOf(north), tone(Number(attr(north, "delay_min") || 0), false))}
-            ${this._cell(busRoute, cfg.bus, busClock, `${minutesOf(bus)}${attr(bus, "destination") ? " · " + attr(bus, "destination") : ""}`, tone(busDelay, false)).replace('class="hit cell"', 'class="hit cell wide"')}
+            ${this._cell("Commute", cfg.commute, commuteClock, `${minutesOf(commute)} · ${delayLabel(commuteDelay, false, attr(commute, "delay"))}`, tone(commuteDelay, false), "rail")}
+            ${this._cell("Leave in", cfg.leave, leave ? minutesOf(leave) : "—", attr(leave, "walk_minutes") ? `${attr(leave, "walk_minutes")} min walk` : "Walk window", leaveColor, "walk")}
+            ${this._cell("Southbound", cfg.south, southClock, minutesOf(south), tone(Number(attr(south, "delay_min") || 0), false), "rail")}
+            ${this._cell("Northbound", cfg.north, northClock, minutesOf(north), tone(Number(attr(north, "delay_min") || 0), false), "rail")}
+            ${this._cell(busRoute, cfg.bus, busClock, `${minutesOf(bus)}${attr(bus, "destination") ? " · " + attr(bus, "destination") : ""}`, tone(busDelay, false), "bus", attr(bus, "route") ? pill(attr(bus, "route")) : "").replace('class="hit cell"', 'class="hit cell wide"')}
           </div>
         </ha-card>
       `;
@@ -485,6 +584,9 @@
       const state = stateOf(this._hass, entity);
       const delay = Number(attr(state, "delay_min") || 0);
       const color = tone(delay, Boolean(state && state.attributes && state.attributes.cancelled));
+      const kind = MODE_FOR[id] || "rail";
+      const letters = LETTERS_FOR[id] || [];
+      let extra = bulletRow(letters);
       if (id === "commute") {
         return {
           label: "Commute",
@@ -492,6 +594,8 @@
           hint: state ? `${minutesOf(state)}${attr(state, "train_id") ? " · #" + attr(state, "train_id") : ""}` : "Missing",
           color,
           entity,
+          kind,
+          extra,
         };
       }
       if (id === "leave") {
@@ -502,6 +606,8 @@
           hint: attr(state, "walk_minutes") ? `${attr(state, "walk_minutes")} min walk` : "Walk window",
           color: n != null && n <= 2 ? LATE : ONTIME,
           entity,
+          kind,
+          extra,
         };
       }
       if (id === "south" || id === "north") {
@@ -511,15 +617,20 @@
           hint: minutesOf(state),
           color,
           entity,
+          kind,
+          extra,
         };
       }
       if (id === "bus") {
+        extra = attr(state, "route") ? pill(attr(state, "route")) : extra;
         return {
           label: attr(state, "route") ? `Bus ${attr(state, "route")}` : "Next bus",
           value: attr(state, "clock") || minutesOf(state),
           hint: `${minutesOf(state)}${attr(state, "destination") ? " · " + attr(state, "destination") : ""}`,
           color,
           entity,
+          kind,
+          extra,
         };
       }
       if (id === "status") {
@@ -530,6 +641,8 @@
           hint: "Line",
           color: /suspend|alert|delay/i.test(text) ? LATE : ONTIME,
           entity,
+          kind,
+          extra,
         };
       }
       if (id === "metro") {
@@ -539,6 +652,8 @@
           hint: attr(state, "summary") || "L · B · M",
           color: ONTIME,
           entity,
+          kind,
+          extra,
         };
       }
       if (id === "trolley") {
@@ -548,15 +663,20 @@
           hint: attr(state, "summary") || "T · G · D",
           color: ONTIME,
           entity,
+          kind,
+          extra,
         };
       }
-      return { label: id, value: "—", hint: "", color: ONTIME, entity };
+      return { label: id, value: "—", hint: "", color: ONTIME, entity, kind, extra };
     }
 
     _bubble(face, extraClass) {
       return `
         <button class="bubble ${extraClass || ""}" type="button" data-entity="${esc(face.entity || "")}">
-          <div class="label">${esc(face.label)}</div>
+          <div class="title-row">
+            <div class="left">${modeIcon(face.kind)}<div class="label">${esc(face.label)}</div></div>
+            ${face.extra || ""}
+          </div>
           <div class="value" style="color:${face.color}">${esc(face.value)}</div>
           <div class="hint">${esc(face.hint)}</div>
         </button>
@@ -598,7 +718,7 @@
       if (id === "map") {
         const url = this._config.map_url || "";
         if (!url) {
-          return this._bubble({ label: "Live map", value: "Set map_url", hint: "Paste the embed map URL", color: LATE, entity: "" }, extraClass);
+          return this._bubble({ label: "Live map", value: "Set map_url", hint: "Paste the embed map URL", color: LATE, entity: "", kind: "map", extra: "" }, extraClass);
         }
         return `<div class="bubble is-map ${extraClass || ""}"><iframe class="bubble-map" src="${esc(url)}" title="SEPTA live map" loading="lazy" referrerpolicy="no-referrer"></iframe></div>`;
       }
@@ -651,9 +771,16 @@
           .cap { font-size: 12px; opacity: 0.65; margin: 4px 0 10px; }
           .row {
             display: flex; align-items: center; justify-content: space-between;
-            min-height: 48px; cursor: pointer; user-select: none;
+            min-height: 48px; cursor: pointer; user-select: none; gap: 10px;
           }
-          .row span { font-size: 14px; }
+          .row .name { display: flex; align-items: center; gap: 10px; font-size: 14px; }
+          .row .mode { width: 28px; height: 28px; }
+          .bullets { display: inline-flex; gap: 3px; }
+          .bullet {
+            display: inline-flex; align-items: center; justify-content: center;
+            width: 18px; height: 18px; border-radius: 2px;
+            font-weight: 700; font-size: 11px; line-height: 1;
+          }
           .sw {
             width: 36px; height: 20px; border-radius: 12px; position: relative;
             background: var(--switch-unchecked-track-color, #63666b);
@@ -672,13 +799,14 @@
         <div class="form"></div>
       `;
       const mods = this.shadowRoot.querySelector(".mods");
-      mods.innerHTML = MODULE_ORDER.map(
-        (id) => `
+      mods.innerHTML = MODULE_ORDER.map((id) => {
+        const letters = LETTERS_FOR[id] || [];
+        return `
         <div class="row" data-mod="${id}">
-          <span>${MODULE_LABELS[id]}</span>
+          <span class="name">${modeIcon(MODE_FOR[id] || "rail")}<span>${MODULE_LABELS[id]}</span>${bulletRow(letters)}</span>
           <div class="sw"><div class="knob"></div></div>
-        </div>`,
-      ).join("");
+        </div>`;
+      }).join("");
       mods.querySelectorAll(".row").forEach((row) => {
         row.addEventListener("click", () => {
           const id = row.getAttribute("data-mod");
