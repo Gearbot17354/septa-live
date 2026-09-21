@@ -23,6 +23,9 @@ views:
             name: Lansdale Regional Rail
             south: sensor.septa_lansdale_southbound_board
             north: sensor.septa_lansdale_northbound_board
+            station: Lansdale
+            direction: south
+            size: regular
       - type: grid
         cards:
           - type: heading

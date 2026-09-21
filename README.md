@@ -12,7 +12,7 @@ This is a **custom repository** — the same way most community plugins are inst
 2. Open the three-dot menu → **Custom repositories**.
 3. Paste `https://github.com/Gearbot17354/septa-live`.
 4. Category: **Integration**.
-5. **Add**, then find **SEPTA Transit** and **Download** **1.8.6**.
+5. **Add**, then find **SEPTA Transit** and **Download** **1.8.7**.
 6. **Restart Home Assistant**.
 7. **Settings → Devices & Services → Add Integration → SEPTA Transit**.
 8. Pick a station (for example Lansdale) and a destination (Jefferson Station) used for the leave-now countdown.
@@ -26,11 +26,19 @@ Repo: [github.com/Gearbot17354/septa-live](https://github.com/Gearbot17354/septa
 If Add card still does not list SEPTA Transit, enable Advanced Mode in your profile, then **Settings → Dashboards → ⋮ → Resources → Add**:
 
 ```
-/local/septa-live-card.js?v=1.8.6
+/local/septa-live-card.js?v=1.8.7
 type: module
 ```
 
 Hard-refresh the dashboard (or open it in a private window).
+
+## What's new in 1.8.7
+
+Rail departures card now matches the live board:
+
+- **Station** picker covers every Regional Rail stop, not only the one you added in HA.
+- **Inbound / Outbound** direction dropdown, same as the web board.
+- **Compact / Regular / Large** sizes: 3, 5, or 8 trains. Switch on the card or set `size:` in YAML.
 
 ## What's new in 1.8.6
 
@@ -84,6 +92,9 @@ type: custom:septa-live-departures
 name: Lansdale Regional Rail
 south: sensor.septa_lansdale_southbound_board
 north: sensor.septa_lansdale_northbound_board
+station: Lansdale
+direction: south
+size: regular
 ```
 
 ```yaml

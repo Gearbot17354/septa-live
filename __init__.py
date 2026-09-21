@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import voluptuous as vol
+from homeassistant.components import websocket_api
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_call_later
@@ -15,11 +17,12 @@ from .coordinator import SeptaCoordinator
 _LOGGER = logging.getLogger(__name__)
 _FRONTEND = f"{DOMAIN}_frontend_registered"
 _CARD_JS = "septa-live-card.js"
-_CARD_VERSION = "1.8.6"
+_CARD_VERSION = "1.8.7"
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     await _async_register_lovelace_cards(hass)
+    websocket_api.async_register_command(hass, websocket_board)
     return True
 
 
@@ -82,6 +85,32 @@ async def _async_register_lovelace_cards(hass: HomeAssistant) -> None:
             await _async_ensure_lovelace_resource(hass, url_local)
 
         async_call_later(hass, 15, _retry)
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "septa_live/board",
+        vol.Required("station"): str,
+    }
+)
+@websocket_api.async_response
+async def websocket_board(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict,
+) -> None:
+    """Return inbound/outbound trains for any Regional Rail station."""
+    data = hass.data.get(DOMAIN) or {}
+    coordinator = next(iter(data.values()), None)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_setup", "SEPTA Transit is not set up")
+        return
+    try:
+        board = await coordinator.async_board_for_station(str(msg.get("station") or ""))
+    except Exception as err:  # noqa: BLE001
+        connection.send_error(msg["id"], "septa_error", str(err))
+        return
+    connection.send_result(msg["id"], board)
 
 
 def _install_local_card(hass: HomeAssistant, source: Path) -> None:

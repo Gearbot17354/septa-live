@@ -114,7 +114,7 @@ def format_clock(dt: datetime | None) -> str:
     return f"{hour}:{dt.minute:02d} {ap}"
 
 
-BOARD_LIMIT = 5
+BOARD_LIMIT = 8
 _LINE_NAMES = {
     "AIR": "Airport",
     "CHE": "Chestnut Hill East",
@@ -309,6 +309,29 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             update_interval=timedelta(seconds=max(30, interval)),
         )
         self.session = async_get_clientsession(hass)
+        self._board_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+    async def async_board_for_station(self, station: str) -> dict[str, Any]:
+        """Live + timetable board for any Regional Rail station."""
+        name = (station or "").strip() or self.station
+        now = datetime.now(NY)
+        cached = self._board_cache.get(name.lower())
+        if cached and now.timestamp() - cached[0] < 20:
+            return cached[1]
+        try:
+            raw = await self._get(ARRIVALS_URL, {"station": name, "results": BOARD_LIMIT})
+            north, south = _parse_arrivals(raw)
+        except Exception:  # noqa: BLE001
+            north, south = [], []
+        north = _pad_schedule(name, "N", north, now)
+        south = _pad_schedule(name, "S", south, now)
+        pack = {
+            "station": name,
+            "southbound": _board_pack(south),
+            "northbound": _board_pack(north),
+        }
+        self._board_cache[name.lower()] = (now.timestamp(), pack)
+        return pack
 
     async def _load_buses(self, now: datetime) -> list[dict[str, Any]]:
         try:

@@ -1,5 +1,186 @@
 (() => {
-  const CARD_VERSION = "1.8.6";
+  const CARD_VERSION = "1.8.7";
+
+const RAIL_STATIONS = [
+    {name:'9th St',api:'9th St'},
+    {name:'30th Street Station',api:'30th Street Station'},
+    {name:'49th Street',api:'49th Street'},
+    {name:'Airport Terminal A',api:'Airport Terminal A'},
+    {name:'Airport Terminal B',api:'Airport Terminal B'},
+    {name:'Airport Terminals C & D',api:'Airport Terminals C & D'},
+    {name:'Airport Terminals E & F',api:'Airport Terminals E & F'},
+    {name:'Allegheny',api:'Allegheny'},
+    {name:'Allen Lane',api:'Allen Lane'},
+    {name:'Ambler',api:'Ambler'},
+    {name:'Angora',api:'Angora'},
+    {name:'Ardmore',api:'Ardmore'},
+    {name:'Ardsley',api:'Ardsley'},
+    {name:'Bala',api:'Bala'},
+    {name:'Berwyn',api:'Berwyn'},
+    {name:'Bethayres',api:'Bethayres'},
+    {name:'Bridesburg',api:'Bridesburg'},
+    {name:'Bristol',api:'Bristol'},
+    {name:'Bryn Mawr',api:'Bryn Mawr'},
+    {name:'Carpenter',api:'Carpenter'},
+    {name:'Chalfont',api:'Chalfont'},
+    {name:'Chelten Avenue',api:'Chelten Avenue'},
+    {name:'Cheltenham',api:'Cheltenham'},
+    {name:'Chester Transportation Center',api:'Chester Transportation Center'},
+    {name:'Chestnut Hill East',api:'Chestnut Hill East'},
+    {name:'Chestnut Hill West',api:'Chestnut Hill West'},
+    {name:'Churchmans Crossing',api:'Churchmans Crossing'},
+    {name:'Claymont',api:'Claymont'},
+    {name:'Clifton-Aldan',api:'Clifton-Aldan'},
+    {name:'Colmar',api:'Colmar'},
+    {name:'Conshohocken',api:'Conshohocken'},
+    {name:'Cornwells Heights',api:'Cornwells Heights'},
+    {name:'Crestmont',api:'Crestmont'},
+    {name:'Croydon',api:'Croydon'},
+    {name:'Crum Lynne',api:'Crum Lynne'},
+    {name:'Curtis Park',api:'Curtis Park'},
+    {name:'Cynwyd',api:'Cynwyd'},
+    {name:'Darby',api:'Darby'},
+    {name:'Daylesford',api:'Daylesford'},
+    {name:'Delaware Valley College',api:'Delaware Valley College'},
+    {name:'Devon',api:'Devon'},
+    {name:'Downingtown',api:'Downingtown'},
+    {name:'Doylestown',api:'Doylestown'},
+    {name:'East Falls',api:'East Falls'},
+    {name:'Eastwick',api:'Eastwick Station'},
+    {name:'Eddington',api:'Eddington'},
+    {name:'Eddystone',api:'Eddystone'},
+    {name:'Elkins Park',api:'Elkins Park'},
+    {name:'Elm Street, Norristown',api:'Elm Street, Norristown'},
+    {name:'Elwyn',api:'Elwyn'},
+    {name:'Exton',api:'Exton'},
+    {name:'Fern Rock TC',api:'Fern Rock Transportation Center'},
+    {name:'Fernwood-Yeadon',api:'Fernwood-Yeadon'},
+    {name:'Folcroft',api:'Folcroft'},
+    {name:'Forest Hills',api:'Forest Hills'},
+    {name:'Fort Washington',api:'Fort Washington'},
+    {name:'Fortuna',api:'Fortuna'},
+    {name:'Fox Chase',api:'Fox Chase'},
+    {name:'Germantown',api:'Germantown'},
+    {name:'Gladstone',api:'Gladstone'},
+    {name:'Glenolden',api:'Glenolden'},
+    {name:'Glenside',api:'Glenside'},
+    {name:'Gravers',api:'Gravers'},
+    {name:'Gwynedd Valley',api:'Gwynedd Valley'},
+    {name:'Hatboro',api:'Hatboro'},
+    {name:'Haverford',api:'Haverford'},
+    {name:'Highland',api:'Highland'},
+    {name:'Highland Avenue',api:'Highland Avenue'},
+    {name:'Holmesburg Junction',api:'Holmesburg Junction'},
+    {name:'Ivy Ridge',api:'Ivy Ridge'},
+    {name:'Jefferson Station',api:'Jefferson Station'},
+    {name:'Jenkintown-Wyncote',api:'Jenkintown-Wyncote'},
+    {name:'Langhorne',api:'Langhorne'},
+    {name:'Lansdale',api:'Lansdale'},
+    {name:'Lansdowne',api:'Lansdowne'},
+    {name:'Lawndale',api:'Lawndale'},
+    {name:'Levittown',api:'Levittown'},
+    {name:'Link Belt',api:'Link Belt'},
+    {name:'Main Street, Norristown',api:'Main Street, Norristown'},
+    {name:'Malvern',api:'Malvern'},
+    {name:'Manayunk',api:'Manayunk'},
+    {name:'Marcus Hook',api:'Marcus Hook'},
+    {name:'Meadowbrook',api:'Meadowbrook'},
+    {name:'Media',api:'Media'},
+    {name:'Melrose Park',api:'Melrose Park'},
+    {name:'Merion',api:'Merion'},
+    {name:'Miquon',api:'Miquon'},
+    {name:'Morton',api:'Morton'},
+    {name:'Mount Airy',api:'Mount Airy'},
+    {name:'Moylan-Rose Valley',api:'Moylan-Rose Valley'},
+    {name:'Narberth',api:'Narberth'},
+    {name:'Neshaminy Falls',api:'Neshaminy Falls'},
+    {name:'New Britain',api:'New Britain'},
+    {name:'Newark',api:'Newark'},
+    {name:'Noble',api:'Noble'},
+    {name:'Norristown TC',api:'Norristown Transportation Center'},
+    {name:'North Broad',api:'North Broad'},
+    {name:'North Hills',api:'North Hills'},
+    {name:'North Philadelphia',api:'North Philadelphia'},
+    {name:'North Wales',api:'North Wales'},
+    {name:'Norwood',api:'Norwood'},
+    {name:'Olney',api:'Olney'},
+    {name:'Oreland',api:'Oreland'},
+    {name:'Overbrook',api:'Overbrook'},
+    {name:'Paoli',api:'Paoli'},
+    {name:'Penllyn',api:'Penllyn'},
+    {name:'Pennbrook',api:'Pennbrook'},
+    {name:'Philmont',api:'Philmont'},
+    {name:'Primos',api:'Primos'},
+    {name:'Prospect Park',api:'Prospect Park'},
+    {name:'Queen Lane',api:'Queen Lane'},
+    {name:'Radnor',api:'Radnor'},
+    {name:'Ridley Park',api:'Ridley Park'},
+    {name:'Rosemont',api:'Rosemont'},
+    {name:'Roslyn',api:'Roslyn'},
+    {name:'Rydal',api:'Rydal'},
+    {name:'Ryers',api:'Ryers'},
+    {name:'Secane',api:'Secane'},
+    {name:'Sedgwick',api:'Sedgwick'},
+    {name:'Sharon Hill',api:'Sharon Hill'},
+    {name:'Somerton',api:'Somerton'},
+    {name:'Spring Mill',api:'Spring Mill'},
+    {name:'St. Davids',api:'St. Davids'},
+    {name:'St. Martins',api:'St. Martins'},
+    {name:'Stenton',api:'Stenton'},
+    {name:'Strafford',api:'Strafford'},
+    {name:'Suburban Station',api:'Suburban Station'},
+    {name:'Swarthmore',api:'Swarthmore'},
+    {name:'Tacony',api:'Tacony'},
+    {name:'Temple University',api:'Temple University'},
+    {name:'Thorndale',api:'Thorndale'},
+    {name:'Torresdale',api:'Torresdale'},
+    {name:'Trenton Transit Center',api:'Trenton Transit Center'},
+    {name:'Trevose',api:'Trevose'},
+    {name:'Tulpehocken',api:'Tulpehocken'},
+    {name:'University City',api:'University City'},
+    {name:'Upsal',api:'Upsal'},
+    {name:'Villanova',api:'Villanova'},
+    {name:'Wallingford',api:'Wallingford'},
+    {name:'Warminster',api:'Warminster'},
+    {name:'Washington Lane',api:'Washington Lane'},
+    {name:'Wayne',api:'Wayne'},
+    {name:'Wayne Junction',api:'Wayne Junction'},
+    {name:'West Trenton',api:'West Trenton'},
+    {name:'Whitford',api:'Whitford'},
+    {name:'Willow Grove',api:'Willow Grove'},
+    {name:'Wilmington',api:'Wilmington'},
+    {name:'Wissahickon',api:'Wissahickon'},
+    {name:'Wister',api:'Wister'},
+    {name:'Woodbourne',api:'Woodbourne'},
+    {name:'Wyndmoor',api:'Wyndmoor'},
+    {name:'Wynnefield Avenue',api:'Wynnefield Avenue'},
+    {name:'Wynnewood',api:'Wynnewood'},
+    {name:'Yardley',api:'Yardley'},
+  ];
+
+  const SIZE_ROWS = { compact: 3, regular: 5, large: 8 };
+  function normalizeSize(value) {
+    const v = String(value || "").toLowerCase();
+    if (v === "compact" || v === "small") return "compact";
+    if (v === "large" || v === "big") return "large";
+    return "regular";
+  }
+  function slugifyName(name) {
+    return String(name || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+  }
+  function boardForStation(boards, station) {
+    const want = String(station || "").trim().toLowerCase();
+    const slug = slugifyName(want);
+    return boards.find((b) => b.slug === slug || String(b.name).toLowerCase() === want) || null;
+  }
+  function stationApiName(station) {
+    const want = String(station || "").trim();
+    const slug = slugifyName(want);
+    const hit = RAIL_STATIONS.find(
+      (s) => s.api === want || s.name === want || slugifyName(s.api) === slug || slugifyName(s.name) === slug,
+    );
+    return hit ? hit.api : want;
+  }
   const ONTIME = "#7dba98";
   const LATE = "#d4a054";
   const CRIT = "#d0726a";
@@ -152,11 +333,11 @@
     return `No ${dir} trains listed`;
   }
 
-  function trainsOf(state) {
+  function trainsOf(state, limit) {
     if (!state || !state.attributes) return [];
     const a = state.attributes;
     const list = a.trains || a.southbound || a.northbound || [];
-    return Array.isArray(list) ? list.slice(0, 5) : [];
+    return Array.isArray(list) ? list.slice(0, limit || 8) : [];
   }
 
   function dirFromEntity(entityId) {
@@ -540,6 +721,24 @@
     .dep-plat { display: flex; justify-content: center; }
     .dep-expect { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; text-align: right; }
     .dep-expect .late { font-size: 11px; }
+    .size-pills { display: flex; gap: 6px; padding: 0 14px 10px; }
+    .size-pills button {
+      height: 28px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--divider-color, rgba(127,127,127,0.35));
+      background: transparent; color: inherit; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+    }
+    .size-pills button.on { background: var(--secondary-background-color, #11161e); border-color: transparent; }
+    .dep-card.is-compact .dep-cols { padding: 4px 12px; grid-template-columns: 3.6rem minmax(0,1fr) 3.2rem 4.6rem; }
+    .dep-card.is-compact .dep-time { font-size: 12px; }
+    .dep-card.is-compact .dep-dest .to { font-size: 12px; }
+    .dep-card.is-compact .dep-trk { width: 18px; height: 18px; font-size: 10px; }
+    .dep-card.is-compact .dep-toolbar select { height: 32px; }
+    .dep-card.is-compact .head { padding-bottom: 2px; }
+    .dep-card.is-large .dep-cols { padding: 10px 16px; grid-template-columns: 5.4rem minmax(0,1fr) 4.2rem 6rem; }
+    .dep-card.is-large .dep-time { font-size: 20px; }
+    .dep-card.is-large .dep-dest .to { font-size: 15px; }
+    .dep-card.is-large .dep-trk { width: 28px; height: 28px; font-size: 12px; }
+    .dep-card.is-large .size-pills, .dep-card.is-large .dep-toolbar { padding-left: 16px; padding-right: 16px; }
+
     .rail-badge {
       display: inline-flex; align-items: center; justify-content: center;
       min-width: 34px; height: 18px; padding: 0 5px; border-radius: 3px;
@@ -1553,40 +1752,33 @@
       this._last = "";
       this._station = "";
       this._direction = "south";
+      this._size = "regular";
+      this._remote = null;
+      this._fetching = "";
       this.attachShadow({ mode: "open" });
     }
 
     setConfig(config) {
       this._config = config || {};
       this._direction = config && config.direction === "north" ? "north" : "south";
-      this._station = (config && config.station) || "";
+      this._station = stationApiName((config && config.station) || "");
+      this._size = normalizeSize(config && config.size);
       this._last = "";
     }
 
     set hass(hass) {
       this._hass = hass;
-      const boards = discoverBoards(hass);
-      if (!this._station && boards.length) {
-        const fromCfg = slugFromEntity(this._config.south || this._config.north || "");
-        this._station = fromCfg || boards[0].slug;
-      }
-      const board = boards.find((b) => b.slug === this._station) || boards[0];
-      const south = (board && board.south) || this._config.south;
-      const north = (board && board.north) || this._config.north;
-      const entity = this._direction === "north" ? north : south;
-      const state = stateOf(hass, entity);
-      const sig = `${this._station}|${this._direction}|${entity}|${state ? state.state + JSON.stringify(state.attributes) : ""}`;
-      if (sig === this._last) return;
-      this._last = sig;
-      this._render();
+      void this._refresh();
     }
 
     getCardSize() {
-      return 5;
+      if (this._size === "compact") return 4;
+      if (this._size === "large") return 8;
+      return 6;
     }
 
     static getLayoutOptions() {
-      return { grid_columns: 2, grid_rows: 5, grid_min_columns: 2, grid_min_rows: 3 };
+      return { grid_columns: 2, grid_rows: 6, grid_min_columns: 2, grid_min_rows: 3 };
     }
 
     static getStubConfig(hass) {
@@ -1596,7 +1788,9 @@
         name: first ? first.name : "Regional Rail",
         south: first ? first.south : findEntity(hass, "_southbound_board", "sensor.septa_lansdale_southbound_board"),
         north: first ? first.north : findEntity(hass, "_northbound_board", "sensor.septa_lansdale_northbound_board"),
+        station: first ? first.name : "Lansdale",
         direction: "south",
+        size: "regular",
       };
     }
 
@@ -1604,6 +1798,7 @@
       return {
         schema: [
           { name: "name", selector: { text: {} } },
+          { name: "station", selector: { text: {} } },
           { name: "south", selector: { entity: { domain: "sensor" } } },
           { name: "north", selector: { entity: { domain: "sensor" } } },
           {
@@ -1617,38 +1812,106 @@
               },
             },
           },
+          {
+            name: "size",
+            selector: {
+              select: {
+                options: [
+                  { value: "compact", label: "Compact · 3 trains" },
+                  { value: "regular", label: "Regular · 5 trains" },
+                  { value: "large", label: "Large · 8 trains" },
+                ],
+              },
+            },
+          },
         ],
       };
     }
 
-    _render() {
+    async _refresh() {
       const hass = this._hass;
+      if (!hass) return;
       const boards = discoverBoards(hass);
-      const board = boards.find((b) => b.slug === this._station) || boards[0];
-      const south = (board && board.south) || this._config.south;
-      const north = (board && board.north) || this._config.north;
-      const entity = this._direction === "north" ? north : south;
-      const state = stateOf(hass, entity);
-      const trains = trainsOf(state);
-      const stationName = (board && board.name) || this._config.name || "Regional Rail";
+      if (!this._station) {
+        const fromCfg = this._config.station || slugFromEntity(this._config.south || this._config.north || "");
+        const local = boardForStation(boards, fromCfg) || boards[0];
+        this._station = stationApiName((local && local.name) || fromCfg || "Lansdale");
+      }
+      const local = boardForStation(boards, this._station);
+      let southTrains = [];
+      let northTrains = [];
+      let southEntity = (local && local.south) || this._config.south || "";
+      let northEntity = (local && local.north) || this._config.north || "";
+      let loading = false;
+      const want = SIZE_ROWS[this._size] || 5;
+      if (local) {
+        southTrains = trainsOf(stateOf(hass, southEntity), 8);
+        northTrains = trainsOf(stateOf(hass, northEntity), 8);
+        this._remote = null;
+      }
+      const needRemote = !local || Math.max(southTrains.length, northTrains.length) < want;
+      if (needRemote && hass.connection) {
+        const stale = !this._remote || this._remote.station !== this._station || Date.now() - this._remote.at > 25000;
+        if (stale && this._fetching !== this._station) {
+          this._fetching = this._station;
+          loading = !southTrains.length && !northTrains.length;
+          try {
+            const data = await hass.connection.sendMessagePromise({
+              type: "septa_live/board",
+              station: this._station,
+            });
+            if (this._station === this._fetching) {
+              this._remote = {
+                station: this._station,
+                at: Date.now(),
+                south: (data && data.southbound) || [],
+                north: (data && data.northbound) || [],
+              };
+            }
+          } catch (_err) {
+            if (this._station === this._fetching && !this._remote) {
+              this._remote = { station: this._station, at: Date.now(), south: [], north: [] };
+            }
+          }
+          this._fetching = "";
+          loading = false;
+        }
+        if (this._remote && this._remote.station === this._station) {
+          if (!southTrains.length) southTrains = this._remote.south || [];
+          if (!northTrains.length) northTrains = this._remote.north || [];
+          if ((this._remote.south || []).length > southTrains.length) southTrains = this._remote.south;
+          if ((this._remote.north || []).length > northTrains.length) northTrains = this._remote.north;
+        }
+      }
+      const trains = (this._direction === "north" ? northTrains : southTrains).slice(0, want);
+      const entity = this._direction === "north" ? northEntity : southEntity;
+      const sig = `${this._station}|${this._direction}|${this._size}|${loading}|${JSON.stringify(trains)}`;
+      if (sig === this._last) return;
+      this._last = sig;
+      this._render(trains, entity, loading);
+    }
+
+    _render(trains, entity, loading) {
+      const stationName = stationApiName(this._station) || this._config.name || "Regional Rail";
       const heading = this._direction === "north" ? "Outbound" : "Inbound";
-      const stationOpts = boards.length
-        ? boards
-            .map((b) => `<option value="${esc(b.slug)}"${b.slug === (board && board.slug) ? " selected" : ""}>${esc(b.name)}</option>`)
-            .join("")
-        : `<option>${esc(stationName)}</option>`;
-      const rows = trains.length
-        ? trains
-            .map((t) => {
-              const track = String(t.track || t.platform || "").trim();
-              const dest = t.destination || "—";
-              const clock = splitClock(t.clock);
-              const mins = durationLabel(t.minutes);
-              const color = tone(Number(t.delay_min || 0), Boolean(t.cancelled));
-              const late = delayLabel(Number(t.delay_min || 0), Boolean(t.cancelled), t.status);
-              const service = serviceLabel(t.service_type || t.service);
-              return `
-                <button class="hit dep-cols is-row" type="button" data-entity="${esc(entity)}">
+      const selected = stationApiName(this._station);
+      const stationOpts = RAIL_STATIONS.map(
+        (s) => `<option value="${esc(s.api)}"${s.api === selected || s.name === this._station ? " selected" : ""}>${esc(s.name)}</option>`,
+      ).join("");
+      const rows = loading
+        ? `<div class="empty" style="padding:14px">Loading departures…</div>`
+        : trains.length
+          ? trains
+              .map((t) => {
+                const track = String(t.track || t.platform || "").trim();
+                const dest = t.destination || "—";
+                const clock = splitClock(t.clock);
+                const mins = durationLabel(t.minutes);
+                const color = tone(Number(t.delay_min || 0), Boolean(t.cancelled));
+                const late = delayLabel(Number(t.delay_min || 0), Boolean(t.cancelled), t.status);
+                const service = serviceLabel(t.service_type || t.service);
+                return `
+                <button class="hit dep-cols is-row" type="button" data-entity="${esc(entity || "")}">
                   <div class="dep-time">
                     <div>${esc(clock.time || mins)}</div>
                     ${clock.period ? `<div class="hint" style="margin:2px 0 0">${esc(clock.period)}</div>` : ""}
@@ -1665,13 +1928,13 @@
                     <span class="late" style="color:${color}">${esc(late)}</span>
                   </div>
                 </button>`;
-            })
-            .join("")
-        : `<div class="empty" style="padding:14px">${esc(entity ? overnightEmpty(heading) : "Pick a board sensor")}</div>`;
+              })
+              .join("")
+          : `<div class="empty" style="padding:14px">${esc(overnightEmpty(heading))}</div>`;
 
       this.shadowRoot.innerHTML = `
         <style>${BASE_CSS}</style>
-        <ha-card>
+        <ha-card class="dep-card is-${esc(this._size)}">
           <div class="head">
             <div class="kicker-row">${modeIcon("rail")}<div class="kicker">${esc(this._config.name || stationName)}</div></div>
             <div class="hint" style="margin:0">${esc(heading)}</div>
@@ -1689,6 +1952,11 @@
               </select>
             </label>
           </div>
+          <div class="size-pills" role="tablist" aria-label="Card size">
+            <button type="button" data-size="compact"${this._size === "compact" ? ' class="on"' : ""}>Compact</button>
+            <button type="button" data-size="regular"${this._size === "regular" ? ' class="on"' : ""}>Regular</button>
+            <button type="button" data-size="large"${this._size === "large" ? ' class="on"' : ""}>Large</button>
+          </div>
           <div class="dep-cols is-head">
             <span>Time</span>
             <span>Destination</span>
@@ -1699,24 +1967,33 @@
         </ha-card>
       `;
       this.shadowRoot.querySelectorAll("[data-entity]").forEach((btn) => {
-        btn.addEventListener("click", () => moreInfo(this, btn.getAttribute("data-entity")));
+        const id = btn.getAttribute("data-entity");
+        if (id) btn.addEventListener("click", () => moreInfo(this, id));
       });
       const stationSel = this.shadowRoot.querySelector('[data-pick="station"]');
       const dirSel = this.shadowRoot.querySelector('[data-pick="direction"]');
       if (stationSel) {
         stationSel.addEventListener("change", (ev) => {
-          this._station = ev.target.value;
+          this._station = stationApiName(ev.target.value);
+          this._remote = null;
           this._last = "";
-          this._render();
+          void this._refresh();
         });
       }
       if (dirSel) {
         dirSel.addEventListener("change", (ev) => {
           this._direction = ev.target.value === "north" ? "north" : "south";
           this._last = "";
-          this._render();
+          void this._refresh();
         });
       }
+      this.shadowRoot.querySelectorAll("[data-size]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          this._size = normalizeSize(btn.getAttribute("data-size"));
+          this._last = "";
+          void this._refresh();
+        });
+      });
     }
   }
 
