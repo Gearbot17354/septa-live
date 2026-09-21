@@ -1,5 +1,5 @@
 (() => {
-  const CARD_VERSION = "1.8.5";
+  const CARD_VERSION = "1.8.6";
   const ONTIME = "#7dba98";
   const LATE = "#d4a054";
   const CRIT = "#d0726a";
@@ -236,6 +236,76 @@
         </div>
         ${body}
       </button>`;
+  }
+
+  function serviceBubble(opts) {
+    const extra = opts.extra || "";
+    const late = opts.late ? `<div class="bubble-late" style="color:${opts.color || "inherit"}">${esc(opts.late)}</div>` : "";
+    const hint = opts.hint ? `<div class="bubble-hint">${esc(opts.hint)}</div>` : "";
+    return `
+      <button class="hit bubble" type="button" data-entity="${esc(opts.entity || "")}">
+        <div class="bubble-head">
+          <div class="kicker-row">${modeIcon(opts.kind || "rail")}<div class="kicker">${esc(opts.title || "")}</div></div>
+          ${extra}
+        </div>
+        <div class="bubble-clock-row">
+          <div class="bubble-clock is-lg" style="color:${opts.color || "inherit"}">${esc(opts.clock || "—")}</div>
+          ${late}
+        </div>
+        ${hint}
+      </button>`;
+  }
+
+  function busInner(state, entity, title) {
+    if (!state) {
+      return serviceBubble({ entity, kind: "bus", title: title || "Next bus", clock: "—", hint: "No nearby buses" });
+    }
+    const clock = splitClock(attr(state, "clock") || attr(state, "depart") || "");
+    const label = `${clock.time || minutesOf(state)}${clock.period ? " " + clock.period : ""}`;
+    const delay = Number(attr(state, "delay_min") || 0);
+    const live = Boolean(attr(state, "live"));
+    const dest = attr(state, "destination");
+    const route = attr(state, "route");
+    const color = live ? tone(delay, false) : "inherit";
+    return serviceBubble({
+      entity,
+      kind: "bus",
+      title: title || (route ? `Bus ${route}` : "Next bus"),
+      extra: route ? pill(route) : "",
+      clock: label,
+      late: live ? delayLabel(delay, false, "") : "Scheduled",
+      color,
+      hint: [minutesOf(state), dest].filter(Boolean).join(" · ") || "live",
+    });
+  }
+
+  function leaveInner(state, entity, title) {
+    const n = state && state.state !== "unknown" && state.state !== "unavailable" ? Number(state.state) : null;
+    const value = n == null || Number.isNaN(n) ? "—" : n <= 0 ? "Now" : durationLabel(n);
+    const walk = attr(state, "walk_minutes");
+    const train = attr(state, "train_id");
+    const hint = [walk ? `${walk} min walk` : "Walk window", train ? `#${train}` : ""].filter(Boolean).join(" · ");
+    return serviceBubble({
+      entity,
+      kind: "walk",
+      title: title || "Leave in",
+      clock: value,
+      color: n != null && n <= 2 ? LATE : ONTIME,
+      hint,
+    });
+  }
+
+  function statusInner(state, entity, title) {
+    const text = state ? state.state : "—";
+    const color = /suspend|alert|delay/i.test(text) ? LATE : ONTIME;
+    return serviceBubble({
+      entity,
+      kind: "status",
+      title: title || "Line status",
+      clock: text,
+      color,
+      hint: "Line",
+    });
   }
 
   function splitClock(label) {
@@ -499,10 +569,15 @@
       box-shadow: 0 -1px 0 var(--divider-color, rgba(127,127,127,0.2));
     }
     .hero-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
+      display: flex;
+      flex-wrap: wrap;
       gap: 8px;
       padding: 8px 12px 14px;
+    }
+    .hero-grid > .bubble {
+      flex: 1 1 138px;
+      min-width: 8.5rem;
+      width: auto;
     }
     .board-wrap {
       background: var(--ha-card-background, var(--card-background-color, #171d27));
@@ -513,7 +588,7 @@
       font-size: 12px; opacity: 0.72;
     }
     @media (max-width: 640px) {
-      .hero-grid { grid-template-columns: 1fr; }
+      .hero-grid { display: flex; }
     }
     @media (max-width: 420px) {
       .grid { grid-template-columns: 1fr; }
@@ -791,16 +866,14 @@
   }
 
   function modeForEntity(state, fallback) {
-    if (fallback) return fallback;
-    if (!state) return "rail";
-    if (attr(state, "route")) return "bus";
-    const id = String(state.entity_id || "");
+    const id = String((state && state.entity_id) || "");
     if (id.endsWith("_metro")) return "metro";
     if (id.endsWith("_trolley")) return "trolley";
     if (id.endsWith("_leave_in")) return "walk";
     if (id.endsWith("_status")) return "status";
-    if (id.endsWith("_next_bus")) return "bus";
-    return "rail";
+    if (id.endsWith("_next_bus") || (state && attr(state, "route"))) return "bus";
+    if (id.endsWith("_map") || id.endsWith("_live_map")) return "map";
+    return fallback || "rail";
   }
 
   class SeptaLiveCard extends HTMLElement {
@@ -872,15 +945,9 @@
       }
       const delay = Number(attr(state, "delay_min") || 0);
       const cancelled = Boolean(state.attributes && state.attributes.cancelled);
-      const isBus = Boolean(attr(state, "route"));
-      const clock = attr(state, "depart") || attr(state, "clock") || "";
-      const dest = attr(state, "destination") || attr(state, "arrive") || "";
-      const idLabel = isBus ? `Route ${attr(state, "route")}` : `#${attr(state, "train_id") || "—"}`;
-      const status = attr(state, "delay") || attr(state, "status") || delayLabel(delay, cancelled, "");
-      const live = attr(state, "live") ? " · live" : "";
-      const kicker = name || (isBus ? "SEPTA Bus" : "SEPTA Transit");
-      const color = tone(delay, cancelled);
-      const kind = modeForEntity(state, isBus ? "bus" : "rail");
+      const isBus = Boolean(attr(state, "route")) || /_next_bus$/.test(String(entity || ""));
+      const kind = modeForEntity({ ...(state || {}), entity_id: entity }, isBus ? "bus" : "rail");
+      const kicker = name || (kind === "bus" ? "Next bus" : kind === "walk" ? "Leave in" : kind === "status" ? "Line status" : "SEPTA Transit");
       if (kind === "rail") {
         const dir = dirFromEntity(entity);
         const pack = trainsForDirection(this._hass, entity, dir);
@@ -890,27 +957,25 @@
         this.shadowRoot.querySelector("button")?.addEventListener("click", () => moreInfo(this, pack.entity || entity));
         return;
       }
-      const letters = LETTERS_FOR[kind] || [];
-      const extra = isBus ? pill(attr(state, "route")) : bulletRow(letters);
-      this.shadowRoot.innerHTML = `
-        <style>${BASE_CSS}</style>
-        <ha-card>
-          <button class="hit" type="button">
-            <div class="wrap">
-              <div class="title-row">
-                <div class="kicker-row">${modeIcon(kind)}<div class="kicker">${esc(kicker)}</div></div>
-                ${extra}
-              </div>
-              <div class="row">
-                <div class="clock">${esc(clock || minutesOf(state))}</div>
-                <div class="mins" style="color:${color}">${esc(minutesOf(state))}</div>
-              </div>
-              <div class="meta">${esc(idLabel)}${dest ? " · " + esc(dest) : ""} · ${esc(status)}${esc(live)}</div>
-            </div>
-          </button>
-        </ha-card>
-      `;
-      this.shadowRoot.querySelector("button").addEventListener("click", () => moreInfo(this, entity));
+      const inner =
+        kind === "bus"
+          ? busInner(state, entity, name || kicker)
+          : kind === "walk"
+            ? leaveInner(state, entity, name || kicker)
+            : kind === "status"
+              ? statusInner(state, entity, name || kicker)
+              : serviceBubble({
+                  entity,
+                  kind,
+                  title: kicker,
+                  extra: bulletRow(LETTERS_FOR[kind] || []),
+                  clock: attr(state, "clock") || minutesOf(state),
+                  late: delayLabel(delay, cancelled, attr(state, "status") || ""),
+                  color: tone(delay, cancelled),
+                  hint: attr(state, "destination") || attr(state, "summary") || "",
+                });
+      this.shadowRoot.innerHTML = `<style>${BASE_CSS}</style><ha-card>${inner}</ha-card>`;
+      this.shadowRoot.querySelector("button")?.addEventListener("click", () => moreInfo(this, entity));
     }
   }
 
@@ -1003,10 +1068,7 @@
       const leaveHint = leave && leave.state !== "unknown" && leave.state !== "unavailable"
         ? `Leave in ${minutesOf(leave)}`
         : "";
-      const busHint = bus
-        ? `${attr(bus, "route") ? "Bus " + attr(bus, "route") : "Bus"} · ${minutesOf(bus)}`
-        : "";
-      const bits = [statusText, station, leaveHint, busHint].filter(Boolean);
+      const bits = [statusText, station, leaveHint].filter(Boolean);
 
       this.shadowRoot.innerHTML = `
         <style>${BASE_CSS}</style>
@@ -1015,6 +1077,7 @@
           <div class="hero-grid">
             ${heroInner("Next inbound", southPack.trains, southPack.entity || cfg.south)}
             ${heroInner("Next outbound", northPack.trains, northPack.entity || cfg.north)}
+            ${bus ? busInner(bus, cfg.bus, attr(bus, "route") ? `Bus ${attr(bus, "route")}` : "Next bus") : ""}
           </div>
         </ha-card>
       `;
@@ -1207,23 +1270,34 @@
         };
       }
       if (id === "south" || id === "north") {
+        const dir = id === "north" ? "north" : "south";
+        const pack = trainsForDirection(this._hass, entity, dir);
+        const first = pack.trains[0];
+        const late = first
+          ? delayLabel(Number(first.delay_min || 0), Boolean(first.cancelled), first.status || (first.scheduled ? "Scheduled" : ""))
+          : "";
         return {
           label: id === "south" ? "Inbound" : "Outbound",
-          value: attr(state, "clock") || minutesOf(state),
-          hint: minutesOf(state),
-          color,
-          entity,
+          value: first ? (first.clock || minutesOf(state)) : "—",
+          hint: first ? trainHint(first) : "None listed",
+          status: late,
+          color: first ? trainColor(first) : "inherit",
+          entity: pack.entity || entity,
           kind,
-          extra,
+          extra: first ? railBadge(first.line) : extra,
         };
       }
       if (id === "bus") {
         extra = attr(state, "route") ? pill(attr(state, "route")) : extra;
+        const live = Boolean(attr(state, "live"));
+        const clock = splitClock(attr(state, "clock") || attr(state, "depart") || "");
+        const label = `${clock.time || minutesOf(state)}${clock.period ? " " + clock.period : ""}`;
         return {
           label: attr(state, "route") ? `Bus ${attr(state, "route")}` : "Next bus",
-          value: attr(state, "clock") || minutesOf(state),
+          value: label,
           hint: `${minutesOf(state)}${attr(state, "destination") ? " · " + attr(state, "destination") : ""}`,
-          color,
+          status: state ? (live ? delayLabel(delay, false, "") : "Scheduled") : "",
+          color: live ? tone(delay, false) : "inherit",
           entity,
           kind,
           extra,
@@ -1273,7 +1347,10 @@
             <div class="left">${modeIcon(face.kind)}<div class="label">${esc(face.label)}</div></div>
             ${face.extra || ""}
           </div>
-          <div class="value" style="color:${face.color}">${esc(face.value)}</div>
+          <div class="bubble-clock-row">
+            <div class="value" style="color:${face.color}">${esc(face.value)}</div>
+            ${face.status ? `<div class="bubble-late" style="color:${face.color}">${esc(face.status)}</div>` : ""}
+          </div>
           <div class="hint">${esc(face.hint)}</div>
         </button>
       `;
@@ -1843,7 +1920,7 @@
   registerCard("septa-live-south", heroPreset("_next_southbound", "sensor.septa_lansdale_next_southbound", "Next inbound"), "SEPTA Transit Inbound", "Next two trains into Center City");
   registerCard("septa-live-north", heroPreset("_next_northbound", "sensor.septa_lansdale_next_northbound", "Next outbound"), "SEPTA Transit Outbound", "Next two trains out of Center City");
   registerCard("septa-live-status", heroPreset("_status", "sensor.septa_lansdale_status", "Line status"), "SEPTA Transit Status", "On time, delay, alert, or suspended");
-  registerCard("septa-live-board", SeptaLiveBoard, "SEPTA Transit Board", "Inbound and outbound cards with the next two trains each");
+  registerCard("septa-live-board", SeptaLiveBoard, "SEPTA Transit Board", "Inbound, outbound, and next bus — same bubbles as the live board");
   registerCard(
     "septa-live-departures",
     SeptaLiveDepartures,

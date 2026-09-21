@@ -34,20 +34,18 @@ views:
           - type: custom:septa-live-north
             entity: sensor.septa_lansdale_next_northbound
             name: Next outbound
-          - type: tile
+          - type: custom:septa-live-leave
             entity: sensor.septa_lansdale_leave_in
             name: Leave in
-            icon: mdi:walk
-          - type: tile
+          - type: custom:septa-live-status
             entity: sensor.septa_lansdale_status
             name: Line status
-            icon: mdi:alert-circle-outline
       - type: grid
         cards:
           - type: heading
             heading: Bus
             heading_style: subtitle
-          - type: custom:septa-live-card
+          - type: custom:septa-live-bus
             entity: sensor.septa_lansdale_next_bus
             name: Next bus
           - type: markdown

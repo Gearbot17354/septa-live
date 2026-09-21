@@ -12,7 +12,7 @@ This is a **custom repository** — the same way most community plugins are inst
 2. Open the three-dot menu → **Custom repositories**.
 3. Paste `https://github.com/Gearbot17354/septa-live`.
 4. Category: **Integration**.
-5. **Add**, then find **SEPTA Transit** and **Download** **1.8.5**.
+5. **Add**, then find **SEPTA Transit** and **Download** **1.8.6**.
 6. **Restart Home Assistant**.
 7. **Settings → Devices & Services → Add Integration → SEPTA Transit**.
 8. Pick a station (for example Lansdale) and a destination (Jefferson Station) used for the leave-now countdown.
@@ -26,11 +26,19 @@ Repo: [github.com/Gearbot17354/septa-live](https://github.com/Gearbot17354/septa
 If Add card still does not list SEPTA Transit, enable Advanced Mode in your profile, then **Settings → Dashboards → ⋮ → Resources → Add**:
 
 ```
-/local/septa-live-card.js?v=1.8.5
+/local/septa-live-card.js?v=1.8.6
 type: module
 ```
 
 Hard-refresh the dashboard (or open it in a private window).
+
+## What's new in 1.8.6
+
+Ready-made Lovelace cards now match the live web board:
+
+- **Board** shows inbound and outbound two-train bubbles plus the next bus bubble (clock, delay minutes, Local/Express, destination, track).
+- **Inbound / Outbound / Next bus / Leave** cards use that same bubble layout.
+- Copy-paste previews on the web app fill from live SEPTA times for your station, not overnight placeholders.
 
 ## Manual install (zip)
 
@@ -48,10 +56,10 @@ Search **SEPTA** in Add card. These drop in with your sensors already wired. Car
 | **SEPTA Transit Train** | Hero card for the next inbound train |
 | **SEPTA Transit Next Bus** | Next bus at the nearest stop |
 | **SEPTA Transit Leave** | Walk-window countdown |
-| **SEPTA Transit Inbound** | Next train into Center City |
-| **SEPTA Transit Outbound** | Next train out of Center City |
+| **SEPTA Transit Inbound** | Next two inbound trains, delay minutes, Local/Express |
+| **SEPTA Transit Outbound** | Next two outbound trains, delay minutes, Local/Express |
 | **SEPTA Transit Status** | On time, delay, or alert |
-| **SEPTA Transit Board** | Inbound and outbound, two trains each |
+| **SEPTA Transit Board** | Inbound, outbound, and next bus — same bubbles as the live board |
 | **SEPTA Transit Departures** | Next 5 trains each way, with platform |
 | **SEPTA Transit Glance** | Leave, inbound, bus, status in one row |
 | **SEPTA Transit Metro** | L, B, M plus trolleys |
