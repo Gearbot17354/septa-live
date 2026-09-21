@@ -12,7 +12,7 @@ This is a **custom repository** — the same way most community plugins are inst
 2. Open the three-dot menu → **Custom repositories**.
 3. Paste `https://github.com/Gearbot17354/septa-live`.
 4. Category: **Integration**.
-5. **Add**, then find **SEPTA Transit** and **Download** **1.8.4**.
+5. **Add**, then find **SEPTA Transit** and **Download** **1.8.5**.
 6. **Restart Home Assistant**.
 7. **Settings → Devices & Services → Add Integration → SEPTA Transit**.
 8. Pick a station (for example Lansdale) and a destination (Jefferson Station) used for the leave-now countdown.
@@ -26,7 +26,7 @@ Repo: [github.com/Gearbot17354/septa-live](https://github.com/Gearbot17354/septa
 If Add card still does not list SEPTA Transit, enable Advanced Mode in your profile, then **Settings → Dashboards → ⋮ → Resources → Add**:
 
 ```
-/local/septa-live-card.js?v=1.8.4
+/local/septa-live-card.js?v=1.8.5
 type: module
 ```
 

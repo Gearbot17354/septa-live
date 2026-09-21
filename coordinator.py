@@ -219,6 +219,7 @@ def _scheduled_fill(station: str, direction: str, now: datetime) -> list[dict[st
                     "sched_dt": dt,
                     "minutes": minutes_until(dt, now),
                     "scheduled": True,
+                    "service_type": "LOCAL",
                 }
             )
     found.sort(key=lambda row: row.get("sched_dt") or now)
@@ -727,6 +728,7 @@ def _train(raw: dict[str, Any]) -> dict[str, Any]:
         "clock": format_clock(sched),
         "sched_dt": sched,
         "minutes": None,
+        "service_type": str(raw.get("service_type") or raw.get("ServiceType") or "").strip(),
     }
 
 
@@ -747,6 +749,7 @@ def _board_pack(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "delay_min": row.get("delay_min") or 0,
                 "cancelled": bool(row.get("cancelled")),
                 "scheduled": bool(row.get("scheduled")),
+                "service_type": str(row.get("service_type") or "").strip(),
             }
         )
     return out

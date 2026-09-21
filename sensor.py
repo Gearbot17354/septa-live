@@ -105,6 +105,8 @@ class SeptaMinutesSensor(_Base):
             "track": row.get("track"),
             "platform": row.get("track"),
             "clock": row.get("clock"),
+            "service_type": row.get("service_type"),
+            "status": row.get("status"),
         }
         return attrs
 
@@ -153,6 +155,7 @@ class SeptaRailBoardSensor(_Base):
             "next_track": first.get("track"),
             "platform": first.get("track"),
             "clock": first.get("clock"),
+            "service_type": first.get("service_type"),
             "station": (self.coordinator.data or {}).get("station") or self.coordinator.station,
             "service_ended": ended,
         }

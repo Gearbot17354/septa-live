@@ -1,5 +1,5 @@
 (() => {
-  const CARD_VERSION = "1.8.4";
+  const CARD_VERSION = "1.8.5";
   const ONTIME = "#7dba98";
   const LATE = "#d4a054";
   const CRIT = "#d0726a";
@@ -90,7 +90,16 @@
     if (status && /schedul/i.test(status)) return "Scheduled";
     if (status && /cancel/i.test(status)) return status;
     if (delayMin <= 0) return "On time";
-    return `${delayMin} min late`;
+    return `${durationLabel(delayMin)} late`;
+  }
+
+  function serviceLabel(raw) {
+    const key = String(raw || "").trim().toUpperCase().replace(/[_-]+/g, " ");
+    if (!key) return "";
+    if (key === "LOCAL") return "Local";
+    if (key === "EXP" || key === "EXPRESS") return "Express";
+    if (key === "LIMITED" || key === "EXPRESS LIMITED" || key === "LIMITED EXPRESS") return "Limited";
+    return key.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
   }
 
   function findEntity(hass, suffix, fallback) {
@@ -167,6 +176,7 @@
       delay_min: Number(attr(state, "delay_min") || 0),
       cancelled: Boolean(state.attributes && state.attributes.cancelled),
       scheduled: Boolean(state.attributes && state.attributes.scheduled) || /schedul/i.test(attr(state, "status")),
+      service_type: attr(state, "service_type") || attr(state, "service"),
     };
   }
 
@@ -185,10 +195,10 @@
 
   function trainHint(t) {
     const wait = durationLabel(t && t.minutes);
-    const dest = t && t.destination ? ` · ${t.destination}` : "";
+    const service = serviceLabel(t && (t.service_type || t.service));
+    const dest = t && t.destination ? t.destination : "";
     const track = t && String(t.track || t.platform || "").trim();
-    const plat = track ? ` · Track ${track}` : "";
-    return `${wait}${dest}${plat}`;
+    return [wait, service, dest, track ? `Track ${track}` : ""].filter(Boolean).join(" · ");
   }
 
   function trainColor(t) {
@@ -200,9 +210,14 @@
   function bubbleTrain(t, size) {
     const clock = splitClock(t.clock);
     const label = `${clock.time || "—"}${clock.period ? " " + clock.period : ""}`;
+    const late = delayLabel(Number(t.delay_min || 0), Boolean(t.cancelled), t.status || (t.scheduled ? "Scheduled" : ""));
+    const color = trainColor(t);
     return `
       <div class="bubble-train is-${size}">
-        <div class="bubble-clock is-${size}" style="color:${trainColor(t)}">${esc(label)}</div>
+        <div class="bubble-clock-row">
+          <div class="bubble-clock is-${size}" style="color:${color}">${esc(label)}</div>
+          <div class="bubble-late" style="color:${color}">${esc(late)}</div>
+        </div>
         <div class="bubble-hint">${esc(trainHint(t))}</div>
       </div>`;
   }
@@ -468,14 +483,16 @@
       box-shadow: inset 0 0 0 1px var(--divider-color, rgba(127,127,127,0.22));
     }
     .bubble-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .bubble-clock-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-top: 4px; }
     .bubble-clock {
-      margin-top: 4px;
+      margin-top: 0;
       font-variant-numeric: tabular-nums;
       font-weight: 500;
       letter-spacing: -0.03em;
     }
     .bubble-clock.is-lg { font-size: 30px; }
     .bubble-clock.is-sm { font-size: 20px; }
+    .bubble-late { font-size: 12px; font-weight: 500; white-space: nowrap; }
     .bubble-hint { margin-top: 2px; font-size: 12px; opacity: 0.65; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .bubble-train.is-sm {
       margin-top: 8px; padding-top: 8px;
@@ -1552,6 +1569,7 @@
               const mins = durationLabel(t.minutes);
               const color = tone(Number(t.delay_min || 0), Boolean(t.cancelled));
               const late = delayLabel(Number(t.delay_min || 0), Boolean(t.cancelled), t.status);
+              const service = serviceLabel(t.service_type || t.service);
               return `
                 <button class="hit dep-cols is-row" type="button" data-entity="${esc(entity)}">
                   <div class="dep-time">
@@ -1560,7 +1578,7 @@
                   </div>
                   <div class="dep-dest">
                     <span class="to">${railBadge(t.line)}<span>${esc(dest)}</span></span>
-                    <span class="id">${t.train_id ? "#" + esc(t.train_id) : ""}</span>
+                    <span class="id">${t.train_id ? "#" + esc(t.train_id) : ""}${service ? " · " + esc(service) : ""}</span>
                   </div>
                   <div class="dep-plat">
                     <span class="dep-trk${track ? "" : " is-empty"}">${esc(track || "—")}</span>
