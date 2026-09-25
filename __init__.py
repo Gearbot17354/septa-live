@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -44,9 +45,10 @@ _FRONTEND = f"{DOMAIN}_frontend_registered"
 _CARD_JS = "septa-live-card.js"
 _PANEL_JS = "septa-live-panel.js"
 _PANEL_PATH = "septa-live"
-_CARD_VERSION = "1.9.7"
+_CARD_VERSION = "1.9.8"
 _PANEL_SIG: tuple | None = None
 _RELOADING: set[str] = set()
+_SKIP_RELOAD: set[str] = set()
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -196,6 +198,22 @@ async def websocket_panel(
     )
 
 
+def _structure_changed(entry: ConfigEntry, data: dict, options: dict) -> bool:
+    """True when Save has to add or remove sensors."""
+    if data.get(CONF_STATION) != entry.data.get(CONF_STATION):
+        return True
+    keys = (CONF_SHOW_RAIL, CONF_SHOW_BUS, CONF_SHOW_METRO, CONF_SHOW_TROLLEY, CONF_WATCHES)
+    for key in keys:
+        new = options.get(key)
+        old = entry.options.get(key, entry.data.get(key))
+        if key == CONF_WATCHES:
+            if json.dumps(new or [], sort_keys=True) != json.dumps(old or [], sort_keys=True):
+                return True
+        elif bool(new) != bool(old):
+            return True
+    return False
+
+
 def _clean_watches(raw: object) -> list[dict[str, str]]:
     if not isinstance(raw, list):
         return []
@@ -285,8 +303,15 @@ async def websocket_options(
         options[CONF_WATCHES] = _clean_watches(msg.get("watches"))
     if msg.get("station"):
         data[CONF_STATION] = msg["station"]
+    structural = _structure_changed(entry, data, options)
+    if not structural:
+        _SKIP_RELOAD.add(entry.entry_id)
     hass.config_entries.async_update_entry(entry, data=data, options=options)
-    connection.send_result(msg["id"], {"ok": True})
+    if structural:
+        coordinator = (hass.data.get(DOMAIN) or {}).get(entry.entry_id)
+        if coordinator is not None:
+            await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"ok": True, "reloaded": structural})
 
 
 def _entity_map(hass: HomeAssistant, entry_id: str, station: str, dest: str) -> dict:
@@ -391,6 +416,12 @@ async def _async_ensure_lovelace_resource(hass: HomeAssistant, url: str) -> bool
 
 async def _async_reload(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload sensors without tearing down the sidebar page."""
+    if entry.entry_id in _SKIP_RELOAD:
+        _SKIP_RELOAD.discard(entry.entry_id)
+        coordinator = (hass.data.get(DOMAIN) or {}).get(entry.entry_id)
+        if coordinator is not None:
+            await coordinator.async_request_refresh()
+        return
     _RELOADING.add(entry.entry_id)
     try:
         await hass.config_entries.async_reload(entry.entry_id)

@@ -1,5 +1,5 @@
 (() => {
-  const CARD_VERSION = "1.9.7";
+  const CARD_VERSION = "1.9.8";
 
 const RAIL_STATIONS = [
     {name:'9th St',api:'9th St'},
@@ -289,6 +289,12 @@ const RAIL_STATIONS = [
     return id.startsWith("sensor.") && id.includes("septa_");
   }
 
+  function liveState(state) {
+    if (!state) return false;
+    const v = String(state.state || "").toLowerCase();
+    return v !== "unknown" && v !== "unavailable" && v !== "none" && v !== "";
+  }
+
   function findEntity(hass, suffix, fallback) {
     const states = hass && hass.states ? hass.states : {};
     const keys = Object.keys(states);
@@ -300,9 +306,13 @@ const RAIL_STATIONS = [
       "_map": ["_map", "_live_map"],
     };
     const options = aliases[suffix] || [suffix];
+    const dead = (id) => {
+      const v = states[id] && String(states[id].state || "").toLowerCase();
+      return v === "unavailable" || v === "unknown" ? 1 : 0;
+    };
     for (const end of options) {
-      const hits = keys.filter((id) => isSeptaSensor(id) && id.endsWith(end));
-      hits.sort((a, b) => Number(!a.startsWith("sensor.septa_")) - Number(!b.startsWith("sensor.septa_")));
+      const hits = keys.filter((id) => isSeptaSensor(id) && id.endsWith(end) && !/_line_/.test(id));
+      hits.sort((a, b) => dead(a) - dead(b) || Number(!a.startsWith("sensor.septa_")) - Number(!b.startsWith("sensor.septa_")));
       if (hits.length) return hits[0];
     }
     return fallback;
@@ -370,15 +380,19 @@ const RAIL_STATIONS = [
 
   function trainsForDirection(hass, entity, direction) {
     const state = stateOf(hass, entity);
-    const self = trainsOf(state);
-    if (self.length) return { state, trains: self, entity };
+    if (liveState(state)) {
+      const self = trainsOf(state);
+      if (self.length) return { state, trains: self, entity };
+    }
     const suffix = direction === "north" ? "_northbound_board" : "_southbound_board";
     const boardId = findEntity(hass, suffix, "");
     const board = stateOf(hass, boardId);
     const list = trainsOf(board);
-    if (list.length) return { state: board, trains: list, entity: boardId || entity };
+    if (list.length && liveState(board)) return { state: board, trains: list, entity: boardId || entity };
+    if (!liveState(state)) return { state, trains: [], entity };
     const one = synthTrain(state);
-    return { state, trains: one ? [one] : [], entity };
+    if (!one || (!one.clock && !one.destination && !one.train_id)) return { state, trains: [], entity };
+    return { state, trains: [one], entity };
   }
 
   function trainHint(t) {
@@ -1562,11 +1576,12 @@ const RAIL_STATIONS = [
         };
       }
       if (id === "status") {
-        const text = state ? state.state : "—";
+        const down = !liveState(state);
+        const text = down ? "—" : state.state;
         return {
           label: "Status",
           value: text,
-          hint: "Line",
+          hint: down ? "Waiting for SEPTA" : "Line",
           color: /suspend|alert|delay/i.test(text) ? LATE : ONTIME,
           entity,
           kind,

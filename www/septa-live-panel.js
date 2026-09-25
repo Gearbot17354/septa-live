@@ -525,6 +525,16 @@
             ok = await this._load(true);
           }
           if (!ok) this._msg = "Saved. The board will catch up in a moment.";
+          this._busy = false;
+          this._paint();
+          const until = Date.now() + 8000;
+          const tick = () => {
+            if (!this._hass || Date.now() > until) return;
+            this._paint();
+            setTimeout(tick, 1000);
+          };
+          setTimeout(tick, 1000);
+          return;
         } catch (err) {
           this._msg = (err && err.message) || "Save failed";
         }

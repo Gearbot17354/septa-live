@@ -819,29 +819,41 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         commute: list[dict[str, Any]] = []
         alerts: list[dict[str, Any]] = []
         if self.show_rail:
+            arrivals_raw = None
+            nta_raw = None
+            alerts_raw = None
             try:
                 arrivals_raw = await self._get(
                     ARRIVALS_URL, {"station": self.station, "results": BOARD_LIMIT}
                 )
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("SEPTA arrivals failed, using the schedule: %s", err)
+            try:
                 nta_raw = await self._get(
                     NTA_URL,
                     {"req1": self.station, "req2": self.destination, "req3": 6},
                 )
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("SEPTA next-to-arrive failed: %s", err)
+            try:
                 alerts_raw = await self._get(ALERTS_URL, {})
             except Exception as err:  # noqa: BLE001
-                raise UpdateFailed(f"SEPTA request failed: {err}") from err
+                _LOGGER.debug("SEPTA alerts failed: %s", err)
 
-            north, south = _parse_arrivals(arrivals_raw)
+            if arrivals_raw is not None:
+                north, south = _parse_arrivals(arrivals_raw)
             north = [row for row in north if _matches_line(row, self.rail_line)]
             south = [row for row in south if _matches_line(row, self.rail_line)]
             north = _pad_schedule(self.station, "N", north, now)
             south = _pad_schedule(self.station, "S", south, now)
             north = [row for row in north if _matches_line(row, self.rail_line)]
             south = [row for row in south if _matches_line(row, self.rail_line)]
-            commute = _parse_nta(nta_raw, now)
+            if nta_raw is not None:
+                commute = _parse_nta(nta_raw, now)
             if self.rail_line:
                 commute = [row for row in commute if _matches_line(row, self.rail_line)]
-            alerts = _parse_alerts(alerts_raw, self.station)
+            if alerts_raw is not None:
+                alerts = _parse_alerts(alerts_raw, self.station)
 
         buses = await self._load_buses(now) if self.show_bus else []
         if self.bus_line:

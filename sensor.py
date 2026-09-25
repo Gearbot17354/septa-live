@@ -152,6 +152,9 @@ class SeptaMinutesSensor(_Base):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         row = self._row() or {}
+        data = self.coordinator.data or {}
+        board_key = "southbound_board" if self._key == "south" else "northbound_board"
+        trains = data.get(board_key) or []
         attrs = {
             "train_id": row.get("train_id"),
             "line": row.get("line"),
@@ -164,6 +167,8 @@ class SeptaMinutesSensor(_Base):
             "clock": row.get("clock"),
             "service_type": row.get("service_type"),
             "status": row.get("status"),
+            "scheduled": row.get("scheduled"),
+            "trains": trains if isinstance(trains, list) else [],
         }
         return attrs
 
