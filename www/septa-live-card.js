@@ -1,5 +1,5 @@
 (() => {
-  const CARD_VERSION = "1.9.0";
+  const CARD_VERSION = "1.9.1";
 
 const RAIL_STATIONS = [
     {name:'9th St',api:'9th St'},
@@ -570,7 +570,7 @@ const RAIL_STATIONS = [
       color: var(--primary-text-color, #e8edf4);
       overflow: hidden;
     }
-    .wrap { padding: 16px 18px 18px; font-family: var(--ha-font-family-body, IBM Plex Sans, system-ui, sans-serif); }
+    .wrap { padding: 18px 20px 20px; font-family: var(--ha-font-family-body, IBM Plex Sans, system-ui, sans-serif); }
     .kicker { font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; opacity: 0.55; font-weight: 500; }
     .row { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; margin-top: 8px; }
     .clock { font-size: 32px; font-variant-numeric: tabular-nums; font-weight: 500; letter-spacing: -0.03em; line-height: 1; }
@@ -579,28 +579,30 @@ const RAIL_STATIONS = [
     .empty { padding: 8px 0 2px; font-size: 14px; opacity: 0.7; }
     button.hit {
       display: block; width: 100%; text-align: left; background: none; border: 0; color: inherit;
-      font: inherit; padding: 0; cursor: pointer;
+      font: inherit; cursor: pointer;
     }
+    button.hit.cell { padding: 16px 18px; }
+    button.hit.bubble { padding: 16px 18px 14px; }
     .grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 1px;
       background: var(--divider-color, rgba(127,127,127,0.25));
     }
-    .cell { background: var(--ha-card-background, var(--card-background-color, #171d27)); padding: 14px 16px; }
+    .cell { background: var(--ha-card-background, var(--card-background-color, #171d27)); padding: 16px 18px; }
     .cell.wide { grid-column: 1 / -1; }
-    .head { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px 10px; }
+    .head { display: flex; justify-content: space-between; align-items: center; padding: 16px 18px 8px; }
     .status { font-size: 12px; font-weight: 500; }
     .hint { margin-top: 4px; font-size: 12px; opacity: 0.6; }
     .label { font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; opacity: 0.5; }
-    .bubbles { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 12px 14px; }
+    .bubbles { display: flex; flex-wrap: wrap; gap: 10px; padding: 8px 16px 18px; }
     .bubble {
       flex: 1 1 138px;
       min-height: 84px;
       border-radius: 18px;
       background: #12171f;
       box-shadow: inset 0 0 0 1px #2a3340;
-      padding: 12px 14px;
+      padding: 16px 18px 14px;
       text-align: left;
       color: inherit;
       cursor: pointer;
@@ -659,7 +661,7 @@ const RAIL_STATIONS = [
       position: absolute; right: 8px; bottom: 8px; z-index: 2;
       font-size: 9px; color: #8b96a8; background: rgba(11,14,19,0.72); padding: 2px 6px; border-radius: 4px;
     }
-    .stack { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 8px 12px 14px; }
+    .stack { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 12px 16px 18px; }
     .stack .bubble { min-width: 0; }
     .mode {
       width: 28px; height: 28px; display: block; flex-shrink: 0;
@@ -685,10 +687,10 @@ const RAIL_STATIONS = [
     .kicker-row { display: flex; align-items: center; gap: 8px; }
     .dep { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--divider-color, rgba(127,127,127,0.25)); }
     .dep-col { background: var(--ha-card-background, var(--card-background-color, #171d27)); padding: 4px 0 8px; }
-    .dep-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 14px 6px; }
+    .dep-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px 8px; }
     .dep-row {
       display: grid; grid-template-columns: 4.6rem minmax(0,1fr) 1.7rem auto;
-      gap: 8px; align-items: center; padding: 7px 14px;
+      gap: 10px; align-items: center; padding: 12px 18px;
     }
     .dep-row + .dep-row { box-shadow: 0 -1px 0 var(--divider-color, rgba(127,127,127,0.2)); }
     .dep-time { font-variant-numeric: tabular-nums; font-weight: 500; font-size: 14px; }
@@ -702,7 +704,7 @@ const RAIL_STATIONS = [
     }
     .dep-trk.is-empty { background: transparent; color: var(--secondary-text-color, #8b93a1); }
     .dep-mins { font-size: 12px; font-variant-numeric: tabular-nums; font-weight: 500; text-align: right; white-space: nowrap; }
-    .dep-toolbar { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 14px 10px; }
+    .dep-toolbar { display: flex; flex-wrap: wrap; gap: 10px; padding: 0 18px 12px; }
     .dep-toolbar label { display: flex; flex-direction: column; gap: 4px; min-width: 140px; flex: 1; }
     .dep-toolbar span { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; opacity: 0.55; }
     .dep-toolbar select {
@@ -711,7 +713,7 @@ const RAIL_STATIONS = [
     }
     .dep-cols {
       display: grid; grid-template-columns: 4.6rem minmax(0,1fr) 3.8rem 5.4rem;
-      gap: 8px; align-items: center; padding: 6px 14px;
+      gap: 12px; align-items: center; padding: 10px 18px;
     }
     .dep-cols.is-head {
       font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; opacity: 0.5; font-weight: 600;
@@ -721,20 +723,20 @@ const RAIL_STATIONS = [
     .dep-plat { display: flex; justify-content: center; }
     .dep-expect { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; text-align: right; }
     .dep-expect .late { font-size: 11px; }
-    .size-pills { display: flex; gap: 6px; padding: 0 14px 10px; }
+    .size-pills { display: flex; gap: 6px; padding: 0 18px 12px; }
     .size-pills button {
       height: 28px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--divider-color, rgba(127,127,127,0.35));
       background: transparent; color: inherit; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
     }
     .size-pills button.on { background: var(--secondary-background-color, #11161e); border-color: transparent; }
-    .dep-card.is-compact .dep-cols { padding: 4px 12px; grid-template-columns: 3.75rem minmax(0,1fr) 1.75rem 4.85rem; gap: 8px; }
+    .dep-card.is-compact .dep-cols { padding: 10px 16px; grid-template-columns: 3.6rem minmax(0,1fr) 1.8rem minmax(4.2rem,auto); gap: 10px; }
     .dep-card.is-compact .dep-cols.is-head { letter-spacing: 0.08em; }
     .dep-card.is-compact .dep-time { font-size: 12px; }
     .dep-card.is-compact .dep-dest .to { font-size: 12px; }
     .dep-card.is-compact .dep-trk { width: 18px; height: 18px; font-size: 10px; }
     .dep-card.is-compact .dep-toolbar select { height: 32px; }
     .dep-card.is-compact .head { padding-bottom: 2px; }
-    .dep-card.is-large .dep-cols { padding: 10px 16px; grid-template-columns: 5.4rem minmax(0,1fr) 4.2rem 6rem; }
+    .dep-card.is-large .dep-cols { padding: 14px 20px; grid-template-columns: 5.4rem minmax(0,1fr) 4.2rem 6.2rem; }
     .dep-card.is-large .dep-time { font-size: 20px; }
     .dep-card.is-large .dep-dest .to { font-size: 15px; }
     .dep-card.is-large .dep-trk { width: 28px; height: 28px; font-size: 12px; }
@@ -743,23 +745,16 @@ const RAIL_STATIONS = [
       .dep-cols,
       .dep-card.is-compact .dep-cols,
       .dep-card.is-large .dep-cols {
-        grid-template-columns: 3rem minmax(0,1fr) 1.4rem minmax(3.1rem,auto);
-        gap: 4px;
-        padding-left: 8px;
-        padding-right: 8px;
+        grid-template-columns: 3.2rem minmax(0,1fr) 1.6rem minmax(3.6rem,auto);
+        gap: 8px;
+        padding: 10px 16px;
       }
-      .dep-time { font-size: 12px; }
-      .dep-dest .to, .dep-card.is-large .dep-dest .to { font-size: 12px; }
-      .dep-expect, .dep-expect .late { font-size: 10px; line-height: 1.15; }
-      .dep-trk, .dep-card.is-large .dep-trk { width: 18px; height: 18px; font-size: 10px; }
+      .dep-time { font-size: 13px; }
+      .dep-expect, .dep-expect .late { font-size: 11px; line-height: 1.2; }
       .dep-toolbar label { min-width: 0; }
     }
-    .bubble { min-width: 0; overflow: hidden; }
-    .bubble-clock { overflow-wrap: anywhere; }
+    .bubble { min-width: 0; }
     .hero-grid { min-width: 0; }
-    @media (max-width: 520px) {
-      .hero-grid { display: flex; flex-direction: column; }
-    }
 
     .rail-badge {
       display: inline-flex; align-items: center; justify-content: center;
@@ -768,7 +763,7 @@ const RAIL_STATIONS = [
     }
     .bubble {
       display: block; width: 100%; text-align: left;
-      min-height: 80px; padding: 12px;
+      min-height: 92px; padding: 16px 18px 14px;
       background: var(--secondary-background-color, rgba(18,23,31,0.55));
       border-radius: 16px;
       box-shadow: inset 0 0 0 1px var(--divider-color, rgba(127,127,127,0.22));
@@ -780,9 +775,15 @@ const RAIL_STATIONS = [
       font-variant-numeric: tabular-nums;
       font-weight: 500;
       letter-spacing: -0.03em;
+      white-space: nowrap;
     }
     .bubble-clock.is-lg { font-size: 30px; }
     .bubble-clock.is-sm { font-size: 20px; }
+    .bubble { container-type: inline-size; }
+    @container (max-width: 210px) {
+      .bubble-clock.is-lg { font-size: 22px; }
+      .bubble-clock.is-sm { font-size: 16px; }
+    }
     .bubble-late { font-size: 12px; font-weight: 500; white-space: nowrap; }
     .bubble-hint { margin-top: 2px; font-size: 12px; opacity: 0.65; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .bubble-train.is-sm {
@@ -792,8 +793,8 @@ const RAIL_STATIONS = [
     .hero-grid {
       display: flex;
       flex-wrap: wrap;
-      gap: 8px;
-      padding: 8px 12px 14px;
+      gap: 10px;
+      padding: 6px 16px 18px;
     }
     .hero-grid > .bubble {
       flex: 1 1 138px;
@@ -805,7 +806,7 @@ const RAIL_STATIONS = [
     }
     .board-bar {
       display: flex; flex-wrap: wrap; gap: 8px 14px;
-      padding: 14px 16px 2px;
+      padding: 16px 18px 6px;
       font-size: 12px; opacity: 0.72;
     }
     @media (max-width: 640px) {
@@ -830,7 +831,7 @@ const RAIL_STATIONS = [
   }
 
   const PHILLY = { lat: 40.037, lon: -75.171 };
-  const OSM_TILE = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
+  const OSM_TILE = "https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png";
   const ESRI_TILE = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}";
 
   function latLonToWorld(lat, lon, z) {
@@ -912,7 +913,7 @@ const RAIL_STATIONS = [
     this.drag = null;
     this.openId = "";
     host.innerHTML = `
-      <div class="osm-wrap${this.dark ? " is-dark" : ""}">
+      <div class="osm-wrap">
         <div class="osm-tiles"></div>
         <div class="osm-marks"></div>
         <div class="osm-count"></div>
@@ -921,7 +922,7 @@ const RAIL_STATIONS = [
           <button type="button" data-z="-1" aria-label="Zoom out">−</button>
         </div>
         <div class="osm-pop" hidden></div>
-        <div class="osm-attr">© OpenStreetMap</div>
+        <div class="osm-attr">© OpenStreetMap © CARTO</div>
       </div>
     `;
     this.wrap = host.querySelector(".osm-wrap");
