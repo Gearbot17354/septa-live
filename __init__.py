@@ -44,7 +44,9 @@ _FRONTEND = f"{DOMAIN}_frontend_registered"
 _CARD_JS = "septa-live-card.js"
 _PANEL_JS = "septa-live-panel.js"
 _PANEL_PATH = "septa-live"
-_CARD_VERSION = "1.9.6"
+_CARD_VERSION = "1.9.7"
+_PANEL_SIG: tuple | None = None
+_RELOADING: set[str] = set()
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -314,11 +316,16 @@ def _sidebar_enabled(entry: ConfigEntry) -> bool:
 
 async def _async_sync_panel(hass: HomeAssistant) -> None:
     """Register the SEPTA app and show or hide the sidebar item."""
+    global _PANEL_SIG
     entries = [
         entry
         for entry in hass.config_entries.async_entries(DOMAIN)
         if entry.entry_id in (hass.data.get(DOMAIN) or {})
     ]
+    show = any(_sidebar_enabled(entry) for entry in entries)
+    sig = (bool(entries), show, _CARD_VERSION)
+    if entries and sig == _PANEL_SIG:
+        return
     try:
         from homeassistant.components.frontend import async_remove_panel
 
@@ -326,8 +333,8 @@ async def _async_sync_panel(hass: HomeAssistant) -> None:
     except Exception as err:  # noqa: BLE001
         _LOGGER.debug("SEPTA Transit panel remove skipped: %s", err)
     if not entries:
+        _PANEL_SIG = sig
         return
-    show = any(_sidebar_enabled(entry) for entry in entries)
     try:
         from homeassistant.components import panel_custom
 
@@ -342,8 +349,10 @@ async def _async_sync_panel(hass: HomeAssistant) -> None:
             require_admin=False,
             embed_iframe=False,
         )
+        _PANEL_SIG = sig
         _LOGGER.info("SEPTA Transit sidebar app registered (visible=%s)", show)
     except Exception as err:  # noqa: BLE001
+        _PANEL_SIG = None
         _LOGGER.warning("SEPTA Transit could not register the sidebar app: %s", err)
 
 
@@ -381,12 +390,18 @@ async def _async_ensure_lovelace_resource(hass: HomeAssistant, url: str) -> bool
 
 
 async def _async_reload(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    await hass.config_entries.async_reload(entry.entry_id)
+    """Reload sensors without tearing down the sidebar page."""
+    _RELOADING.add(entry.entry_id)
+    try:
+        await hass.config_entries.async_reload(entry.entry_id)
+    finally:
+        _RELOADING.discard(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id, None)
-        await _async_sync_panel(hass)
+        if entry.entry_id not in _RELOADING:
+            await _async_sync_panel(hass)
     return unload_ok

@@ -67,7 +67,11 @@
     .hint { margin-top: 4px; font-size: 12px; color: #8b96a8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .ok { color: #7dba98; } .late { color: #d4a054; } .bad { color: #d0726a; } .muted { color: #8b96a8; }
     .follow { margin-top: 8px; padding-top: 8px; box-shadow: 0 -1px 0 #2a3340; }
-    .line { display: inline-flex; align-items: center; justify-content: center; min-width: 34px; height: 18px; padding: 0 5px; border-radius: 3px; color: #fff; font-size: 10px; font-weight: 700; letter-spacing: 0.04em; }
+    .line {
+      display: inline-flex; align-items: center; justify-content: center; flex: none;
+      min-width: 2.15rem; height: 1.35rem; padding: 0 0.35rem; border-radius: 4px;
+      color: #f4f7fb; font-size: 11px; font-weight: 700; letter-spacing: 0.02em; line-height: 1;
+    }
     .deps { margin-top: 18px; border-radius: 16px; background: #171d27; box-shadow: 0 0 0 1px #2a3340; overflow: hidden; }
     .dep-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px; padding: 14px 16px; box-shadow: 0 1px 0 #2a3340; }
     .cols, .row { display: grid; grid-template-columns: 4.5rem minmax(0,1fr) 4.2rem 5.6rem; gap: 12px; align-items: center; padding: 8px 16px; }
@@ -134,11 +138,38 @@
     return [mins, t.service_type, t.destination, t.track ? "Track " + t.track : ""].filter(Boolean).join(" · ");
   }
 
+  const LINE_NAME = [
+    [/airport/i, "AIR"],
+    [/chestnut hill east|chestnut h east/i, "CHE"],
+    [/chestnut hill west|chestnut h west/i, "CHW"],
+    [/cynwyd/i, "CYN"],
+    [/fox chase/i, "FOX"],
+    [/lansdale|doylestown/i, "LAN"],
+    [/media|wawa/i, "MED"],
+    [/manayunk|norristown/i, "NOR"],
+    [/paoli|thorndale/i, "PAO"],
+    [/west trenton/i, "WTR"],
+    [/warminster/i, "WAR"],
+    [/trenton/i, "TRE"],
+    [/wilmington|newark/i, "WIL"],
+  ];
+
+  function lineCode(code) {
+    const raw = String(code || "").trim().toUpperCase();
+    if (LINE[raw]) return raw;
+    const text = String(code || "");
+    for (let i = 0; i < LINE_NAME.length; i++) {
+      if (LINE_NAME[i][0].test(text)) return LINE_NAME[i][1];
+    }
+    return raw.length > 4 ? "" : raw;
+  }
+
   function lineBadge(code) {
-    const key = String(code || "").toUpperCase();
+    const key = lineCode(code);
     if (!key) return "";
     const bg = LINE[key] || "#7aa2ce";
-    return '<span class="line" style="background:' + bg + '">' + esc(key) + "</span>";
+    const fg = key === "WAR" ? "#14110c" : "#f4f7fb";
+    return '<span class="line" style="background:' + bg + ";color:" + fg + '">' + esc(key) + "</span>";
   }
 
   function splitClock(clock) {
@@ -184,15 +215,19 @@
       return this._hass.callWS(Object.assign({ type: type }, extra || {}));
     }
 
-    async _load() {
+    async _load(quiet) {
       try {
         this._cfg = await this._call("septa_live/panel");
         const first = (this._cfg.entries || [])[0];
-        if (first) this._draft = Object.assign({}, first);
-        this._paint();
+        if (first) this._draft = Object.assign({}, first, { watches: first.watches || [] });
+        if (!quiet) this._paint();
+        return true;
       } catch (err) {
-        this._msg = (err && err.message) || "Could not load SEPTA Transit";
-        this._paint();
+        if (!quiet) {
+          this._msg = (err && err.message) || "Could not load SEPTA Transit";
+          this._paint();
+        }
+        return false;
       }
     }
 
@@ -484,7 +519,12 @@
             watches: this._draft.watches || [],
           });
           this._msg = "Saved.";
-          await this._load();
+          let ok = false;
+          for (let i = 0; i < 6 && !ok; i++) {
+            if (i) await new Promise((resolve) => setTimeout(resolve, 700));
+            ok = await this._load(true);
+          }
+          if (!ok) this._msg = "Saved. The board will catch up in a moment.";
         } catch (err) {
           this._msg = (err && err.message) || "Save failed";
         }
