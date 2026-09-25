@@ -1,5 +1,5 @@
 (() => {
-  const CARD_VERSION = "1.9.2";
+  const CARD_VERSION = "1.9.3";
 
 const RAIL_STATIONS = [
     {name:'9th St',api:'9th St'},
@@ -718,16 +718,24 @@ const RAIL_STATIONS = [
       height: 36px; border-radius: 6px; border: 1px solid var(--divider-color, rgba(127,127,127,0.35));
       background: var(--secondary-background-color, #11161e); color: inherit; padding: 0 10px; font-size: 13px;
     }
-    .dep-cols {
-      display: grid; grid-template-columns: 4.6rem minmax(0,1fr) 3.8rem 5.4rem;
-      gap: 12px; align-items: center; padding: 10px 18px;
+    .dep-cols,
+    button.hit.dep-cols {
+      display: grid;
+      grid-template-columns: 4.5rem minmax(0, 1fr) 5.75rem 5.6rem;
+      gap: 12px;
+      align-items: center;
+      padding: 10px 18px;
     }
+    .dep-cols > *,
+    button.hit.dep-cols > * { min-width: 0; }
     .dep-cols.is-head {
       font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; opacity: 0.5; font-weight: 600;
     }
+    .dep-cols.is-head > :nth-child(3) { text-align: center; }
+    .dep-cols.is-head > :nth-child(4) { text-align: right; }
     .dep-cols.is-row { padding-top: 8px; padding-bottom: 8px; }
     .dep-cols.is-row + .dep-cols.is-row { box-shadow: 0 -1px 0 var(--divider-color, rgba(127,127,127,0.2)); }
-    .dep-plat { display: flex; justify-content: center; }
+    .dep-plat { display: flex; width: 100%; justify-content: center; }
     .dep-expect { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; text-align: right; }
     .dep-expect .late { font-size: 11px; }
     .size-pills { display: flex; gap: 6px; padding: 0 18px 12px; }
@@ -736,25 +744,31 @@ const RAIL_STATIONS = [
       background: transparent; color: inherit; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
     }
     .size-pills button.on { background: var(--secondary-background-color, #11161e); border-color: transparent; }
-    .dep-card.is-compact .dep-cols { padding: 10px 16px; grid-template-columns: 3.6rem minmax(0,1fr) 1.8rem minmax(4.2rem,auto); gap: 10px; }
+    .dep-card.is-compact .dep-cols,
+    .dep-card.is-compact button.hit.dep-cols { padding: 10px 16px; grid-template-columns: 3.6rem minmax(0,1fr) 4.75rem 4.6rem; gap: 10px; }
     .dep-card.is-compact .dep-cols.is-head { letter-spacing: 0.08em; }
     .dep-card.is-compact .dep-time { font-size: 12px; }
     .dep-card.is-compact .dep-dest .to { font-size: 12px; }
     .dep-card.is-compact .dep-trk { width: 18px; height: 18px; font-size: 10px; }
     .dep-card.is-compact .dep-toolbar select { height: 32px; }
     .dep-card.is-compact .head { padding-bottom: 2px; }
-    .dep-card.is-large .dep-cols { padding: 14px 20px; grid-template-columns: 5.4rem minmax(0,1fr) 4.2rem 6.2rem; }
+    .dep-card.is-large .dep-cols,
+    .dep-card.is-large button.hit.dep-cols { padding: 14px 20px; grid-template-columns: 5.4rem minmax(0,1fr) 5.75rem 6.2rem; }
     .dep-card.is-large .dep-time { font-size: 20px; }
     .dep-card.is-large .dep-dest .to { font-size: 15px; }
     .dep-card.is-large .dep-trk { width: 28px; height: 28px; font-size: 12px; }
     .dep-card { container-type: inline-size; }
     @container (max-width: 460px) {
       .dep-cols,
+      button.hit.dep-cols,
       .dep-card.is-compact .dep-cols,
-      .dep-card.is-large .dep-cols {
-        grid-template-columns: 3.2rem minmax(0,1fr) 1.6rem minmax(3.6rem,auto);
+      .dep-card.is-compact button.hit.dep-cols,
+      .dep-card.is-large .dep-cols,
+      .dep-card.is-large button.hit.dep-cols {
+        grid-template-columns: 3.3rem minmax(0,1fr) 4.75rem 4.4rem;
         gap: 8px;
-        padding: 10px 16px;
+        padding-left: 16px;
+        padding-right: 16px;
       }
       .dep-time { font-size: 13px; }
       .dep-expect, .dep-expect .late { font-size: 11px; line-height: 1.2; }
@@ -2005,8 +2019,8 @@ const RAIL_STATIONS = [
           <div class="dep-cols is-head">
             <span>Time</span>
             <span>Destination</span>
-            <span style="text-align:center">Platform</span>
-            <span style="text-align:right">Expected</span>
+            <span>Platform</span>
+            <span>Expected</span>
           </div>
           ${rows}
         </ha-card>
