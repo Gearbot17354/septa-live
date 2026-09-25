@@ -33,12 +33,19 @@
     .modes button.on { color: #e8edf4; background: #1e2632; box-shadow: 0 0 0 1px #7aa2ce; }
     .mode-grid { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 10px; margin-bottom: 18px; }
     .mode-card {
-      text-align: left; border: 0; border-radius: 16px; background: #171d27; color: #e8edf4;
-      box-shadow: 0 0 0 1px #2a3340; padding: 14px 14px 12px; cursor: pointer; font: inherit; min-height: 92px;
+      display: flex; flex-direction: column; text-align: left; border: 0; border-radius: 16px;
+      background: #171d27; color: #e8edf4; box-shadow: 0 0 0 1px #2a3340; padding: 0; overflow: hidden; min-height: 108px;
     }
     .mode-card.on { box-shadow: 0 0 0 1px #7aa2ce; }
-    .mode-card .nm { font-weight: 560; margin-top: 8px; }
-    .mode-card .st { color: #8b96a8; font-size: 13px; }
+    .mode-main { flex: 1; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; padding: 14px 14px 6px; }
+    .mode-card .nm { font-weight: 560; }
+    .mode-card .st { color: #8b96a8; font-size: 13px; margin-top: 2px; }
+    .steppers { display: flex; justify-content: flex-end; gap: 6px; padding: 0 10px 10px; }
+    .steppers button {
+      width: 32px; height: 32px; border-radius: 6px; border: 0; cursor: pointer;
+      background: #0b0e13; color: #c5ced8; box-shadow: 0 0 0 1px #2a3340; font: inherit; font-size: 18px; line-height: 1;
+    }
+    .steppers button:disabled { opacity: 0.35; cursor: default; }
     .commute-row {
       display: grid; grid-template-columns: 8.5rem minmax(0,1fr) minmax(0,1fr) auto minmax(0,1.15fr);
       gap: 10px; align-items: end; padding: 12px; margin-bottom: 10px;
@@ -274,6 +281,11 @@
       const stations = (this._cfg && this._cfg.stations) || [];
       const lines = (this._cfg && this._cfg.lines) || [];
       const busRoutes = (this._cfg && this._cfg.bus_routes) || [];
+      const metroLines = (this._cfg && this._cfg.metro_lines) || [];
+      const trolleyLines = (this._cfg && this._cfg.trolley_lines) || [];
+      const metroStops = (this._cfg && this._cfg.metro_stations) || [];
+      const trolleyStops = (this._cfg && this._cfg.trolley_stations) || [];
+      const watches = Array.isArray(draft.watches) ? draft.watches : [];
       const showRail = draft.show_rail !== false;
       const showBus = draft.show_bus === true;
       const showMetro = draft.show_metro === true;
@@ -290,7 +302,33 @@
       const destOpts = stations.map((name) => '<option value="' + esc(name) + '"' + (name === draft.destination ? " selected" : "") + ">" + esc(name) + "</option>").join("");
       const lineOpts = '<option value="">Any line</option>' + lines.map((line) => '<option value="' + esc(line.id) + '"' + (line.id === draft.rail_line ? " selected" : "") + ">" + esc(line.name) + "</option>").join("");
       const busOpts = '<option value="">Any route</option>' + busRoutes.map((route) => '<option value="' + esc(route.id) + '"' + (String(route.id) === String(draft.bus_line || "") ? " selected" : "") + ">" + esc(route.id + " · " + route.name) + "</option>").join("");
-      const modeCard = (key, on, title, status) => '<button type="button" data-mode="' + key + '" class="mode-card' + (on ? " on" : "") + '"><div class="nm">' + esc(title) + '</div><div class="st">' + esc(status) + "</div></button>";
+      const selectOpts = (list, value, empty, labelOf) =>
+        '<option value="">' + esc(empty) + "</option>" +
+        list.map((item) => {
+          const id = typeof item === "string" ? item : item.id;
+          const label = labelOf ? labelOf(item) : (typeof item === "string" ? item : item.name);
+          return '<option value="' + esc(id) + '"' + (String(id) === String(value || "") ? " selected" : "") + ">" + esc(label) + "</option>";
+        }).join("");
+      const modeCard = (flag, mode, title, on) => {
+        const extra = watches.filter((w) => w.mode === mode).length;
+        const n = on ? 1 + extra : 0;
+        const caption = on && extra ? n + " lines" : (on ? "On" : "Off");
+        return '<div class="mode-card' + (on ? " on" : "") + '"><button type="button" class="mode-main" data-mode="' + flag + '"><div class="nm">' + esc(title) + '</div><div class="st">' + esc(caption) + '</div></button><div class="steppers"><button type="button" data-minus="' + mode + '"' + (on ? "" : " disabled") + '>−</button><button type="button" data-plus="' + mode + '"' + (on && n >= 4 ? " disabled" : "") + ">+</button></div></div>";
+      };
+      const watchRows = watches.filter((w) => (w.mode === "rail" && showRail) || (w.mode === "bus" && showBus) || (w.mode === "metro" && showMetro) || (w.mode === "trolley" && showTrolley)).map((w) => {
+        const lineList = w.mode === "rail" ? lines : w.mode === "bus" ? busRoutes : w.mode === "metro" ? metroLines : trolleyLines;
+        const placeList = w.mode === "metro" ? metroStops : w.mode === "trolley" ? trolleyStops : stations;
+        const title = { rail: "Regional Rail", bus: "Buses", metro: "Metro", trolley: "Trolley" }[w.mode];
+        const lineLabel = (item) => (w.mode === "bus" ? item.id + " · " + item.name : item.name);
+        return '<div class="commute-row"><div class="who">' + esc(title) + '</div><label class="field">Line<select data-watch-line="' + esc(w.id) + '">' + selectOpts(lineList, w.line, "Any line", lineLabel) + '</select></label><label class="field">Home<select data-watch-home="' + esc(w.id) + '">' + selectOpts(placeList, w.home, "Same as above", null) + '</select></label><span class="swap">↔</span><label class="field">Commute to<select data-watch-dest="' + esc(w.id) + '">' + selectOpts(placeList, w.dest, "Any destination", null) + "</select></label></div>";
+      }).join("");
+      const serviceCard = (title, state) => {
+        const summary = state && state.attributes && state.attributes.summary ? String(state.attributes.summary) : "";
+        const count = state && !blank(state) ? state.state : "—";
+        return '<article class="bubble"><div class="kicker"><span>' + esc(title) + '</span></div><div class="clockrow"><div class="clock">' + esc(count) + '</div></div><div class="hint">' + esc(summary || (state ? "None reporting" : "Turn it on, then Save")) + "</div></article>";
+      };
+      const metro = this._state(entry, "metro");
+      const trolley = this._state(entry, "trolley");
       const busCard = showBus
         ? '<article class="bubble"><div class="kicker"><span>Next bus</span>' + (bus && bus.attributes && bus.attributes.route ? lineBadge(String(bus.attributes.route)) : "") + '</div><div class="clockrow"><div class="clock">' + esc(bus && !blank(bus) ? ((bus.attributes && bus.attributes.clock) || bus.state) : "—") + "</div></div><div class=\"hint\">" + esc(bus && bus.attributes && bus.attributes.destination ? bus.attributes.destination : "No nearby bus") + "</div></article>"
         : "";
@@ -298,6 +336,13 @@
         ? this._bubble("Next inbound", south) + this._bubble("Next outbound", north)
         : "";
       const busBubble = (this._tab === "all" || this._tab === "bus") ? busCard : "";
+      const metroBubble = showMetro && (this._tab === "all" || this._tab === "metro") ? serviceCard("Metro", metro) : "";
+      const trolleyBubble = showTrolley && (this._tab === "all" || this._tab === "trolley") ? serviceCard("Trolley", trolley) : "";
+      const lineBubbles = watches.filter((w) => this._tab === "all" || this._tab === w.mode).map((w) => {
+        const state = this._state(entry, "line_" + w.mode + "_" + w.id);
+        const name = (w.line || w.home || w.mode).toString();
+        return serviceCard(name, state);
+      }).join("");
 
       this.shadowRoot.innerHTML = "<style>" + CSS + "</style><div class=\"page\">" +
         '<header class="top"><div class="brand">' + RAIL + '<div><div class="eyebrow"><span class="live"></span> Regional Rail</div><h1>SEPTA Transit</h1></div></div>' +
@@ -306,18 +351,21 @@
         [0, 2, 4, 5, 6, 8, 10, 12, 15, 20].map((n) => '<option value="' + n + '"' + (Number(draft.walk_minutes) === n ? " selected" : "") + ">" + n + " min</option>").join("") +
         "</select></label>" + (showRail ? "<span>Leave in <b>" + esc(leaveText) + "</b></span>" : "") + "</div>" +
         '<p class="label">Show on board</p><div class="mode-grid">' +
-        modeCard("show_rail", showRail, "Regional Rail", showRail ? "On" : "Off") +
-        modeCard("show_bus", showBus, "Buses", showBus ? "On" : "Off") +
-        modeCard("show_metro", showMetro, "Metro", showMetro ? "On" : "Off") +
-        modeCard("show_trolley", showTrolley, "Trolley", showTrolley ? "On" : "Off") +
+        modeCard("show_rail", "rail", "Regional Rail", showRail) +
+        modeCard("show_bus", "bus", "Buses", showBus) +
+        modeCard("show_metro", "metro", "Metro", showMetro) +
+        modeCard("show_trolley", "trolley", "Trolley", showTrolley) +
         "</div>" +
         '<p class="label">Commute</p>' +
         (showRail ? '<div class="commute-row"><div class="who">Regional Rail</div><label class="field">Line<select data-rail-line>' + lineOpts + '</select></label><label class="field">Home<select data-home>' + homeOpts + '</select></label><span class="swap">↔</span><label class="field">Commute to<select data-dest>' + destOpts + "</select></label></div>" : "") +
         (showBus ? '<div class="commute-row"><div class="who">Buses</div><label class="field">Line<select data-bus-line>' + busOpts + '</select></label><label class="field">Home stop<input value="Nearby stops" disabled /></label><span class="swap"></span><label class="field">Commute to<input value="Any destination" disabled /></label></div>' : "") +
+        (showMetro ? '<div class="commute-row"><div class="who">Metro</div><label class="field">Line<select data-metro-line>' + selectOpts(metroLines, draft.metro_line, "Any line", (item) => item.name) + '</select></label><label class="field">Home<select data-metro-home>' + selectOpts(metroStops, draft.metro_home, "All Metro", null) + '</select></label><span class="swap">↔</span><label class="field">Commute to<select data-metro-dest>' + selectOpts(metroStops, draft.metro_dest, "Any destination", null) + "</select></label></div>" : "") +
+        (showTrolley ? '<div class="commute-row"><div class="who">Trolley</div><label class="field">Line<select data-trolley-line>' + selectOpts(trolleyLines, draft.trolley_line, "Any line", (item) => item.name) + '</select></label><label class="field">Home<select data-trolley-home>' + selectOpts(trolleyStops, draft.trolley_home, "All trolleys", null) + '</select></label><span class="swap">↔</span><label class="field">Commute to<select data-trolley-dest>' + selectOpts(trolleyStops, draft.trolley_dest, "Any destination", null) + "</select></label></div>" : "") +
+        watchRows +
         '<button class="save" type="button" data-save ' + (this._busy ? "disabled" : "") + ">Save</button>" +
-        '<p class="note">Save adds or removes the Regional Rail, bus, Metro, and trolley sensors, and limits them to the line you picked.</p>' +
+        '<p class="note">Plus adds another line and its sensor. Save turns Metro and trolley on, then they show up on the board.</p>' +
         (this._msg ? '<div class="note">' + esc(this._msg) + "</div>" : "") +
-        '<section class="board"><div class="board-head"><p class="label" style="margin:0">Board</p><span class="sub">' + esc(entry ? entry.station : "") + '</span></div><div class="modes" style="padding:0 12px"><button type="button" data-tab="all" class="' + (this._tab === "all" ? "on" : "") + '">All</button><button type="button" data-tab="rail" class="' + (this._tab === "rail" ? "on" : "") + '">Regional Rail</button>' + (showBus ? '<button type="button" data-tab="bus" class="' + (this._tab === "bus" ? "on" : "") + '">Buses</button>' : "") + '</div><div class="bubbles">' + bubbles + busBubble + "</div></section>" +
+        '<section class="board"><div class="board-head"><p class="label" style="margin:0">Board</p><span class="sub">' + esc(entry ? entry.station : "") + '</span></div><div class="modes" style="padding:0 12px"><button type="button" data-tab="all" class="' + (this._tab === "all" ? "on" : "") + '">All</button>' + (showRail ? '<button type="button" data-tab="rail" class="' + (this._tab === "rail" ? "on" : "") + '">Regional Rail</button>' : "") + (showBus ? '<button type="button" data-tab="bus" class="' + (this._tab === "bus" ? "on" : "") + '">Buses</button>' : "") + (showMetro ? '<button type="button" data-tab="metro" class="' + (this._tab === "metro" ? "on" : "") + '">Metro</button>' : "") + (showTrolley ? '<button type="button" data-tab="trolley" class="' + (this._tab === "trolley" ? "on" : "") + '">Trolley</button>' : "") + '</div><div class="bubbles">' + bubbles + busBubble + metroBubble + trolleyBubble + lineBubbles + "</div></section>" +
         (showRail ? '<section class="deps"><div class="dep-head"><div><div class="eyebrow">Departures</div><div class="sub">' + esc(this._dir === "north" ? "Outbound" : "Inbound") + '</div></div><div class="modes" style="margin:0"><button type="button" data-dir="south" class="' + (this._dir === "south" ? "on" : "") + '">Inbound</button><button type="button" data-dir="north" class="' + (this._dir === "north" ? "on" : "") + '">Outbound</button></div></div><div class="cols"><span>Time</span><span>Destination</span><span style="text-align:center">Platform</span><span style="text-align:right">Expected</span></div>' + this._rows(trains) + "</section>" : "") +
         "</div>";
       this._bind();
@@ -339,14 +387,64 @@
         if (side) this._draft.show_sidebar = side.checked;
         if (railLine) this._draft.rail_line = railLine.value;
         if (busLine) this._draft.bus_line = busLine.value;
+        ["metro", "trolley"].forEach((mode) => {
+          const line = root.querySelector("[data-" + mode + "-line]");
+          const home = root.querySelector("[data-" + mode + "-home]");
+          const destSel = root.querySelector("[data-" + mode + "-dest]");
+          if (line) this._draft[mode + "_line"] = line.value;
+          if (home) this._draft[mode + "_home"] = home.value;
+          if (destSel) this._draft[mode + "_dest"] = destSel.value;
+        });
+        this._draft.watches = (this._draft.watches || []).map((w) => {
+          const line = root.querySelector('[data-watch-line="' + w.id + '"]');
+          const wh = root.querySelector('[data-watch-home="' + w.id + '"]');
+          const wd = root.querySelector('[data-watch-dest="' + w.id + '"]');
+          return Object.assign({}, w, {
+            line: line ? line.value : w.line,
+            home: wh ? wh.value : w.home,
+            dest: wd ? wd.value : w.dest,
+          });
+        });
+      };
+      const setMode = (mode, on) => {
+        const flag = "show_" + mode;
+        this._draft[flag] = mode === "rail" ? on : on;
+        if (mode === "rail" && !on) this._draft.show_rail = false;
       };
       root.querySelectorAll("[data-dir]").forEach((btn) => btn.addEventListener("click", () => { this._dir = btn.getAttribute("data-dir"); this._paint(); }));
       root.querySelectorAll("[data-tab]").forEach((btn) => btn.addEventListener("click", () => { this._tab = btn.getAttribute("data-tab"); this._paint(); }));
       root.querySelectorAll("[data-mode]").forEach((btn) => btn.addEventListener("click", () => {
         grab();
         const key = btn.getAttribute("data-mode");
-        this._draft[key] = !this._draft[key];
-        if (key === "show_rail" && this._draft.show_rail === undefined) this._draft.show_rail = false;
+        const mode = key.replace("show_", "");
+        const on = mode === "rail" ? this._draft.show_rail !== false : this._draft[key] === true;
+        setMode(mode, !on);
+        this._paint();
+      }));
+      root.querySelectorAll("[data-plus]").forEach((btn) => btn.addEventListener("click", () => {
+        grab();
+        const mode = btn.getAttribute("data-plus");
+        const on = mode === "rail" ? this._draft.show_rail !== false : this._draft["show_" + mode] === true;
+        if (!on) {
+          setMode(mode, true);
+        } else {
+          const extra = (this._draft.watches || []).filter((w) => w.mode === mode);
+          if (extra.length >= 3) return;
+          this._draft.watches = (this._draft.watches || []).concat([{ id: Math.random().toString(36).slice(2, 10), mode: mode, line: "", home: "", dest: "" }]);
+        }
+        this._paint();
+      }));
+      root.querySelectorAll("[data-minus]").forEach((btn) => btn.addEventListener("click", () => {
+        grab();
+        const mode = btn.getAttribute("data-minus");
+        const list = this._draft.watches || [];
+        const extra = list.filter((w) => w.mode === mode);
+        if (extra.length) {
+          const last = extra[extra.length - 1].id;
+          this._draft.watches = list.filter((w) => w.id !== last);
+        } else {
+          setMode(mode, false);
+        }
         this._paint();
       }));
       root.querySelector("[data-save]") && root.querySelector("[data-save]").addEventListener("click", async () => {
@@ -369,6 +467,13 @@
             show_trolley: this._draft.show_trolley === true,
             rail_line: this._draft.rail_line || "",
             bus_line: this._draft.bus_line || "",
+            metro_line: this._draft.metro_line || "",
+            trolley_line: this._draft.trolley_line || "",
+            metro_home: this._draft.metro_home || "",
+            metro_dest: this._draft.metro_dest || "",
+            trolley_home: this._draft.trolley_home || "",
+            trolley_dest: this._draft.trolley_dest || "",
+            watches: this._draft.watches || [],
           });
           this._msg = "Saved.";
           await this._load();

@@ -15,6 +15,9 @@ from .bus_routes import BUS_ROUTES
 from .const import (
     CONF_BUS_LINE,
     CONF_DESTINATION,
+    CONF_METRO_DEST,
+    CONF_METRO_LINE,
+    CONF_METRO_STATION,
     CONF_RAIL_LINE,
     CONF_SHOW_BUS,
     CONF_SHOW_METRO,
@@ -22,10 +25,17 @@ from .const import (
     CONF_SHOW_TROLLEY,
     CONF_SIDEBAR,
     CONF_STATION,
+    CONF_TROLLEY_DEST,
+    CONF_TROLLEY_LINE,
+    CONF_TROLLEY_STATION,
     CONF_WALK,
+    CONF_WATCHES,
     DOMAIN,
+    METRO_STATIONS,
     PLATFORMS,
+    SERVICE_LINES,
     STATIONS,
+    TROLLEY_STATIONS,
 )
 from .coordinator import SeptaCoordinator, _LINE_NAMES, slug
 
@@ -34,7 +44,7 @@ _FRONTEND = f"{DOMAIN}_frontend_registered"
 _CARD_JS = "septa-live-card.js"
 _PANEL_JS = "septa-live-panel.js"
 _PANEL_PATH = "septa-live"
-_CARD_VERSION = "1.9.4"
+_CARD_VERSION = "1.9.5"
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -159,6 +169,13 @@ async def websocket_panel(
                 "show_sidebar": _sidebar_enabled(coordinator.entry),
                 "rail_line": coordinator.rail_line,
                 "bus_line": coordinator.bus_line,
+                "metro_line": coordinator.metro_line,
+                "trolley_line": coordinator.trolley_line,
+                "metro_home": coordinator.metro_home,
+                "metro_dest": coordinator.metro_dest,
+                "trolley_home": coordinator.trolley_home,
+                "trolley_dest": coordinator.trolley_dest,
+                "watches": coordinator.watches(),
                 "entities": _entity_map(hass, entry_id, coordinator.station, coordinator.destination),
             }
         )
@@ -169,8 +186,41 @@ async def websocket_panel(
             "stations": list(STATIONS),
             "lines": [{"id": code, "name": name} for code, name in _LINE_NAMES.items()],
             "bus_routes": [{"id": rid, "name": name} for rid, name in BUS_ROUTES],
+            "metro_lines": [{"id": rid, "name": name} for rid, name in SERVICE_LINES["metro"]],
+            "trolley_lines": [{"id": rid, "name": name} for rid, name in SERVICE_LINES["trolley"]],
+            "metro_stations": list(METRO_STATIONS),
+            "trolley_stations": list(TROLLEY_STATIONS),
         },
     )
+
+
+def _clean_watches(raw: object) -> list[dict[str, str]]:
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, str]] = []
+    counts: dict[str, int] = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        mode = str(item.get("mode") or "")
+        if mode not in ("rail", "bus", "metro", "trolley"):
+            continue
+        counts[mode] = counts.get(mode, 0) + 1
+        if counts[mode] > 3:
+            continue
+        wid = "".join(ch for ch in str(item.get("id") or "").lower() if ch.isalnum())[:12]
+        if not wid:
+            continue
+        out.append(
+            {
+                "id": wid,
+                "mode": mode,
+                "line": str(item.get("line") or "")[:24],
+                "home": str(item.get("home") or "")[:80],
+                "dest": str(item.get("dest") or "")[:80],
+            }
+        )
+    return out
 
 
 @websocket_api.websocket_command(
@@ -187,6 +237,13 @@ async def websocket_panel(
         vol.Optional("station"): str,
         vol.Optional("rail_line"): str,
         vol.Optional("bus_line"): str,
+        vol.Optional("metro_line"): str,
+        vol.Optional("trolley_line"): str,
+        vol.Optional("metro_home"): str,
+        vol.Optional("metro_dest"): str,
+        vol.Optional("trolley_home"): str,
+        vol.Optional("trolley_dest"): str,
+        vol.Optional("watches"): list,
     }
 )
 @websocket_api.async_response
@@ -212,10 +269,18 @@ async def websocket_options(
         "show_trolley": CONF_SHOW_TROLLEY,
         "rail_line": CONF_RAIL_LINE,
         "bus_line": CONF_BUS_LINE,
+        "metro_line": CONF_METRO_LINE,
+        "trolley_line": CONF_TROLLEY_LINE,
+        "metro_home": CONF_METRO_STATION,
+        "metro_dest": CONF_METRO_DEST,
+        "trolley_home": CONF_TROLLEY_STATION,
+        "trolley_dest": CONF_TROLLEY_DEST,
     }
     for src, dest in mapping.items():
         if src in msg:
             options[dest] = msg[src]
+    if "watches" in msg:
+        options[CONF_WATCHES] = _clean_watches(msg.get("watches"))
     if msg.get("station"):
         data[CONF_STATION] = msg["station"]
     hass.config_entries.async_update_entry(entry, data=data, options=options)

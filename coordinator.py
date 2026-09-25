@@ -23,6 +23,7 @@ from .const import (
     CONF_BUS_LINE,
     CONF_DESTINATION,
     CONF_METRO_DEST,
+    CONF_METRO_LINE,
     CONF_METRO_STATION,
     CONF_SCAN,
     CONF_SHOW_BUS,
@@ -32,8 +33,10 @@ from .const import (
     CONF_RAIL_LINE,
     CONF_STATION,
     CONF_TROLLEY_DEST,
+    CONF_TROLLEY_LINE,
     CONF_TROLLEY_STATION,
     CONF_WALK,
+    CONF_WATCHES,
     DEFAULT_DESTINATION,
     DEFAULT_SCAN,
     DEFAULT_SHOW_BUS,
@@ -496,6 +499,7 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         metro = {"count": 0, "summary": "Off", "l": 0, "b": 0, "m": 0, "routes": {}}
         trolley = {"count": 0, "summary": "Off", "gps": 0, "routes": {}}
         vehicles: list[dict[str, Any]] = []
+        self._service_rows = []
         ids: list[str] = []
         if self.show_metro:
             ids.extend(METRO_ROUTE_IDS)
@@ -512,6 +516,7 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     continue
                 if isinstance(raw, list):
                     rows.extend(item for item in raw if isinstance(item, dict))
+            self._service_rows = rows
             metro_routes: dict[str, int] = {}
             trolley_routes: dict[str, int] = {}
             l = b = m_count = gps = 0
@@ -523,6 +528,8 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if not _matches_commute(item, home, dest):
                     continue
                 if route in METRO_ROUTE_IDS:
+                    if self.metro_line and route != self.metro_line:
+                        continue
                     metro_n += 1
                     metro_routes[route] = metro_routes.get(route, 0) + 1
                     if route.startswith("L"):
@@ -532,6 +539,8 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     elif route.startswith("M"):
                         m_count += 1
                 elif route in TROLLEY_ROUTE_IDS:
+                    if self.trolley_line and route != self.trolley_line:
+                        continue
                     trolley_n += 1
                     trolley_routes[route] = trolley_routes.get(route, 0) + 1
                     lat = item.get("lat")
@@ -573,6 +582,93 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("Metro lookup failed: %s", err)
             return empty | {"l": 0, "b": 0, "m": 0}, empty | {"gps": 0}, []
+
+    async def _pack_watches(self, buses: list[dict[str, Any]], now: datetime) -> dict[str, Any]:
+        """One summary per extra commute line added with the plus button."""
+        out: dict[str, Any] = {}
+        service_rows = getattr(self, "_service_rows", []) or []
+        for watch in self.watches():
+            mode = watch["mode"]
+            enabled = {
+                "rail": self.show_rail,
+                "bus": self.show_bus,
+                "metro": self.show_metro,
+                "trolley": self.show_trolley,
+            }[mode]
+            if not enabled:
+                continue
+            try:
+                out[watch["id"]] = await self._one_watch(watch, buses, service_rows, now)
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("Watch %s failed: %s", watch["id"], err)
+                out[watch["id"]] = {"state": None, "summary": "Unavailable", "mode": mode}
+        return out
+
+    async def _one_watch(
+        self,
+        watch: dict[str, str],
+        buses: list[dict[str, Any]],
+        service_rows: list[dict[str, Any]],
+        now: datetime,
+    ) -> dict[str, Any]:
+        mode = watch["mode"]
+        line = watch["line"]
+        home = watch["home"]
+        dest = watch["dest"]
+        if mode == "rail":
+            station = home or self.station
+            raw = await self._get(ARRIVALS_URL, {"station": station, "results": BOARD_LIMIT})
+            _north, south = _parse_arrivals(raw)
+            south = [row for row in south if _matches_line(row, line)]
+            if dest:
+                want = _norm_name(dest)
+                headed = [row for row in south if want in _norm_name(str(row.get("destination") or ""))]
+                if headed:
+                    south = headed
+            nxt = south[0] if south else None
+            return {
+                "mode": mode,
+                "line": line,
+                "home": station,
+                "destination": dest,
+                "state": None if not nxt else nxt.get("minutes"),
+                "summary": "No trains" if not nxt else f"{nxt.get('destination') or ''} · {nxt.get('clock') or ''}".strip(" ·"),
+                "clock": "" if not nxt else nxt.get("clock") or "",
+                "trains": _board_pack(south),
+            }
+        if mode == "bus":
+            trips = buses
+            if line:
+                trips = [row for row in trips if str(row.get("route") or "").lower() == line.lower()]
+            nxt = trips[0] if trips else None
+            return {
+                "mode": mode,
+                "line": line,
+                "state": None if not nxt else nxt.get("minutes"),
+                "summary": "No buses" if not nxt else str(nxt.get("destination") or nxt.get("route") or ""),
+                "clock": "" if not nxt else nxt.get("clock") or "",
+                "route": "" if not nxt else nxt.get("route") or line,
+            }
+        routes = METRO_ROUTE_IDS if mode == "metro" else TROLLEY_ROUTE_IDS
+        matched = []
+        for item in service_rows:
+            route = str(item.get("route_id") or "")
+            if route not in routes:
+                continue
+            if line and route != line:
+                continue
+            if not _matches_commute(item, home, dest):
+                continue
+            matched.append(item)
+        return {
+            "mode": mode,
+            "line": line,
+            "home": home,
+            "destination": dest,
+            "state": len(matched),
+            "summary": f"{len(matched)} vehicles" if matched else "None reporting",
+            "routes": sorted({str(item.get("route_id") or "") for item in matched}),
+        }
 
     async def _station_coords(self) -> tuple[float, float] | None:
         want = _norm_name(self.station)
@@ -634,6 +730,48 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     @property
     def bus_line(self) -> str:
         return self._opt_str(CONF_BUS_LINE)
+
+    @property
+    def metro_line(self) -> str:
+        return self._opt_str(CONF_METRO_LINE)
+
+    @property
+    def trolley_line(self) -> str:
+        return self._opt_str(CONF_TROLLEY_LINE)
+
+    def watches(self) -> list[dict[str, str]]:
+        raw = self.entry.options.get(CONF_WATCHES, self.entry.data.get(CONF_WATCHES, []))
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except json.JSONDecodeError:
+                return []
+        if not isinstance(raw, list):
+            return []
+        out: list[dict[str, str]] = []
+        counts: dict[str, int] = {}
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            mode = str(item.get("mode") or "")
+            if mode not in ("rail", "bus", "metro", "trolley"):
+                continue
+            counts[mode] = counts.get(mode, 0) + 1
+            if counts[mode] > 3:
+                continue
+            wid = re.sub(r"[^a-z0-9]", "", str(item.get("id") or "").lower())[:12]
+            if not wid:
+                continue
+            out.append(
+                {
+                    "id": wid,
+                    "mode": mode,
+                    "line": str(item.get("line") or "")[:24],
+                    "home": str(item.get("home") or "")[:80],
+                    "dest": str(item.get("dest") or "")[:80],
+                }
+            )
+        return out
 
     @property
     def walk(self) -> int:
@@ -750,6 +888,7 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "home": {"lat": coords[0], "lon": coords[1]} if coords else None,
                 "vehicles": map_vehicles,
             },
+            "lines": await self._pack_watches(buses, now),
             "updated": now.isoformat(),
         }
 

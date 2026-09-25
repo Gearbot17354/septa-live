@@ -81,6 +81,16 @@ async def async_setup_entry(
         entities.append(SeptaServiceCountSensor(coordinator, "metro", "Metro", "mdi:subway-variant"))
     if coordinator.show_trolley:
         entities.append(SeptaServiceCountSensor(coordinator, "trolley", "Trolley", "mdi:tram"))
+    for watch in coordinator.watches():
+        if watch["mode"] == "rail" and not coordinator.show_rail:
+            continue
+        if watch["mode"] == "bus" and not coordinator.show_bus:
+            continue
+        if watch["mode"] == "metro" and not coordinator.show_metro:
+            continue
+        if watch["mode"] == "trolley" and not coordinator.show_trolley:
+            continue
+        entities.append(SeptaLineSensor(coordinator, watch))
     entities.append(SeptaMapSensor(coordinator))
     async_add_entities(entities)
 
@@ -315,6 +325,38 @@ class SeptaServiceCountSensor(_Base):
             "home": pack.get("home"),
             "destination": pack.get("destination"),
         }
+
+
+class SeptaLineSensor(_Base):
+    """One sensor for an extra commute line added from the sidebar."""
+
+    def __init__(self, coordinator: SeptaCoordinator, watch: dict[str, str]) -> None:
+        super().__init__(coordinator, f"line_{watch['mode']}_{watch['id']}")
+        self._watch_id = watch["id"]
+        label = watch.get("line") or watch.get("home") or watch["mode"].title()
+        self._attr_name = f"{watch['mode'].title()} {label}"
+        self._attr_icon = {
+            "rail": "mdi:train",
+            "bus": "mdi:bus",
+            "metro": "mdi:subway-variant",
+            "trolley": "mdi:tram",
+        }.get(watch["mode"], "mdi:transit-connection-variant")
+
+    def _pack(self) -> dict[str, Any]:
+        lines = (self.coordinator.data or {}).get("lines") or {}
+        pack = lines.get(self._watch_id) if isinstance(lines, dict) else None
+        return pack if isinstance(pack, dict) else {}
+
+    @property
+    def native_value(self) -> int | str | None:
+        pack = self._pack()
+        if "state" not in pack:
+            return None
+        return pack.get("state")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return self._pack()
 
 
 class SeptaMapSensor(_Base):

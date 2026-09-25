@@ -21,6 +21,9 @@ CONF_TROLLEY_DEST: Final = "trolley_destination"
 CONF_SIDEBAR: Final = "show_sidebar"
 CONF_RAIL_LINE: Final = "rail_line"
 CONF_BUS_LINE: Final = "bus_line"
+CONF_METRO_LINE: Final = "metro_line"
+CONF_TROLLEY_LINE: Final = "trolley_line"
+CONF_WATCHES: Final = "watches"
 
 DEFAULT_STATION: Final = "Lansdale"
 DEFAULT_DESTINATION: Final = "Jefferson Station"
@@ -42,6 +45,25 @@ TRAINVIEW_URL: Final = "https://www3.septa.org/api/TrainView/index.php"
 V2_TRIPS_URL: Final = "https://www3.septa.org/api/v2/trips/"
 METRO_ROUTE_IDS: Final = ["L1", "B1", "B2", "B3", "M1"]
 TROLLEY_ROUTE_IDS: Final = ["T1", "T2", "T3", "T4", "T5", "G1", "D1", "D2"]
+SERVICE_LINES: Final = {
+    "metro": [
+        ("L1", "Market–Frankford"),
+        ("B1", "Broad Street Local"),
+        ("B2", "Broad Street Express"),
+        ("B3", "Broad-Ridge Spur"),
+        ("M1", "Norristown High Speed"),
+    ],
+    "trolley": [
+        ("T1", "13th St to 63rd–Malvern"),
+        ("T2", "13th St to 61st–Baltimore"),
+        ("T3", "13th St to Yeadon / Darby"),
+        ("T4", "13th St to Darby TC"),
+        ("T5", "13th St to 80th–Eastwick"),
+        ("G1", "Girard"),
+        ("D1", "Media"),
+        ("D2", "Sharon Hill"),
+    ],
+}
 RAIL_LINES: Final = [
     "AIR",
     "CHE",
