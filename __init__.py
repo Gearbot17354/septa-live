@@ -11,18 +11,33 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_call_later
 
-from .const import DOMAIN, PLATFORMS
+from .const import (
+    CONF_DESTINATION,
+    CONF_SHOW_BUS,
+    CONF_SHOW_METRO,
+    CONF_SHOW_RAIL,
+    CONF_SHOW_TROLLEY,
+    CONF_SIDEBAR,
+    CONF_WALK,
+    DOMAIN,
+    PLATFORMS,
+    STATIONS,
+)
 from .coordinator import SeptaCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 _FRONTEND = f"{DOMAIN}_frontend_registered"
 _CARD_JS = "septa-live-card.js"
-_CARD_VERSION = "1.8.8"
+_PANEL_JS = "septa-live-panel.js"
+_PANEL_PATH = "septa-live"
+_CARD_VERSION = "1.8.9"
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     await _async_register_lovelace_cards(hass)
     websocket_api.async_register_command(hass, websocket_board)
+    websocket_api.async_register_command(hass, websocket_panel)
+    websocket_api.async_register_command(hass, websocket_options)
     return True
 
 
@@ -33,6 +48,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_reload))
+    await _async_sync_panel(hass)
     return True
 
 
@@ -113,6 +129,117 @@ async def websocket_board(
     connection.send_result(msg["id"], board)
 
 
+@websocket_api.websocket_command({vol.Required("type"): "septa_live/panel"})
+@websocket_api.async_response
+async def websocket_panel(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict,
+) -> None:
+    """Sidebar app: entries, commute settings, and the station list."""
+    data = hass.data.get(DOMAIN) or {}
+    entries = []
+    for entry_id, coordinator in data.items():
+        if not hasattr(coordinator, "station"):
+            continue
+        entries.append(
+            {
+                "entry_id": entry_id,
+                "station": coordinator.station,
+                "destination": coordinator.destination,
+                "walk_minutes": coordinator.walk,
+                "show_rail": coordinator.show_rail,
+                "show_bus": coordinator.show_bus,
+                "show_metro": coordinator.show_metro,
+                "show_trolley": coordinator.show_trolley,
+                "show_sidebar": _sidebar_enabled(coordinator.entry),
+            }
+        )
+    connection.send_result(msg["id"], {"entries": entries, "stations": list(STATIONS)})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "septa_live/options",
+        vol.Required("entry_id"): str,
+        vol.Optional("destination"): str,
+        vol.Optional("walk_minutes"): vol.All(vol.Coerce(int), vol.Range(min=0, max=60)),
+        vol.Optional("show_sidebar"): bool,
+        vol.Optional("show_rail"): bool,
+        vol.Optional("show_bus"): bool,
+        vol.Optional("show_metro"): bool,
+        vol.Optional("show_trolley"): bool,
+    }
+)
+@websocket_api.async_response
+async def websocket_options(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict,
+) -> None:
+    """Update commute setup from the sidebar app."""
+    entry = hass.config_entries.async_get_entry(msg["entry_id"])
+    if entry is None or entry.domain != DOMAIN:
+        connection.send_error(msg["id"], "not_found", "SEPTA Transit entry not found")
+        return
+    options = dict(entry.options)
+    mapping = {
+        "destination": CONF_DESTINATION,
+        "walk_minutes": CONF_WALK,
+        "show_sidebar": CONF_SIDEBAR,
+        "show_rail": CONF_SHOW_RAIL,
+        "show_bus": CONF_SHOW_BUS,
+        "show_metro": CONF_SHOW_METRO,
+        "show_trolley": CONF_SHOW_TROLLEY,
+    }
+    for src, dest in mapping.items():
+        if src in msg:
+            options[dest] = msg[src]
+    hass.config_entries.async_update_entry(entry, options=options)
+    connection.send_result(msg["id"], {"ok": True})
+
+
+def _sidebar_enabled(entry: ConfigEntry) -> bool:
+    if CONF_SIDEBAR in entry.options:
+        return bool(entry.options[CONF_SIDEBAR])
+    return bool(entry.data.get(CONF_SIDEBAR, True))
+
+
+async def _async_sync_panel(hass: HomeAssistant) -> None:
+    """Register the SEPTA app and show or hide the sidebar item."""
+    entries = [
+        entry
+        for entry in hass.config_entries.async_entries(DOMAIN)
+        if entry.entry_id in (hass.data.get(DOMAIN) or {})
+    ]
+    try:
+        from homeassistant.components.frontend import async_remove_panel
+
+        async_remove_panel(hass, _PANEL_PATH)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.debug("SEPTA Transit panel remove skipped: %s", err)
+    if not entries:
+        return
+    show = any(_sidebar_enabled(entry) for entry in entries)
+    try:
+        from homeassistant.components import panel_custom
+
+        await panel_custom.async_register_panel(
+            hass,
+            frontend_url_path=_PANEL_PATH,
+            webcomponent_name="septa-live-panel",
+            sidebar_title="SEPTA" if show else None,
+            sidebar_icon="mdi:train" if show else None,
+            js_url=f"/{DOMAIN}/{_PANEL_JS}?v={_CARD_VERSION}",
+            config={"show_sidebar": show},
+            require_admin=False,
+            embed_iframe=False,
+        )
+        _LOGGER.info("SEPTA Transit sidebar app registered (visible=%s)", show)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.warning("SEPTA Transit could not register the sidebar app: %s", err)
+
+
 def _install_local_card(hass: HomeAssistant, source: Path) -> None:
     dest_dir = Path(hass.config.path("www"))
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -154,4 +281,5 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id, None)
+        await _async_sync_panel(hass)
     return unload_ok

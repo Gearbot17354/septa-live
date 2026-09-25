@@ -1,5 +1,5 @@
 (() => {
-  const CARD_VERSION = "1.8.8";
+  const CARD_VERSION = "1.8.9";
 
 const RAIL_STATIONS = [
     {name:'9th St',api:'9th St'},
@@ -738,7 +738,28 @@ const RAIL_STATIONS = [
     .dep-card.is-large .dep-time { font-size: 20px; }
     .dep-card.is-large .dep-dest .to { font-size: 15px; }
     .dep-card.is-large .dep-trk { width: 28px; height: 28px; font-size: 12px; }
-    .dep-card.is-large .size-pills, .dep-card.is-large .dep-toolbar { padding-left: 16px; padding-right: 16px; }
+    .dep-card { container-type: inline-size; }
+    @container (max-width: 460px) {
+      .dep-cols,
+      .dep-card.is-compact .dep-cols,
+      .dep-card.is-large .dep-cols {
+        grid-template-columns: 3rem minmax(0,1fr) 1.4rem minmax(3.1rem,auto);
+        gap: 4px;
+        padding-left: 8px;
+        padding-right: 8px;
+      }
+      .dep-time { font-size: 12px; }
+      .dep-dest .to, .dep-card.is-large .dep-dest .to { font-size: 12px; }
+      .dep-expect, .dep-expect .late { font-size: 10px; line-height: 1.15; }
+      .dep-trk, .dep-card.is-large .dep-trk { width: 18px; height: 18px; font-size: 10px; }
+      .dep-toolbar label { min-width: 0; }
+    }
+    .bubble { min-width: 0; overflow: hidden; }
+    .bubble-clock { overflow-wrap: anywhere; }
+    .hero-grid { min-width: 0; }
+    @media (max-width: 520px) {
+      .hero-grid { display: flex; flex-direction: column; }
+    }
 
     .rail-badge {
       display: inline-flex; align-items: center; justify-content: center;

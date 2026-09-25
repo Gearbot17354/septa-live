@@ -17,7 +17,8 @@
           "show_rail": "Regional Rail",
           "show_bus": "Buses",
           "show_metro": "Metro (L, B, M)",
-          "show_trolley": "Trolley (T, G, D)"
+          "show_trolley": "Trolley (T, G, D)",
+          "show_sidebar": "Show SEPTA in the sidebar"
         }
       }
     },
@@ -42,7 +43,8 @@
           "show_rail": "Regional Rail",
           "show_bus": "Buses",
           "show_metro": "Metro (L, B, M)",
-          "show_trolley": "Trolley (T, G, D)"
+          "show_trolley": "Trolley (T, G, D)",
+          "show_sidebar": "Show SEPTA in the sidebar"
         }
       }
     }

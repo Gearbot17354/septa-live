@@ -19,6 +19,7 @@ from .const import (
     CONF_SHOW_METRO,
     CONF_SHOW_RAIL,
     CONF_SHOW_TROLLEY,
+    CONF_SIDEBAR,
     CONF_STATION,
     CONF_TROLLEY_DEST,
     CONF_TROLLEY_STATION,
@@ -99,6 +100,7 @@ class SeptaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Coerce(int), vol.Range(min=30, max=300)
                 ),
                 **_service_schema(),
+                vol.Optional(CONF_SIDEBAR, default=True): BOOL_SELECTOR,
             }
         )
         return self.async_show_form(step_id="user", data_schema=schema)
@@ -168,6 +170,10 @@ class SeptaOptionsFlow(config_entries.OptionsFlow):
                         CONF_SHOW_TROLLEY: _flag(entry, CONF_SHOW_TROLLEY, DEFAULT_SHOW_TROLLEY),
                     }
                 ),
+                vol.Optional(
+                    CONF_SIDEBAR,
+                    default=_flag(entry, CONF_SIDEBAR, True),
+                ): BOOL_SELECTOR,
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)

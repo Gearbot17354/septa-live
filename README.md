@@ -12,7 +12,7 @@ This is a **custom repository** — the same way most community plugins are inst
 2. Open the three-dot menu → **Custom repositories**.
 3. Paste `https://github.com/Gearbot17354/septa-live`.
 4. Category: **Integration**.
-5. **Add**, then find **SEPTA Transit** and **Download** **1.8.8**.
+5. **Add**, then find **SEPTA Transit** and **Download** **1.8.9**.
 6. **Restart Home Assistant**.
 7. **Settings → Devices & Services → Add Integration → SEPTA Transit**.
 8. Pick a station (for example Lansdale) and a destination (Jefferson Station) used for the leave-now countdown.
@@ -26,11 +26,22 @@ Repo: [github.com/Gearbot17354/septa-live](https://github.com/Gearbot17354/septa
 If Add card still does not list SEPTA Transit, enable Advanced Mode in your profile, then **Settings → Dashboards → ⋮ → Resources → Add**:
 
 ```
-/local/septa-live-card.js?v=1.8.8
+/local/septa-live-card.js?v=1.8.9
 type: module
 ```
 
 Hard-refresh the dashboard (or open it in a private window).
+
+## Sidebar app
+
+After you restart, **SEPTA** shows up in the left menu. That page is the live board (inbound, outbound, bus, leave-in, and the departure list) plus setup for destination, walk time, and which services to poll.
+
+Turn the menu item off from the page (**Show in sidebar**) or from **Settings → Devices & Services → SEPTA Transit → Configure → Show SEPTA in the sidebar**. Turn it back on the same way. The page is always at `/septa-live` even when the menu item is hidden.
+
+## What's new in 1.8.9
+
+- **SEPTA sidebar app** for the live board and commute setup. Toggle it in the side menu.
+- Departure cards shrink their columns in narrow dashboard sections so times are not clipped.
 
 ## What's new in 1.8.8
 
