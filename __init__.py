@@ -30,7 +30,7 @@ _FRONTEND = f"{DOMAIN}_frontend_registered"
 _CARD_JS = "septa-live-card.js"
 _PANEL_JS = "septa-live-panel.js"
 _PANEL_PATH = "septa-live"
-_CARD_VERSION = "1.9.1"
+_CARD_VERSION = "1.9.2"
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:

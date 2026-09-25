@@ -11,10 +11,46 @@ from homeassistant.const import UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import NY, SeptaCoordinator, slug
+
+# Card and YAML expect these object ids, not the device-area prefix HA would add.
+_OBJECT_KEY = {
+    "south": "next_inbound",
+    "north": "next_outbound",
+    "south_board": "inbound_board",
+    "north_board": "outbound_board",
+}
+
+
+def _object_key(key: str) -> str:
+    return _OBJECT_KEY.get(key, key)
+
+
+def _entity_id(station: str, key: str) -> str:
+    return f"sensor.septa_{slug(station)}_{_object_key(key)}"
+
+
+def _stabilize_entity_ids(hass: HomeAssistant, entry: ConfigEntry, coordinator: SeptaCoordinator) -> None:
+    """Rename prefixed ids (sensor.area_septa_lansdale_metro) to sensor.septa_lansdale_metro."""
+    registry = async_get_entity_registry(hass)
+    prefix = f"{slug(coordinator.station)}_{slug(coordinator.destination)}_"
+    for item in list(registry.entities.values()):
+        if item.config_entry_id != entry.entry_id:
+            continue
+        uid = item.unique_id or ""
+        if not uid.startswith(prefix):
+            continue
+        desired = _entity_id(coordinator.station, uid[len(prefix) :])
+        stable = f"sensor.septa_{slug(coordinator.station)}_"
+        if item.entity_id == desired or item.entity_id.startswith(stable):
+            continue
+        if registry.async_get(desired) is not None:
+            continue
+        registry.async_update_entity(item.entity_id, new_entity_id=desired)
 
 
 def _overnight(now: datetime | None = None) -> bool:
@@ -26,6 +62,7 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     coordinator: SeptaCoordinator = hass.data[DOMAIN][entry.entry_id]
+    _stabilize_entity_ids(hass, entry, coordinator)
     entities: list[SensorEntity] = []
     if coordinator.show_rail:
         entities.extend(
@@ -57,12 +94,18 @@ class _Base(CoordinatorEntity[SeptaCoordinator], SensorEntity):
         dest = coordinator.destination
         self._key = key
         self._attr_unique_id = f"{slug(station)}_{slug(dest)}_{key}"
+        self.entity_id = _entity_id(station, key)
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, f"{slug(station)}_{slug(dest)}")},
             name=f"SEPTA {station}",
             manufacturer="SEPTA",
             model="Regional Rail + Bus + Metro",
         )
+
+
+    @property
+    def suggested_object_id(self) -> str:
+        return _entity_id(self.coordinator.station, self._key).split(".", 1)[1]
 
 
 class SeptaMinutesSensor(_Base):
@@ -281,7 +324,6 @@ class SeptaMapSensor(_Base):
 
     def __init__(self, coordinator: SeptaCoordinator) -> None:
         super().__init__(coordinator, "map")
-        self.entity_id = f"sensor.septa_{slug(coordinator.station)}_map"
 
     def _pack(self) -> dict[str, Any]:
         return (self.coordinator.data or {}).get("map") or {}

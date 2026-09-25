@@ -1,5 +1,5 @@
 (() => {
-  const CARD_VERSION = "1.9.1";
+  const CARD_VERSION = "1.9.2";
 
 const RAIL_STATIONS = [
     {name:'9th St',api:'9th St'},
@@ -283,6 +283,12 @@ const RAIL_STATIONS = [
     return key.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
   }
 
+  const BOARD_RE = /^sensor\.(?:.+_)?septa_(.+?)_(southbound|northbound|inbound|outbound)_board$/;
+
+  function isSeptaSensor(id) {
+    return id.startsWith("sensor.") && id.includes("septa_");
+  }
+
   function findEntity(hass, suffix, fallback) {
     const states = hass && hass.states ? hass.states : {};
     const keys = Object.keys(states);
@@ -295,8 +301,9 @@ const RAIL_STATIONS = [
     };
     const options = aliases[suffix] || [suffix];
     for (const end of options) {
-      const match = keys.find((id) => id.startsWith("sensor.septa_") && id.endsWith(end));
-      if (match) return match;
+      const hits = keys.filter((id) => isSeptaSensor(id) && id.endsWith(end));
+      hits.sort((a, b) => Number(!a.startsWith("sensor.septa_")) - Number(!b.startsWith("sensor.septa_")));
+      if (hits.length) return hits[0];
     }
     return fallback;
   }
@@ -503,7 +510,7 @@ const RAIL_STATIONS = [
   }
 
   function slugFromEntity(entityId) {
-    const match = String(entityId || "").match(/^sensor\.septa_(.+?)_(southbound|northbound|inbound|outbound)_board$/);
+    const match = String(entityId || "").match(BOARD_RE);
     return match ? match[1] : "";
   }
 
@@ -511,7 +518,7 @@ const RAIL_STATIONS = [
     const states = hass && hass.states ? hass.states : {};
     const map = {};
     for (const id of Object.keys(states)) {
-      const match = id.match(/^sensor\.septa_(.+?)_(southbound|northbound|inbound|outbound)_board$/);
+      const match = id.match(BOARD_RE);
       if (!match) continue;
       const slug = match[1];
       const dir = match[2];
