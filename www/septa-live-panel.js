@@ -339,6 +339,14 @@
       const metroBubble = showMetro && (this._tab === "all" || this._tab === "metro") ? serviceCard("Metro", metro) : "";
       const trolleyBubble = showTrolley && (this._tab === "all" || this._tab === "trolley") ? serviceCard("Trolley", trolley) : "";
       const lineBubbles = watches.filter((w) => this._tab === "all" || this._tab === w.mode).map((w) => {
+        if (w.mode === "rail") {
+          const state = this._state(entry, "line_rail_" + w.id + "_south") || this._state(entry, "line_rail_" + w.id);
+          const attrs = (state && state.attributes) || {};
+          const inbound = Array.isArray(attrs.southbound) ? attrs.southbound : (Array.isArray(attrs.trains) ? attrs.trains : []);
+          const outbound = Array.isArray(attrs.northbound) ? attrs.northbound : [];
+          const place = w.home || "Line";
+          return this._bubble(place + " inbound", inbound) + this._bubble(place + " outbound", outbound);
+        }
         const state = this._state(entry, "line_" + w.mode + "_" + w.id);
         const name = (w.line || w.home || w.mode).toString();
         return serviceCard(name, state);

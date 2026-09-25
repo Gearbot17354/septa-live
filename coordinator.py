@@ -617,14 +617,19 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         dest = watch["dest"]
         if mode == "rail":
             station = home or self.station
-            raw = await self._get(ARRIVALS_URL, {"station": station, "results": BOARD_LIMIT})
-            _north, south = _parse_arrivals(raw)
+            north: list[dict[str, Any]] = []
+            south: list[dict[str, Any]] = []
+            try:
+                raw = await self._get(ARRIVALS_URL, {"station": station, "results": BOARD_LIMIT})
+                north, south = _parse_arrivals(raw)
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("Extra rail arrivals failed for %s: %s", station, err)
+            north = [row for row in north if _matches_line(row, line)]
             south = [row for row in south if _matches_line(row, line)]
-            if dest:
-                want = _norm_name(dest)
-                headed = [row for row in south if want in _norm_name(str(row.get("destination") or ""))]
-                if headed:
-                    south = headed
+            north = _pad_schedule(station, "N", north, now)
+            south = _pad_schedule(station, "S", south, now)
+            north = [row for row in north if _matches_line(row, line)]
+            south = [row for row in south if _matches_line(row, line)]
             nxt = south[0] if south else None
             return {
                 "mode": mode,
@@ -634,6 +639,8 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "state": None if not nxt else nxt.get("minutes"),
                 "summary": "No trains" if not nxt else f"{nxt.get('destination') or ''} · {nxt.get('clock') or ''}".strip(" ·"),
                 "clock": "" if not nxt else nxt.get("clock") or "",
+                "southbound": _board_pack(south),
+                "northbound": _board_pack(north),
                 "trains": _board_pack(south),
             }
         if mode == "bus":

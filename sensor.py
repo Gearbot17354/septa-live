@@ -90,7 +90,11 @@ async def async_setup_entry(
             continue
         if watch["mode"] == "trolley" and not coordinator.show_trolley:
             continue
-        entities.append(SeptaLineSensor(coordinator, watch))
+        if watch["mode"] == "rail":
+            entities.append(SeptaLineSensor(coordinator, watch, "south"))
+            entities.append(SeptaLineSensor(coordinator, watch, "north"))
+        else:
+            entities.append(SeptaLineSensor(coordinator, watch))
     entities.append(SeptaMapSensor(coordinator))
     async_add_entities(entities)
 
@@ -109,7 +113,7 @@ class _Base(CoordinatorEntity[SeptaCoordinator], SensorEntity):
             identifiers={(DOMAIN, f"{slug(station)}_{slug(dest)}")},
             name=f"SEPTA {station}",
             manufacturer="SEPTA",
-            model="Regional Rail + Bus + Metro",
+            model=_device_model(coordinator),
         )
 
 
@@ -327,28 +331,72 @@ class SeptaServiceCountSensor(_Base):
         }
 
 
-class SeptaLineSensor(_Base):
-    """One sensor for an extra commute line added from the sidebar."""
+def _device_model(coordinator: SeptaCoordinator) -> str:
+    parts: list[str] = []
+    if coordinator.show_rail:
+        parts.append("Regional Rail")
+    if coordinator.show_bus:
+        parts.append("Bus")
+    if coordinator.show_metro:
+        parts.append("Metro")
+    if coordinator.show_trolley:
+        parts.append("Trolley")
+    extra = len(coordinator.watches())
+    if extra:
+        parts.append(f"{extra} extra line" + ("s" if extra != 1 else ""))
+    return " + ".join(parts) or "SEPTA"
 
-    def __init__(self, coordinator: SeptaCoordinator, watch: dict[str, str]) -> None:
-        super().__init__(coordinator, f"line_{watch['mode']}_{watch['id']}")
+
+class SeptaLineSensor(_Base):
+    """Inbound and outbound sensors for an extra commute line."""
+
+    def __init__(
+        self, coordinator: SeptaCoordinator, watch: dict[str, str], direction: str | None = None
+    ) -> None:
+        suffix = f"_{direction}" if direction else ""
+        super().__init__(coordinator, f"line_{watch['mode']}_{watch['id']}{suffix}")
         self._watch_id = watch["id"]
-        label = watch.get("line") or watch.get("home") or watch["mode"].title()
-        self._attr_name = f"{watch['mode'].title()} {label}"
-        self._attr_icon = {
-            "rail": "mdi:train",
-            "bus": "mdi:bus",
-            "metro": "mdi:subway-variant",
-            "trolley": "mdi:tram",
-        }.get(watch["mode"], "mdi:transit-connection-variant")
+        self._direction = direction
+        home = watch.get("home") or watch.get("line") or watch["mode"].title()
+        if direction == "south":
+            self._attr_name = f"{home} inbound"
+            self._attr_device_class = SensorDeviceClass.DURATION
+            self._attr_native_unit_of_measurement = UnitOfTime.MINUTES
+            self._attr_icon = "mdi:train"
+        elif direction == "north":
+            self._attr_name = f"{home} outbound"
+            self._attr_device_class = SensorDeviceClass.DURATION
+            self._attr_native_unit_of_measurement = UnitOfTime.MINUTES
+            self._attr_icon = "mdi:train"
+        else:
+            label = watch.get("line") or watch.get("home") or watch["mode"].title()
+            self._attr_name = f"{watch['mode'].title()} {label}"
+            self._attr_icon = {
+                "bus": "mdi:bus",
+                "metro": "mdi:subway-variant",
+                "trolley": "mdi:tram",
+            }.get(watch["mode"], "mdi:transit-connection-variant")
 
     def _pack(self) -> dict[str, Any]:
         lines = (self.coordinator.data or {}).get("lines") or {}
         pack = lines.get(self._watch_id) if isinstance(lines, dict) else None
         return pack if isinstance(pack, dict) else {}
 
+    def _row(self) -> dict[str, Any] | None:
+        pack = self._pack()
+        key = "southbound" if self._direction == "south" else "northbound"
+        rows = pack.get(key) or []
+        if rows and isinstance(rows[0], dict):
+            return rows[0]
+        return None
+
     @property
     def native_value(self) -> int | str | None:
+        if self._direction:
+            row = self._row()
+            if not row:
+                return None
+            return row.get("minutes")
         pack = self._pack()
         if "state" not in pack:
             return None
@@ -356,7 +404,25 @@ class SeptaLineSensor(_Base):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        return self._pack()
+        pack = self._pack()
+        if not self._direction:
+            return pack
+        row = self._row() or {}
+        trains = pack.get("southbound" if self._direction == "south" else "northbound") or []
+        return {
+            "home": pack.get("home"),
+            "line": row.get("line") or pack.get("line"),
+            "destination": row.get("destination"),
+            "clock": row.get("clock"),
+            "train_id": row.get("train_id"),
+            "track": row.get("track"),
+            "status": row.get("status"),
+            "delay_min": row.get("delay_min"),
+            "service_type": row.get("service_type"),
+            "trains": trains,
+            "southbound": pack.get("southbound") or [],
+            "northbound": pack.get("northbound") or [],
+        }
 
 
 class SeptaMapSensor(_Base):
