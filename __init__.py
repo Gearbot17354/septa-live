@@ -11,26 +11,30 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_call_later
 
+from .bus_routes import BUS_ROUTES
 from .const import (
+    CONF_BUS_LINE,
     CONF_DESTINATION,
+    CONF_RAIL_LINE,
     CONF_SHOW_BUS,
     CONF_SHOW_METRO,
     CONF_SHOW_RAIL,
     CONF_SHOW_TROLLEY,
     CONF_SIDEBAR,
+    CONF_STATION,
     CONF_WALK,
     DOMAIN,
     PLATFORMS,
     STATIONS,
 )
-from .coordinator import SeptaCoordinator, slug
+from .coordinator import SeptaCoordinator, _LINE_NAMES, slug
 
 _LOGGER = logging.getLogger(__name__)
 _FRONTEND = f"{DOMAIN}_frontend_registered"
 _CARD_JS = "septa-live-card.js"
 _PANEL_JS = "septa-live-panel.js"
 _PANEL_PATH = "septa-live"
-_CARD_VERSION = "1.9.3"
+_CARD_VERSION = "1.9.4"
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -153,10 +157,20 @@ async def websocket_panel(
                 "show_metro": coordinator.show_metro,
                 "show_trolley": coordinator.show_trolley,
                 "show_sidebar": _sidebar_enabled(coordinator.entry),
+                "rail_line": coordinator.rail_line,
+                "bus_line": coordinator.bus_line,
                 "entities": _entity_map(hass, entry_id, coordinator.station, coordinator.destination),
             }
         )
-    connection.send_result(msg["id"], {"entries": entries, "stations": list(STATIONS)})
+    connection.send_result(
+        msg["id"],
+        {
+            "entries": entries,
+            "stations": list(STATIONS),
+            "lines": [{"id": code, "name": name} for code, name in _LINE_NAMES.items()],
+            "bus_routes": [{"id": rid, "name": name} for rid, name in BUS_ROUTES],
+        },
+    )
 
 
 @websocket_api.websocket_command(
@@ -170,6 +184,9 @@ async def websocket_panel(
         vol.Optional("show_bus"): bool,
         vol.Optional("show_metro"): bool,
         vol.Optional("show_trolley"): bool,
+        vol.Optional("station"): str,
+        vol.Optional("rail_line"): str,
+        vol.Optional("bus_line"): str,
     }
 )
 @websocket_api.async_response
@@ -184,6 +201,7 @@ async def websocket_options(
         connection.send_error(msg["id"], "not_found", "SEPTA Transit entry not found")
         return
     options = dict(entry.options)
+    data = dict(entry.data)
     mapping = {
         "destination": CONF_DESTINATION,
         "walk_minutes": CONF_WALK,
@@ -192,11 +210,15 @@ async def websocket_options(
         "show_bus": CONF_SHOW_BUS,
         "show_metro": CONF_SHOW_METRO,
         "show_trolley": CONF_SHOW_TROLLEY,
+        "rail_line": CONF_RAIL_LINE,
+        "bus_line": CONF_BUS_LINE,
     }
     for src, dest in mapping.items():
         if src in msg:
             options[dest] = msg[src]
-    hass.config_entries.async_update_entry(entry, options=options)
+    if msg.get("station"):
+        data[CONF_STATION] = msg["station"]
+    hass.config_entries.async_update_entry(entry, data=data, options=options)
     connection.send_result(msg["id"], {"ok": True})
 
 

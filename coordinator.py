@@ -20,6 +20,7 @@ from .const import (
     ARRIVALS_URL,
     BUS_SCHEDULES_URL,
     CONF_BUS_DEST,
+    CONF_BUS_LINE,
     CONF_DESTINATION,
     CONF_METRO_DEST,
     CONF_METRO_STATION,
@@ -28,6 +29,7 @@ from .const import (
     CONF_SHOW_METRO,
     CONF_SHOW_RAIL,
     CONF_SHOW_TROLLEY,
+    CONF_RAIL_LINE,
     CONF_STATION,
     CONF_TROLLEY_DEST,
     CONF_TROLLEY_STATION,
@@ -626,6 +628,14 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return self._opt_str(CONF_TROLLEY_DEST)
 
     @property
+    def rail_line(self) -> str:
+        return self._opt_str(CONF_RAIL_LINE).upper()
+
+    @property
+    def bus_line(self) -> str:
+        return self._opt_str(CONF_BUS_LINE)
+
+    @property
     def walk(self) -> int:
         return int(self.entry.options.get(CONF_WALK, self.entry.data.get(CONF_WALK, DEFAULT_WALK)))
 
@@ -677,12 +687,21 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 raise UpdateFailed(f"SEPTA request failed: {err}") from err
 
             north, south = _parse_arrivals(arrivals_raw)
+            north = [row for row in north if _matches_line(row, self.rail_line)]
+            south = [row for row in south if _matches_line(row, self.rail_line)]
             north = _pad_schedule(self.station, "N", north, now)
             south = _pad_schedule(self.station, "S", south, now)
+            north = [row for row in north if _matches_line(row, self.rail_line)]
+            south = [row for row in south if _matches_line(row, self.rail_line)]
             commute = _parse_nta(nta_raw, now)
+            if self.rail_line:
+                commute = [row for row in commute if _matches_line(row, self.rail_line)]
             alerts = _parse_alerts(alerts_raw, self.station)
 
         buses = await self._load_buses(now) if self.show_bus else []
+        if self.bus_line:
+            want = self.bus_line.lower()
+            buses = [row for row in buses if str(row.get("route") or "").lower() == want]
         metro, trolley, metro_vehicles = await self._load_metro()
         coords = await self._station_coords()
         map_vehicles = await self._load_map_vehicles(buses, metro_vehicles)
@@ -733,6 +752,17 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             },
             "updated": now.isoformat(),
         }
+
+
+def _matches_line(row: dict[str, Any], code: str) -> bool:
+    if not code:
+        return True
+    line = str(row.get("line") or "")
+    name = _LINE_NAMES.get(code.upper(), "")
+    blob = line.lower()
+    if code.upper() == line.upper() or code.lower() in blob:
+        return True
+    return bool(name) and name.lower() in blob
 
 
 def _train(raw: dict[str, Any]) -> dict[str, Any]:

@@ -19,6 +19,8 @@ CONF_METRO_DEST: Final = "metro_destination"
 CONF_TROLLEY_STATION: Final = "trolley_station"
 CONF_TROLLEY_DEST: Final = "trolley_destination"
 CONF_SIDEBAR: Final = "show_sidebar"
+CONF_RAIL_LINE: Final = "rail_line"
+CONF_BUS_LINE: Final = "bus_line"
 
 DEFAULT_STATION: Final = "Lansdale"
 DEFAULT_DESTINATION: Final = "Jefferson Station"
