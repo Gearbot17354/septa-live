@@ -23,14 +23,14 @@ from .const import (
     PLATFORMS,
     STATIONS,
 )
-from .coordinator import SeptaCoordinator
+from .coordinator import SeptaCoordinator, slug
 
 _LOGGER = logging.getLogger(__name__)
 _FRONTEND = f"{DOMAIN}_frontend_registered"
 _CARD_JS = "septa-live-card.js"
 _PANEL_JS = "septa-live-panel.js"
 _PANEL_PATH = "septa-live"
-_CARD_VERSION = "1.8.9"
+_CARD_VERSION = "1.9.0"
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -153,6 +153,7 @@ async def websocket_panel(
                 "show_metro": coordinator.show_metro,
                 "show_trolley": coordinator.show_trolley,
                 "show_sidebar": _sidebar_enabled(coordinator.entry),
+                "entities": _entity_map(hass, entry_id, coordinator.station, coordinator.destination),
             }
         )
     connection.send_result(msg["id"], {"entries": entries, "stations": list(STATIONS)})
@@ -197,6 +198,25 @@ async def websocket_options(
             options[dest] = msg[src]
     hass.config_entries.async_update_entry(entry, options=options)
     connection.send_result(msg["id"], {"ok": True})
+
+
+def _entity_map(hass: HomeAssistant, entry_id: str, station: str, dest: str) -> dict:
+    """Map sensor keys to the entity ids HA actually registered."""
+    try:
+        from homeassistant.helpers import entity_registry as er
+
+        registry = er.async_get(hass)
+        prefix = f"{slug(station)}_{slug(dest)}_"
+        found: dict[str, str] = {}
+        for item in er.async_entries_for_config_entry(registry, entry_id):
+            uid = item.unique_id or ""
+            key = uid[len(prefix) :] if uid.startswith(prefix) else uid
+            if key:
+                found[key] = item.entity_id
+        return found
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.debug("SEPTA Transit entity map skipped: %s", err)
+        return {}
 
 
 def _sidebar_enabled(entry: ConfigEntry) -> bool:
