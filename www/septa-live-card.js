@@ -1,5 +1,5 @@
 (() => {
-  const CARD_VERSION = "1.9.10";
+  const CARD_VERSION = "1.9.11";
 
 const RAIL_STATIONS = [
     {name:'9th St',api:'9th St'},

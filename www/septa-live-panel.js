@@ -580,27 +580,23 @@
             trolley_dest: this._draft.trolley_dest || "",
             watches: this._draft.watches || [],
           });
-          this._msg = "Saved.";
-          let ok = false;
-          for (let i = 0; i < 6 && !ok; i++) {
-            if (i) await new Promise((resolve) => setTimeout(resolve, 700));
-            ok = await this._load(true);
-          }
-          if (!ok) this._msg = "Saved. The board will catch up in a moment.";
+          this._msg = "Saved. Updating the board…";
           this._busy = false;
           this._paint();
-          const until = Date.now() + 20000;
+          const until = Date.now() + 25000;
           const tick = async () => {
-            if (!this._hass || Date.now() > until || this._busy) return;
-            if (this.shadowRoot && this.shadowRoot.activeElement) {
+            if (!this._hass || Date.now() > until) return;
+            if (this._busy) return;
+            if (this.shadowRoot && this.shadowRoot.activeElement && this.shadowRoot.activeElement.tagName === "SELECT") {
               setTimeout(tick, 1500);
               return;
             }
-            await this._load(true);
+            const ok = await this._load(true);
+            if (ok && this._msg.indexOf("Updating") !== -1) this._msg = "Saved.";
             this._paint();
             setTimeout(tick, 2000);
           };
-          setTimeout(tick, 1500);
+          setTimeout(tick, 800);
           return;
         } catch (err) {
           this._msg = (err && err.message) || "Save failed";

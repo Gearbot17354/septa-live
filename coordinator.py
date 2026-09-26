@@ -429,7 +429,7 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 stop_items = [{"id": chosen, "name": chosen}]
             elif route:
                 try:
-                    stop_items = (await self._route_stops(route))[:8]
+                    stop_items = await self._route_stops(route)
                 except Exception as err:  # noqa: BLE001
                     _LOGGER.debug("Bus route stops failed: %s", err)
             if not stop_items:
@@ -438,7 +438,11 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 names[item["id"]] = item["name"]
             trips: list[dict[str, Any]] = []
             used_stops: list[str] = []
-            for item in stop_items[:8]:
+            checked = 0
+            for item in stop_items:
+                if checked >= 16:
+                    break
+                checked += 1
                 sid = item["id"]
                 try:
                     raw = await self._get(BUS_SCHEDULES_URL, {"stop_id": sid})
@@ -893,10 +897,14 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _get(self, url: str, params: dict[str, Any]) -> Any:
         async with self.session.get(url, params=params, timeout=20) as resp:
-            resp.raise_for_status()
             text = await resp.text()
             cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", text)
-            return json.loads(cleaned)
+            try:
+                # SEPTA's bus schedule endpoint returns the trips with HTTP 501.
+                return json.loads(cleaned)
+            except json.JSONDecodeError:
+                resp.raise_for_status()
+                raise
 
     async def _async_update_data(self) -> dict[str, Any]:
         now = datetime.now(NY)
@@ -953,6 +961,8 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         next_n = north[0] if north else None
         next_c = commute[0] if commute else None
         next_bus = buses[0] if buses else None
+        if isinstance(next_bus, dict):
+            next_bus = {key: value for key, value in next_bus.items() if key != "sched_dt"}
         leave = None
         if next_c and next_c.get("depart_dt"):
             leave = minutes_until(next_c["depart_dt"] - timedelta(minutes=self.walk), now)

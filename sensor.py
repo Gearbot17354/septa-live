@@ -107,9 +107,16 @@ def _drop_removed_entities(
     """Remove sensors for lines that were deleted, and modes that were turned off."""
     keep = {entity.unique_id for entity in entities if getattr(entity, "unique_id", None)}
     registry = async_get_entity_registry(hass)
-    for item in async_entries_for_config_entry(registry, entry.entry_id):
-        if item.unique_id and item.unique_id not in keep:
-            registry.async_remove(item.entity_id)
+    try:
+        stale = [
+            item
+            for item in async_entries_for_config_entry(registry, entry.entry_id)
+            if item.unique_id and item.unique_id not in keep
+        ]
+    except Exception:  # noqa: BLE001
+        return
+    for item in stale:
+        registry.async_remove(item.entity_id)
 
 
 class _Base(CoordinatorEntity[SeptaCoordinator], SensorEntity):

@@ -46,7 +46,7 @@ _FRONTEND = f"{DOMAIN}_frontend_registered"
 _CARD_JS = "septa-live-card.js"
 _PANEL_JS = "septa-live-panel.js"
 _PANEL_PATH = "septa-live"
-_CARD_VERSION = "1.9.10"
+_CARD_VERSION = "1.9.11"
 _PANEL_SIG: tuple | None = None
 _RELOADING: set[str] = set()
 _SKIP_RELOAD: set[str] = set()
@@ -149,6 +149,12 @@ async def websocket_board(
     connection.send_result(msg["id"], board)
 
 
+def _public_bus(row: dict | None) -> dict | None:
+    if not isinstance(row, dict):
+        return None
+    return {key: value for key, value in row.items() if key != "sched_dt"}
+
+
 def _live_board(coordinator: SeptaCoordinator) -> dict:
     data = coordinator.data or {}
     bus = data.get("next_bus") if isinstance(data.get("next_bus"), dict) else None
@@ -158,7 +164,7 @@ def _live_board(coordinator: SeptaCoordinator) -> dict:
         "status": data.get("status"),
         "southbound": (data.get("southbound_board") or [])[:8],
         "northbound": (data.get("northbound_board") or [])[:8],
-        "bus": bus,
+        "bus": _public_bus(bus),
         "lines": lines,
     }
 
@@ -354,20 +360,15 @@ async def websocket_options(
         data[CONF_STATION] = msg["station"]
     structural = _structure_changed(entry, data, options)
     if not structural:
+        # The update listener refreshes in place. A reload here deadlocks Save.
         _SKIP_RELOAD.add(entry.entry_id)
-    else:
-        _SKIP_RELOAD.add(entry.entry_id)
-        _RELOADING.add(entry.entry_id)
-    hass.config_entries.async_update_entry(entry, data=data, options=options)
     try:
-        if structural:
-            await hass.config_entries.async_reload(entry.entry_id)
-        else:
-            coordinator = (hass.data.get(DOMAIN) or {}).get(entry.entry_id)
-            if coordinator is not None:
-                await coordinator.async_request_refresh()
-    finally:
-        _RELOADING.discard(entry.entry_id)
+        hass.config_entries.async_update_entry(entry, data=data, options=options)
+    except Exception as err:  # noqa: BLE001
+        _SKIP_RELOAD.discard(entry.entry_id)
+        _LOGGER.exception("SEPTA options update failed")
+        connection.send_error(msg["id"], "save_failed", str(err) or "Could not save")
+        return
     connection.send_result(msg["id"], {"ok": True, "reloaded": structural})
 
 
@@ -475,10 +476,15 @@ async def _async_reload(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload sensors without tearing down the sidebar page."""
     if entry.entry_id in _SKIP_RELOAD:
         _SKIP_RELOAD.discard(entry.entry_id)
+        coordinator = (hass.data.get(DOMAIN) or {}).get(entry.entry_id)
+        if coordinator is not None:
+            hass.async_create_task(coordinator.async_request_refresh())
         return
     _RELOADING.add(entry.entry_id)
     try:
         await hass.config_entries.async_reload(entry.entry_id)
+    except Exception:  # noqa: BLE001
+        _LOGGER.exception("SEPTA reload failed")
     finally:
         _RELOADING.discard(entry.entry_id)
 
