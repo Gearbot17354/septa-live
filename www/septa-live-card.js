@@ -1,5 +1,5 @@
 (() => {
-  const CARD_VERSION = "1.9.8";
+  const CARD_VERSION = "1.9.9";
 
 const RAIL_STATIONS = [
     {name:'9th St',api:'9th St'},
@@ -594,7 +594,7 @@ const RAIL_STATIONS = [
     .wrap { padding: 18px 20px 20px; font-family: var(--ha-font-family-body, IBM Plex Sans, system-ui, sans-serif); }
     .kicker { font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; opacity: 0.55; font-weight: 500; }
     .row { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; margin-top: 8px; }
-    .clock { font-size: 32px; font-variant-numeric: tabular-nums; font-weight: 500; letter-spacing: -0.03em; line-height: 1; }
+    .clock { font-size: 32px; font-variant-numeric: tabular-nums; font-weight: 500; letter-spacing: -0.03em; line-height: 1.05; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
     .mins { font-size: 20px; font-variant-numeric: tabular-nums; font-weight: 500; }
     .meta { margin-top: 8px; font-size: 13px; opacity: 0.75; }
     .empty { padding: 8px 0 2px; font-size: 14px; opacity: 0.7; }
@@ -616,9 +616,10 @@ const RAIL_STATIONS = [
     .status { font-size: 12px; font-weight: 500; }
     .hint { margin-top: 4px; font-size: 12px; opacity: 0.6; }
     .label { font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; opacity: 0.5; }
-    .bubbles { display: flex; flex-wrap: wrap; gap: 10px; padding: 8px 16px 18px; }
+    .bubbles { display: flex; flex-wrap: wrap; gap: 10px; padding: 8px 16px 18px; container-type: inline-size; }
     .bubble {
-      flex: 1 1 138px;
+      flex: 1 1 200px;
+      min-width: min(100%, 11.5rem);
       min-height: 84px;
       border-radius: 18px;
       background: #12171f;
@@ -629,6 +630,7 @@ const RAIL_STATIONS = [
       cursor: pointer;
       font: inherit;
       border: 0;
+      overflow: hidden;
     }
     .bubble.is-hero { flex: 1 1 100%; min-height: 108px; border-radius: 22px; }
     .bubble.is-map { flex: 1 1 100%; min-height: 200px; padding: 0; overflow: hidden; cursor: default; }
@@ -690,9 +692,12 @@ const RAIL_STATIONS = [
     }
     .bubble .mode { width: 26px; height: 26px; }
     .title-row {
-      display: flex; align-items: center; justify-content: space-between; gap: 8px;
+      display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0;
     }
-    .title-row .left { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .title-row .left, .kicker-row { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1 1 auto; }
+    .title-row .label, .kicker-row .kicker, .bubble-head .kicker {
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+    }
     .bullets { display: inline-flex; gap: 3px; flex-shrink: 0; }
     .bullet {
       display: inline-flex; align-items: center; justify-content: center;
@@ -705,7 +710,7 @@ const RAIL_STATIONS = [
       height: 18px; padding: 0 8px; border-radius: 999px;
       background: #111; color: #fff; font-size: 11px; font-weight: 700; letter-spacing: 0.02em;
     }
-    .kicker-row { display: flex; align-items: center; gap: 8px; }
+    .kicker-row { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1 1 auto; }
     .dep { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--divider-color, rgba(127,127,127,0.25)); }
     .dep-col { background: var(--ha-card-background, var(--card-background-color, #171d27)); padding: 4px 0 8px; }
     .dep-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px 8px; }
@@ -714,9 +719,11 @@ const RAIL_STATIONS = [
       gap: 10px; align-items: center; padding: 12px 18px;
     }
     .dep-row + .dep-row { box-shadow: 0 -1px 0 var(--divider-color, rgba(127,127,127,0.2)); }
-    .dep-time { font-variant-numeric: tabular-nums; font-weight: 500; font-size: 14px; }
+    .dep-time { font-variant-numeric: tabular-nums; font-weight: 500; font-size: 14px; white-space: nowrap; }
+    .dep-time .ampm { margin-left: 3px; font-size: 10px; font-weight: 650; letter-spacing: 0.04em; opacity: 0.55; }
     .dep-dest { min-width: 0; }
-    .dep-dest .to { display: flex; align-items: center; gap: 6px; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .dep-dest .to { display: flex; align-items: center; gap: 6px; font-size: 13px; min-width: 0; }
+    .dep-dest .to .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .dep-dest .id { display: block; font-size: 11px; opacity: 0.55; }
     .dep-trk {
       display: inline-flex; align-items: center; justify-content: center;
@@ -735,8 +742,8 @@ const RAIL_STATIONS = [
     .dep-cols,
     button.hit.dep-cols {
       display: grid;
-      grid-template-columns: 4.5rem minmax(0, 1fr) 5.75rem 5.6rem;
-      gap: 12px;
+      grid-template-columns: max-content minmax(0, 1fr) 2rem max-content;
+      gap: 10px;
       align-items: center;
       padding: 10px 18px;
     }
@@ -750,8 +757,8 @@ const RAIL_STATIONS = [
     .dep-cols.is-row { padding-top: 8px; padding-bottom: 8px; }
     .dep-cols.is-row + .dep-cols.is-row { box-shadow: 0 -1px 0 var(--divider-color, rgba(127,127,127,0.2)); }
     .dep-plat { display: flex; width: 100%; justify-content: center; }
-    .dep-expect { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; text-align: right; }
-    .dep-expect .late { font-size: 11px; }
+    .dep-expect { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; text-align: right; white-space: nowrap; }
+    .dep-expect .late { font-size: 11px; white-space: nowrap; }
     .size-pills { display: flex; gap: 6px; padding: 0 18px 12px; }
     .size-pills button {
       height: 28px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--divider-color, rgba(127,127,127,0.35));
@@ -759,7 +766,7 @@ const RAIL_STATIONS = [
     }
     .size-pills button.on { background: var(--secondary-background-color, #11161e); border-color: transparent; }
     .dep-card.is-compact .dep-cols,
-    .dep-card.is-compact button.hit.dep-cols { padding: 10px 16px; grid-template-columns: 3.6rem minmax(0,1fr) 4.75rem 4.6rem; gap: 10px; }
+    .dep-card.is-compact button.hit.dep-cols { padding: 10px 14px; grid-template-columns: max-content minmax(0,1fr) 1.6rem max-content; gap: 8px; }
     .dep-card.is-compact .dep-cols.is-head { letter-spacing: 0.08em; }
     .dep-card.is-compact .dep-time { font-size: 12px; }
     .dep-card.is-compact .dep-dest .to { font-size: 12px; }
@@ -767,7 +774,7 @@ const RAIL_STATIONS = [
     .dep-card.is-compact .dep-toolbar select { height: 32px; }
     .dep-card.is-compact .head { padding-bottom: 2px; }
     .dep-card.is-large .dep-cols,
-    .dep-card.is-large button.hit.dep-cols { padding: 14px 20px; grid-template-columns: 5.4rem minmax(0,1fr) 5.75rem 6.2rem; }
+    .dep-card.is-large button.hit.dep-cols { padding: 14px 20px; grid-template-columns: max-content minmax(0,1fr) 2.2rem max-content; }
     .dep-card.is-large .dep-time { font-size: 20px; }
     .dep-card.is-large .dep-dest .to { font-size: 15px; }
     .dep-card.is-large .dep-trk { width: 28px; height: 28px; font-size: 12px; }
@@ -779,14 +786,15 @@ const RAIL_STATIONS = [
       .dep-card.is-compact button.hit.dep-cols,
       .dep-card.is-large .dep-cols,
       .dep-card.is-large button.hit.dep-cols {
-        grid-template-columns: 3.3rem minmax(0,1fr) 4.75rem 4.4rem;
+        grid-template-columns: max-content minmax(0,1fr) 1.5rem max-content;
         gap: 8px;
-        padding-left: 16px;
-        padding-right: 16px;
+        padding-left: 14px;
+        padding-right: 14px;
       }
       .dep-time { font-size: 13px; }
       .dep-expect, .dep-expect .late { font-size: 11px; line-height: 1.2; }
-      .dep-toolbar label { min-width: 0; }
+      .dep-toolbar { flex-direction: column; }
+      .dep-toolbar label { min-width: 0; width: 100%; }
     }
     .bubble { min-width: 0; }
     .hero-grid { min-width: 0; }
@@ -803,24 +811,34 @@ const RAIL_STATIONS = [
       border-radius: 16px;
       box-shadow: inset 0 0 0 1px var(--divider-color, rgba(127,127,127,0.22));
     }
-    .bubble-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-    .bubble-clock-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-top: 4px; }
-    .bubble-clock {
+    .bubble-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; min-width: 0; }
+    .bubble-clock-row {
+      display: flex; align-items: baseline; justify-content: space-between;
+      gap: 8px; margin-top: 4px; min-width: 0; flex-wrap: wrap;
+    }
+    .bubble-clock, .bubble-clock-row > .value {
       margin-top: 0;
+      min-width: 0;
+      flex: 1 1 auto;
       font-variant-numeric: tabular-nums;
       font-weight: 500;
       letter-spacing: -0.03em;
+      line-height: 1.05;
       white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
-    .bubble-clock.is-lg { font-size: 30px; }
-    .bubble-clock.is-sm { font-size: 20px; }
+    .bubble-clock.is-lg, .bubble .value { font-size: 28px; }
+    .bubble-clock.is-sm { font-size: 18px; }
     .bubble { container-type: inline-size; }
-    @container (max-width: 210px) {
-      .bubble-clock.is-lg { font-size: 22px; }
+    @container (max-width: 240px) {
+      .bubble-clock.is-lg, .bubble .value { font-size: 22px; }
       .bubble-clock.is-sm { font-size: 16px; }
+      .bubble-clock-row { flex-direction: column; align-items: flex-start; gap: 2px; }
+      .bubble-late { text-align: left; }
     }
-    .bubble-late { font-size: 12px; font-weight: 500; white-space: nowrap; }
-    .bubble-hint { margin-top: 2px; font-size: 12px; opacity: 0.65; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .bubble-late { font-size: 12px; font-weight: 500; white-space: nowrap; flex: 0 0 auto; margin-left: auto; }
+    .bubble-hint { margin-top: 2px; font-size: 12px; opacity: 0.65; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
     .bubble-train.is-sm {
       margin-top: 8px; padding-top: 8px;
       box-shadow: 0 -1px 0 var(--divider-color, rgba(127,127,127,0.2));
@@ -830,10 +848,11 @@ const RAIL_STATIONS = [
       flex-wrap: wrap;
       gap: 10px;
       padding: 6px 16px 18px;
+      container-type: inline-size;
     }
     .hero-grid > .bubble {
-      flex: 1 1 138px;
-      min-width: 8.5rem;
+      flex: 1 1 200px;
+      min-width: min(100%, 11.5rem);
       width: auto;
     }
     .board-wrap {
@@ -866,8 +885,8 @@ const RAIL_STATIONS = [
   }
 
   const PHILLY = { lat: 40.037, lon: -75.171 };
-  const OSM_TILE = "https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png";
-  const ESRI_TILE = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}";
+  const OSM_TILE = "https://basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}.png";
+  const OSM_FALLBACK = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 
   function latLonToWorld(lat, lon, z) {
     const n = 256 * Math.pow(2, z);
@@ -1072,26 +1091,42 @@ const RAIL_STATIONS = [
       if (ty < 0 || ty >= nTiles) continue;
       for (let tx = x0; tx <= x1; tx += 1) {
         const wrapped = ((tx % nTiles) + nTiles) % nTiles;
-        tiles += `<img alt="" draggable="false" data-z="${z}" data-x="${wrapped}" data-y="${ty}" src="${OSM_TILE.replace("{z}", String(z)).replace("{x}", String(wrapped)).replace("{y}", String(ty))}" onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src='${ESRI_TILE}'.replace('{z}',this.dataset.z).replace('{y}',this.dataset.y).replace('{x}',this.dataset.x)}" style="left:${tx * 256 - left}px;top:${ty * 256 - top}px">`;
+        tiles += `<img alt="" draggable="false" data-z="${z}" data-x="${wrapped}" data-y="${ty}" src="${OSM_TILE.replace("{z}", String(z)).replace("{x}", String(wrapped)).replace("{y}", String(ty))}" onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src='${OSM_FALLBACK}'.replace('{z}',this.dataset.z).replace('{x}',this.dataset.x).replace('{y}',this.dataset.y)}" style="left:${tx * 256 - left}px;top:${ty * 256 - top}px">`;
       }
     }
     this.tiles.innerHTML = tiles;
 
+    const used = [];
+    const placeMark = (x, y) => {
+      let px = x;
+      let py = y;
+      for (let n = 0; n < 10; n += 1) {
+        const hit = used.some((p) => Math.abs(p.x - px) < 20 && Math.abs(p.y - py) < 16);
+        if (!hit) break;
+        const ang = n * 1.15;
+        px = x + Math.cos(ang) * (18 + n * 3);
+        py = y + Math.sin(ang) * (14 + n * 2);
+      }
+      used.push({ x: px, y: py });
+      return { x: px, y: py };
+    };
     let marks = "";
     if (this.payload.home) {
-      const p = latLonToWorld(this.payload.home.lat, this.payload.home.lon, z);
-      marks += `<button type="button" class="osm-mark is-home" data-id="home" style="left:${p.x - left}px;top:${p.y - top}px" title="${esc(this.payload.station || "Home")}"></button>`;
+      const home = latLonToWorld(this.payload.home.lat, this.payload.home.lon, z);
+      const p = placeMark(home.x - left, home.y - top);
+      marks += `<button type="button" class="osm-mark is-home" data-id="home" style="left:${p.x}px;top:${p.y}px" title="${esc(this.payload.station || "Home")}"></button>`;
     }
     let open = null;
     this.payload.vehicles.forEach((v, i) => {
-      const p = latLonToWorld(Number(v.lat), Number(v.lon), z);
+      const raw = latLonToWorld(Number(v.lat), Number(v.lon), z);
+      const p = placeMark(raw.x - left, raw.y - top);
       const id = String(v.id || i);
       const kind = String(v.kind || "rail");
       const cls = kind === "metro" ? "osm-mark is-metro" : "osm-mark";
       const color = vehicleColor(v);
       const fg = String(v.line || "").startsWith("G") ? "#14110c" : "#fff";
       if (this.openId === id) open = v;
-      marks += `<button type="button" class="${cls}" data-id="${esc(id)}" style="left:${p.x - left}px;top:${p.y - top}px;background:${color};color:${fg}" title="${esc(vehicleKindLabel(kind) + " " + vehicleLabel(v))}"><span>${esc(vehicleLabel(v))}</span></button>`;
+      marks += `<button type="button" class="${cls}" data-id="${esc(id)}" style="left:${p.x}px;top:${p.y}px;background:${color};color:${fg}" title="${esc(vehicleKindLabel(kind) + " " + vehicleLabel(v))}"><span>${esc(vehicleLabel(v))}</span></button>`;
     });
     this.marks.innerHTML = marks;
     this.countEl.textContent = this.payload.count
@@ -1986,12 +2021,9 @@ const RAIL_STATIONS = [
                 const service = serviceLabel(t.service_type || t.service);
                 return `
                 <button class="hit dep-cols is-row" type="button" data-entity="${esc(entity || "")}">
-                  <div class="dep-time">
-                    <div>${esc(clock.time || mins)}</div>
-                    ${clock.period ? `<div class="hint" style="margin:2px 0 0">${esc(clock.period)}</div>` : ""}
-                  </div>
+                  <div class="dep-time">${esc(clock.time || mins)}${clock.period ? ` <span class="ampm">${esc(clock.period)}</span>` : ""}</div>
                   <div class="dep-dest">
-                    <span class="to">${railBadge(t.line)}<span>${esc(dest)}</span></span>
+                    <span class="to">${railBadge(t.line)}<span class="name">${esc(dest)}</span></span>
                     <span class="id">${t.train_id ? "#" + esc(t.train_id) : ""}${service ? " · " + esc(service) : ""}</span>
                   </div>
                   <div class="dep-plat">
