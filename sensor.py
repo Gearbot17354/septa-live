@@ -64,6 +64,14 @@ async def async_setup_entry(
 ) -> None:
     coordinator: SeptaCoordinator = hass.data[DOMAIN][entry.entry_id]
     _stabilize_entity_ids(hass, entry, coordinator)
+    entities = _wanted_entities(coordinator)
+    coordinator.add_sensors = async_add_entities
+    coordinator.sensors = {entity.unique_id: entity for entity in entities if entity.unique_id}
+    _drop_removed_entities(hass, entry, entities)
+    async_add_entities(entities)
+
+
+def _wanted_entities(coordinator: SeptaCoordinator) -> list[SensorEntity]:
     entities: list[SensorEntity] = []
     if coordinator.show_rail:
         entities.extend(
@@ -97,8 +105,28 @@ async def async_setup_entry(
         else:
             entities.append(SeptaLineSensor(coordinator, watch))
     entities.append(SeptaMapSensor(coordinator))
-    _drop_removed_entities(hass, entry, entities)
-    async_add_entities(entities)
+    return entities
+
+
+async def async_sync_sensors(coordinator: SeptaCoordinator) -> None:
+    """Add and remove sensors without reloading the integration."""
+    if coordinator.add_sensors is None:
+        return
+    wanted = _wanted_entities(coordinator)
+    wanted_ids = {entity.unique_id for entity in wanted if entity.unique_id}
+    current: dict[str, Any] = coordinator.sensors
+    for uid, entity in list(current.items()):
+        if uid in wanted_ids:
+            continue
+        current.pop(uid, None)
+        if getattr(entity, "hass", None) is not None:
+            await entity.async_remove()
+    fresh = [entity for entity in wanted if entity.unique_id and entity.unique_id not in current]
+    if fresh:
+        coordinator.add_sensors(fresh)
+        for entity in fresh:
+            current[entity.unique_id] = entity
+    _drop_removed_entities(coordinator.hass, coordinator.entry, list(current.values()))
 
 
 def _drop_removed_entities(
@@ -116,7 +144,10 @@ def _drop_removed_entities(
     except Exception:  # noqa: BLE001
         return
     for item in stale:
-        registry.async_remove(item.entity_id)
+        try:
+            registry.async_remove(item.entity_id)
+        except Exception:  # noqa: BLE001
+            continue
 
 
 class _Base(CoordinatorEntity[SeptaCoordinator], SensorEntity):

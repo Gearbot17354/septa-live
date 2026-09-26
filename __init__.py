@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 
@@ -46,10 +45,9 @@ _FRONTEND = f"{DOMAIN}_frontend_registered"
 _CARD_JS = "septa-live-card.js"
 _PANEL_JS = "septa-live-panel.js"
 _PANEL_PATH = "septa-live"
-_CARD_VERSION = "1.9.11"
+_CARD_VERSION = "1.9.12"
 _PANEL_SIG: tuple | None = None
 _RELOADING: set[str] = set()
-_SKIP_RELOAD: set[str] = set()
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -66,8 +64,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = SeptaCoordinator(hass, entry)
     await coordinator.async_config_entry_first_refresh()
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+    coordinator.sidebar_on = _sidebar_enabled(entry)
+
+    def _push() -> None:
+        hass.bus.async_fire("septa_live_updated", {"entry_id": entry.entry_id})
+
+    coordinator.async_add_listener(_push)
+    entry.async_on_unload(lambda: coordinator.async_remove_listener(_push))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    entry.async_on_unload(entry.add_update_listener(_async_reload))
+    entry.async_on_unload(entry.add_update_listener(_async_entry_updated))
     await _async_sync_panel(hass)
     return True
 
@@ -223,22 +228,6 @@ async def websocket_panel(
     )
 
 
-def _structure_changed(entry: ConfigEntry, data: dict, options: dict) -> bool:
-    """True when Save has to add or remove sensors."""
-    if data.get(CONF_STATION) != entry.data.get(CONF_STATION):
-        return True
-    keys = (CONF_SHOW_RAIL, CONF_SHOW_BUS, CONF_SHOW_METRO, CONF_SHOW_TROLLEY, CONF_WATCHES)
-    for key in keys:
-        new = options.get(key)
-        old = entry.options.get(key, entry.data.get(key))
-        if key == CONF_WATCHES:
-            if json.dumps(new or [], sort_keys=True) != json.dumps(old or [], sort_keys=True):
-                return True
-        elif bool(new) != bool(old):
-            return True
-    return False
-
-
 def _clean_watches(raw: object) -> list[dict[str, str]]:
     if not isinstance(raw, list):
         return []
@@ -358,18 +347,13 @@ async def websocket_options(
         options[CONF_WATCHES] = _clean_watches(msg.get("watches"))
     if msg.get("station"):
         data[CONF_STATION] = msg["station"]
-    structural = _structure_changed(entry, data, options)
-    if not structural:
-        # The update listener refreshes in place. A reload here deadlocks Save.
-        _SKIP_RELOAD.add(entry.entry_id)
     try:
         hass.config_entries.async_update_entry(entry, data=data, options=options)
     except Exception as err:  # noqa: BLE001
-        _SKIP_RELOAD.discard(entry.entry_id)
         _LOGGER.exception("SEPTA options update failed")
         connection.send_error(msg["id"], "save_failed", str(err) or "Could not save")
         return
-    connection.send_result(msg["id"], {"ok": True, "reloaded": structural})
+    connection.send_result(msg["id"], {"ok": True})
 
 
 def _entity_map(hass: HomeAssistant, entry_id: str, station: str, dest: str) -> dict:
@@ -472,21 +456,37 @@ async def _async_ensure_lovelace_resource(hass: HomeAssistant, url: str) -> bool
     return False
 
 
-async def _async_reload(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload sensors without tearing down the sidebar page."""
-    if entry.entry_id in _SKIP_RELOAD:
-        _SKIP_RELOAD.discard(entry.entry_id)
-        coordinator = (hass.data.get(DOMAIN) or {}).get(entry.entry_id)
-        if coordinator is not None:
-            hass.async_create_task(coordinator.async_request_refresh())
+async def _async_entry_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Apply a Save without unloading the sidebar app.
+
+    Home Assistant's config entry reload tears the panel down. Sensors can be
+    added and removed in place, and the coordinator refresh pushes a new board.
+    A full reload is only needed when the station itself changes, because that
+    changes the device identity.
+    """
+    coordinator = (hass.data.get(DOMAIN) or {}).get(entry.entry_id)
+    if coordinator is None:
         return
-    _RELOADING.add(entry.entry_id)
+    if entry.data.get(CONF_STATION) != coordinator.device_station:
+        _RELOADING.add(entry.entry_id)
+        try:
+            await hass.config_entries.async_reload(entry.entry_id)
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("SEPTA reload failed")
+        finally:
+            _RELOADING.discard(entry.entry_id)
+        return
+    from .sensor import async_sync_sensors
+
     try:
-        await hass.config_entries.async_reload(entry.entry_id)
+        await async_sync_sensors(coordinator)
     except Exception:  # noqa: BLE001
-        _LOGGER.exception("SEPTA reload failed")
-    finally:
-        _RELOADING.discard(entry.entry_id)
+        _LOGGER.exception("SEPTA sensor sync failed")
+    show = _sidebar_enabled(entry)
+    if show != bool(coordinator.sidebar_on):
+        coordinator.sidebar_on = show
+        await _async_sync_panel(hass)
+    await coordinator.async_request_refresh()
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

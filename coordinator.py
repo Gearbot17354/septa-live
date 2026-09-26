@@ -316,6 +316,10 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self.session = async_get_clientsession(hass)
         self._board_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self.add_sensors = None
+        self.sensors: dict[str, Any] = {}
+        self.device_station = entry.data.get(CONF_STATION)
+        self.sidebar_on = True
 
     async def async_board_for_station(self, station: str) -> dict[str, Any]:
         """Live + timetable board for any Regional Rail station."""
