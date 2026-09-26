@@ -13,6 +13,7 @@ from homeassistant.helpers.event import async_call_later
 
 from .bus_routes import BUS_ROUTES
 from .const import (
+    CONF_BUS_DEST,
     CONF_BUS_LINE,
     CONF_BUS_STOP,
     CONF_DESTINATION,
@@ -45,7 +46,7 @@ _FRONTEND = f"{DOMAIN}_frontend_registered"
 _CARD_JS = "septa-live-card.js"
 _PANEL_JS = "septa-live-panel.js"
 _PANEL_PATH = "septa-live"
-_CARD_VERSION = "1.9.12"
+_CARD_VERSION = "1.9.13"
 _PANEL_SIG: tuple | None = None
 _RELOADING: set[str] = set()
 
@@ -315,43 +316,43 @@ async def websocket_options(
     msg: dict,
 ) -> None:
     """Update commute setup from the sidebar app."""
-    entry = hass.config_entries.async_get_entry(msg["entry_id"])
-    if entry is None or entry.domain != DOMAIN:
-        connection.send_error(msg["id"], "not_found", "SEPTA Transit entry not found")
-        return
-    options = dict(entry.options)
-    data = dict(entry.data)
-    mapping = {
-        "destination": CONF_DESTINATION,
-        "walk_minutes": CONF_WALK,
-        "show_sidebar": CONF_SIDEBAR,
-        "show_rail": CONF_SHOW_RAIL,
-        "show_bus": CONF_SHOW_BUS,
-        "show_metro": CONF_SHOW_METRO,
-        "show_trolley": CONF_SHOW_TROLLEY,
-        "rail_line": CONF_RAIL_LINE,
-        "bus_line": CONF_BUS_LINE,
-        "bus_stop": CONF_BUS_STOP,
-        "bus_destination": CONF_BUS_DEST,
-        "metro_line": CONF_METRO_LINE,
-        "trolley_line": CONF_TROLLEY_LINE,
-        "metro_home": CONF_METRO_STATION,
-        "metro_dest": CONF_METRO_DEST,
-        "trolley_home": CONF_TROLLEY_STATION,
-        "trolley_dest": CONF_TROLLEY_DEST,
-    }
-    for src, dest in mapping.items():
-        if src in msg:
-            options[dest] = msg[src]
-    if "watches" in msg:
-        options[CONF_WATCHES] = _clean_watches(msg.get("watches"))
-    if msg.get("station"):
-        data[CONF_STATION] = msg["station"]
     try:
+        entry = hass.config_entries.async_get_entry(msg["entry_id"])
+        if entry is None or entry.domain != DOMAIN:
+            connection.send_error(msg["id"], "not_found", "SEPTA Transit entry not found")
+            return
+        options = dict(entry.options)
+        data = dict(entry.data)
+        mapping = {
+            "destination": CONF_DESTINATION,
+            "walk_minutes": CONF_WALK,
+            "show_sidebar": CONF_SIDEBAR,
+            "show_rail": CONF_SHOW_RAIL,
+            "show_bus": CONF_SHOW_BUS,
+            "show_metro": CONF_SHOW_METRO,
+            "show_trolley": CONF_SHOW_TROLLEY,
+            "rail_line": CONF_RAIL_LINE,
+            "bus_line": CONF_BUS_LINE,
+            "bus_stop": CONF_BUS_STOP,
+            "bus_destination": CONF_BUS_DEST,
+            "metro_line": CONF_METRO_LINE,
+            "trolley_line": CONF_TROLLEY_LINE,
+            "metro_home": CONF_METRO_STATION,
+            "metro_dest": CONF_METRO_DEST,
+            "trolley_home": CONF_TROLLEY_STATION,
+            "trolley_dest": CONF_TROLLEY_DEST,
+        }
+        for src, dest in mapping.items():
+            if src in msg:
+                options[dest] = msg[src]
+        if "watches" in msg:
+            options[CONF_WATCHES] = _clean_watches(msg.get("watches"))
+        if msg.get("station"):
+            data[CONF_STATION] = msg["station"]
         hass.config_entries.async_update_entry(entry, data=data, options=options)
     except Exception as err:  # noqa: BLE001
         _LOGGER.exception("SEPTA options update failed")
-        connection.send_error(msg["id"], "save_failed", str(err) or "Could not save")
+        connection.send_error(msg["id"], "save_failed", str(err) or err.__class__.__name__)
         return
     connection.send_result(msg["id"], {"ok": True})
 
@@ -467,6 +468,22 @@ async def _async_entry_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
     coordinator = (hass.data.get(DOMAIN) or {}).get(entry.entry_id)
     if coordinator is None:
         return
+    # Don't do this inside the Save websocket call. Home Assistant runs update
+    # listeners immediately, and a sensor update there fails the button.
+    async_call_later(hass, 0, _apply_saved_options_later(hass, entry))
+
+
+def _apply_saved_options_later(hass: HomeAssistant, entry: ConfigEntry):
+    async def _run(_now) -> None:
+        await _apply_saved_options(hass, entry)
+
+    return _run
+
+
+async def _apply_saved_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    coordinator = (hass.data.get(DOMAIN) or {}).get(entry.entry_id)
+    if coordinator is None:
+        return
     if entry.data.get(CONF_STATION) != coordinator.device_station:
         _RELOADING.add(entry.entry_id)
         try:
@@ -486,7 +503,10 @@ async def _async_entry_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
     if show != bool(coordinator.sidebar_on):
         coordinator.sidebar_on = show
         await _async_sync_panel(hass)
-    await coordinator.async_request_refresh()
+    try:
+        await coordinator.async_request_refresh()
+    except Exception:  # noqa: BLE001
+        _LOGGER.exception("SEPTA refresh after save failed")
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

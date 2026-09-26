@@ -611,7 +611,7 @@
           this._paint();
           return;
         } catch (err) {
-          this._msg = (err && err.message) || "Save failed";
+          this._msg = (err && (err.message || err.code)) || "Save failed";
         }
         this._busy = false;
         this._paint();
