@@ -21,6 +21,7 @@ from .const import (
     BUS_SCHEDULES_URL,
     CONF_BUS_DEST,
     CONF_BUS_LINE,
+    CONF_BUS_STOP,
     CONF_DESTINATION,
     CONF_METRO_DEST,
     CONF_METRO_LINE,
@@ -338,49 +339,130 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._board_cache[name.lower()] = (now.timestamp(), pack)
         return pack
 
+    async def _route_stops(self, route: str) -> list[dict[str, str]]:
+        raw = await self._get(STOPS_URL, {"req1": route})
+        stops: list[dict[str, str]] = []
+        seen: set[str] = set()
+        if not isinstance(raw, list):
+            return stops
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            sid = str(item.get("stopid") or item.get("stop_id") or item.get("id") or "").strip()
+            name = str(item.get("stopname") or item.get("stop_name") or item.get("name") or "").strip()
+            if not sid or not name or sid in seen:
+                continue
+            seen.add(sid)
+            stops.append({"id": sid, "name": name})
+        return stops
+
+    async def _nearby_bus_stops(self) -> list[dict[str, str]]:
+        coords = await self._station_coords()
+        if not coords:
+            return []
+        locations = await self._get(LOCATIONS_URL, {"lat": coords[0], "lon": coords[1], "radius": 1})
+        stops: list[dict[str, str]] = []
+        if not isinstance(locations, list):
+            return stops
+        for item in locations:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("location_type") or "") != "bus_stops":
+                continue
+            sid = str(item.get("location_id") or "").strip()
+            name = str(item.get("location_name") or sid).strip()
+            if sid:
+                stops.append({"id": sid, "name": name})
+        return stops
+
+    async def _stop_destinations(self, stop_id: str, route: str) -> list[str]:
+        raw = await self._get(BUS_SCHEDULES_URL, {"stop_id": stop_id})
+        found: list[str] = []
+        seen: set[str] = set()
+        if not isinstance(raw, dict) or raw.get("error"):
+            return found
+        want = route.strip().lower()
+        for key, rows in raw.items():
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                route_id = str(row.get("Route") or key)
+                if want and route_id.lower() != want:
+                    continue
+                dest = str(row.get("DirectionDesc") or "").strip()
+                if dest and dest not in seen:
+                    seen.add(dest)
+                    found.append(dest)
+        return found
+
+    async def async_bus_choices(self, route: str, stop_id: str) -> dict[str, Any]:
+        """Stops and destinations for the sidebar bus pickers."""
+        stops: list[dict[str, str]] = []
+        if route:
+            try:
+                stops = await self._route_stops(route)
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("Bus route stops failed for %s: %s", route, err)
+        if not stops:
+            try:
+                stops = await self._nearby_bus_stops()
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("Nearby bus stops failed: %s", err)
+        chosen = stop_id if any(item["id"] == stop_id for item in stops) else ""
+        dests: list[str] = []
+        if chosen:
+            try:
+                dests = await self._stop_destinations(chosen, route)
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("Bus destinations failed for %s: %s", chosen, err)
+        return {"stops": stops, "destinations": dests}
+
     async def _load_buses(self, now: datetime) -> list[dict[str, Any]]:
         try:
-            coords = await self._station_coords()
-            if not coords:
-                return []
-            locations = await self._get(
-                LOCATIONS_URL,
-                {"lat": coords[0], "lon": coords[1], "radius": 1},
-            )
-            stops: list[dict[str, Any]] = []
-            if isinstance(locations, list):
-                for item in locations:
-                    if not isinstance(item, dict):
-                        continue
-                    if str(item.get("location_type") or "") != "bus_stops":
-                        continue
-                    sid = str(item.get("location_id") or "")
-                    if sid:
-                        stops.append(item)
+            route = self.bus_line
+            chosen = self.bus_stop
+            names: dict[str, str] = {}
+            stop_items: list[dict[str, str]] = []
+            if chosen:
+                stop_items = [{"id": chosen, "name": chosen}]
+            elif route:
+                try:
+                    stop_items = (await self._route_stops(route))[:8]
+                except Exception as err:  # noqa: BLE001
+                    _LOGGER.debug("Bus route stops failed: %s", err)
+            if not stop_items:
+                stop_items = (await self._nearby_bus_stops())[:8]
+            for item in stop_items:
+                names[item["id"]] = item["name"]
             trips: list[dict[str, Any]] = []
             used_stops: list[str] = []
-            for item in stops[:8]:
-                sid = str(item.get("location_id") or "")
+            for item in stop_items[:8]:
+                sid = item["id"]
                 try:
                     raw = await self._get(BUS_SCHEDULES_URL, {"stop_id": sid})
                 except Exception:  # noqa: BLE001
                     continue
                 if not isinstance(raw, dict) or raw.get("error"):
                     continue
-                name = str(item.get("location_name") or "")
+                name = names.get(sid) or item["name"]
                 before = len(trips)
-                for route, rows in raw.items():
+                for key, rows in raw.items():
                     if not isinstance(rows, list):
                         continue
                     for row in rows:
                         if not isinstance(row, dict):
+                            continue
+                        route_id = str(row.get("Route") or key)
+                        if route and route_id.lower() != route.lower():
                             continue
                         when = _parse_bus_calendar(str(row.get("DateCalender") or ""))
                         if when and when < now - timedelta(minutes=2):
                             continue
                         trips.append(
                             {
-                                "route": str(row.get("Route") or route),
+                                "route": route_id,
                                 "destination": str(row.get("DirectionDesc") or ""),
                                 "stop_id": sid,
                                 "stop_name": str(row.get("StopName") or name),
@@ -393,7 +475,7 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         )
                 if len(trips) > before:
                     used_stops.append(sid)
-                    if len(used_stops) >= 3:
+                    if chosen or len(used_stops) >= 3:
                         break
             trips = _overlay_live_buses(trips, await self._live_buses(trips), used_stops)
             seen: set[tuple[Any, ...]] = set()
@@ -713,6 +795,10 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     @property
     def bus_dest(self) -> str:
         return self._opt_str(CONF_BUS_DEST)
+
+    @property
+    def bus_stop(self) -> str:
+        return self._opt_str(CONF_BUS_STOP)
 
     @property
     def metro_home(self) -> str:

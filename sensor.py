@@ -11,6 +11,7 @@ from homeassistant.const import UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_registry import async_entries_for_config_entry
 from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -96,7 +97,19 @@ async def async_setup_entry(
         else:
             entities.append(SeptaLineSensor(coordinator, watch))
     entities.append(SeptaMapSensor(coordinator))
+    _drop_removed_entities(hass, entry, entities)
     async_add_entities(entities)
+
+
+def _drop_removed_entities(
+    hass: HomeAssistant, entry: ConfigEntry, entities: list[SensorEntity]
+) -> None:
+    """Remove sensors for lines that were deleted, and modes that were turned off."""
+    keep = {entity.unique_id for entity in entities if getattr(entity, "unique_id", None)}
+    registry = async_get_entity_registry(hass)
+    for item in async_entries_for_config_entry(registry, entry.entry_id):
+        if item.unique_id and item.unique_id not in keep:
+            registry.async_remove(item.entity_id)
 
 
 class _Base(CoordinatorEntity[SeptaCoordinator], SensorEntity):

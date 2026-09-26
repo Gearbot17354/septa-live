@@ -220,6 +220,11 @@
         this._cfg = await this._call("septa_live/panel");
         const first = (this._cfg.entries || [])[0];
         if (first) this._draft = Object.assign({}, first, { watches: first.watches || [] });
+        const route = this._draft && (this._draft.bus_line || "");
+        if (this._draft && this._draft.show_bus && this._busRoute !== route) {
+          this._busRoute = route;
+          await this._fillBus();
+        }
         if (!quiet) this._paint();
         return true;
       } catch (err) {
@@ -228,6 +233,23 @@
           this._paint();
         }
         return false;
+      }
+    }
+
+    async _fillBus() {
+      const draft = this._draft || {};
+      if (!draft.entry_id) return;
+      try {
+        const data = await this._call("septa_live/bus_picker", {
+          entry_id: draft.entry_id,
+          route: draft.bus_line || "",
+          stop_id: draft.bus_stop || "",
+        });
+        this._busStops = (data && data.stops) || [];
+        this._busDests = (data && data.destinations) || [];
+      } catch (_err) {
+        this._busStops = this._busStops || [];
+        this._busDests = this._busDests || [];
       }
     }
 
@@ -266,6 +288,9 @@
     }
 
     _trains(entry, dir) {
+      const live = entry && entry.live;
+      const packed = live && (dir === "north" ? live.northbound : live.southbound);
+      if (Array.isArray(packed) && packed.length) return packed.slice(0, 8);
       const state = this._state(entry, dir === "north" ? "north_board" : "south_board");
       const trains = state && state.attributes && state.attributes.trains;
       if (Array.isArray(trains) && trains.length) return trains.slice(0, 8);
@@ -327,7 +352,11 @@
       const showTrolley = draft.show_trolley === true;
       const south = this._trains(entry, "south");
       const north = this._trains(entry, "north");
-      const bus = this._state(entry, "next_bus");
+      const busOpts = '<option value="">Any route</option>' + busRoutes.map((route) => '<option value="' + esc(route.id) + '"' + (String(route.id) === String(draft.bus_line || "") ? " selected" : "") + ">" + esc(route.id + " · " + route.name) + "</option>").join("");
+      const liveBus = entry && entry.live && entry.live.bus;
+      const bus = (liveBus && (liveBus.clock || liveBus.destination || liveBus.minutes != null))
+        ? { state: liveBus.minutes, attributes: liveBus }
+        : this._state(entry, "next_bus");
       const leave = this._state(entry, "leave_in");
       const status = this._state(entry, "status");
       const trains = this._dir === "north" ? north : south;
@@ -336,7 +365,6 @@
       const homeOpts = stations.map((name) => '<option value="' + esc(name) + '"' + (name === draft.station ? " selected" : "") + ">" + esc(name) + "</option>").join("");
       const destOpts = stations.map((name) => '<option value="' + esc(name) + '"' + (name === draft.destination ? " selected" : "") + ">" + esc(name) + "</option>").join("");
       const lineOpts = '<option value="">Any line</option>' + lines.map((line) => '<option value="' + esc(line.id) + '"' + (line.id === draft.rail_line ? " selected" : "") + ">" + esc(line.name) + "</option>").join("");
-      const busOpts = '<option value="">Any route</option>' + busRoutes.map((route) => '<option value="' + esc(route.id) + '"' + (String(route.id) === String(draft.bus_line || "") ? " selected" : "") + ">" + esc(route.id + " · " + route.name) + "</option>").join("");
       const selectOpts = (list, value, empty, labelOf) =>
         '<option value="">' + esc(empty) + "</option>" +
         list.map((item) => {
@@ -344,6 +372,11 @@
           const label = labelOf ? labelOf(item) : (typeof item === "string" ? item : item.name);
           return '<option value="' + esc(id) + '"' + (String(id) === String(value || "") ? " selected" : "") + ">" + esc(label) + "</option>";
         }).join("");
+      const busStops = this._busStops || [];
+      const busDests = this._busDests || [];
+      const busStopLabel = draft.bus_line ? "Any stop on this route" : "Nearby stops";
+      const busStopOpts = selectOpts(busStops, draft.bus_stop, busStopLabel, null);
+      const busDestOpts = selectOpts(busDests, draft.bus_destination, "Any destination", null);
       const modeCard = (flag, mode, title, on) => {
         const extra = watches.filter((w) => w.mode === mode).length;
         const n = on ? 1 + extra : 0;
@@ -364,8 +397,14 @@
       };
       const metro = this._state(entry, "metro");
       const trolley = this._state(entry, "trolley");
+      const busHint = bus && bus.attributes
+        ? [bus.attributes.destination, bus.attributes.stop_name].filter(Boolean).join(" · ")
+        : "";
+      const busClock = bus && bus.attributes && bus.attributes.clock
+        ? bus.attributes.clock
+        : (bus && !blank(bus) ? bus.state : "—");
       const busCard = showBus
-        ? '<article class="bubble"><div class="kicker"><span>Next bus</span>' + (bus && bus.attributes && bus.attributes.route ? lineBadge(String(bus.attributes.route)) : "") + '</div><div class="clockrow"><div class="clock">' + esc(bus && !blank(bus) ? ((bus.attributes && bus.attributes.clock) || bus.state) : "—") + "</div></div><div class=\"hint\">" + esc(bus && bus.attributes && bus.attributes.destination ? bus.attributes.destination : "No nearby bus") + "</div></article>"
+        ? '<article class="bubble"><div class="kicker"><span>Next bus</span>' + (bus && bus.attributes && bus.attributes.route ? lineBadge(String(bus.attributes.route)) : "") + '</div><div class="clockrow"><div class="clock">' + esc(busClock) + '</div></div><div class="hint">' + esc(busHint || "No buses for this stop") + "</div></article>"
         : "";
       const bubbles = (this._tab === "all" || this._tab === "rail") && showRail
         ? this._bubble("Next inbound", south) + this._bubble("Next outbound", north)
@@ -375,8 +414,9 @@
       const trolleyBubble = showTrolley && (this._tab === "all" || this._tab === "trolley") ? serviceCard("Trolley", trolley) : "";
       const lineBubbles = watches.filter((w) => this._tab === "all" || this._tab === w.mode).map((w) => {
         if (w.mode === "rail") {
+          const liveLine = entry && entry.live && entry.live.lines && entry.live.lines[w.id];
           const state = this._state(entry, "line_rail_" + w.id + "_south") || this._state(entry, "line_rail_" + w.id);
-          const attrs = (state && state.attributes) || {};
+          const attrs = liveLine || (state && state.attributes) || {};
           const inbound = Array.isArray(attrs.southbound) ? attrs.southbound : (Array.isArray(attrs.trains) ? attrs.trains : []);
           const outbound = Array.isArray(attrs.northbound) ? attrs.northbound : [];
           const place = w.home || "Line";
@@ -401,12 +441,12 @@
         "</div>" +
         '<p class="label">Commute</p>' +
         (showRail ? '<div class="commute-row"><div class="who">Regional Rail</div><label class="field">Line<select data-rail-line>' + lineOpts + '</select></label><label class="field">Home<select data-home>' + homeOpts + '</select></label><span class="swap">↔</span><label class="field">Commute to<select data-dest>' + destOpts + "</select></label></div>" : "") +
-        (showBus ? '<div class="commute-row"><div class="who">Buses</div><label class="field">Line<select data-bus-line>' + busOpts + '</select></label><label class="field">Home stop<input value="Nearby stops" disabled /></label><span class="swap"></span><label class="field">Commute to<input value="Any destination" disabled /></label></div>' : "") +
+        (showBus ? '<div class="commute-row"><div class="who">Buses</div><label class="field">Line<select data-bus-line>' + busOpts + '</select></label><label class="field">Home stop<select data-bus-stop>' + busStopOpts + '</select></label><span class="swap"></span><label class="field">Commute to<select data-bus-dest>' + busDestOpts + "</select></label></div>" : "") +
         (showMetro ? '<div class="commute-row"><div class="who">Metro</div><label class="field">Line<select data-metro-line>' + selectOpts(metroLines, draft.metro_line, "Any line", (item) => item.name) + '</select></label><label class="field">Home<select data-metro-home>' + selectOpts(metroStops, draft.metro_home, "All Metro", null) + '</select></label><span class="swap">↔</span><label class="field">Commute to<select data-metro-dest>' + selectOpts(metroStops, draft.metro_dest, "Any destination", null) + "</select></label></div>" : "") +
         (showTrolley ? '<div class="commute-row"><div class="who">Trolley</div><label class="field">Line<select data-trolley-line>' + selectOpts(trolleyLines, draft.trolley_line, "Any line", (item) => item.name) + '</select></label><label class="field">Home<select data-trolley-home>' + selectOpts(trolleyStops, draft.trolley_home, "All trolleys", null) + '</select></label><span class="swap">↔</span><label class="field">Commute to<select data-trolley-dest>' + selectOpts(trolleyStops, draft.trolley_dest, "Any destination", null) + "</select></label></div>" : "") +
         watchRows +
         '<button class="save" type="button" data-save ' + (this._busy ? "disabled" : "") + ">Save</button>" +
-        '<p class="note">Plus adds another line and its sensor. Save turns Metro and trolley on, then they show up on the board.</p>' +
+        '<p class="note">Plus adds another line. Minus removes the last one and, after Save, deletes its sensors.</p>' +
         (this._msg ? '<div class="note">' + esc(this._msg) + "</div>" : "") +
         '<section class="board"><div class="board-head"><p class="label" style="margin:0">Board</p><span class="sub">' + esc(entry ? entry.station : "") + '</span></div><div class="modes" style="padding:0 12px"><button type="button" data-tab="all" class="' + (this._tab === "all" ? "on" : "") + '">All</button>' + (showRail ? '<button type="button" data-tab="rail" class="' + (this._tab === "rail" ? "on" : "") + '">Regional Rail</button>' : "") + (showBus ? '<button type="button" data-tab="bus" class="' + (this._tab === "bus" ? "on" : "") + '">Buses</button>' : "") + (showMetro ? '<button type="button" data-tab="metro" class="' + (this._tab === "metro" ? "on" : "") + '">Metro</button>' : "") + (showTrolley ? '<button type="button" data-tab="trolley" class="' + (this._tab === "trolley" ? "on" : "") + '">Trolley</button>' : "") + '</div><div class="bubbles">' + bubbles + busBubble + metroBubble + trolleyBubble + lineBubbles + "</div></section>" +
         (showRail ? '<section class="deps"><div class="dep-head"><div><div class="eyebrow">Departures</div><div class="sub">' + esc(this._dir === "north" ? "Outbound" : "Inbound") + '</div></div><div class="modes" style="margin:0"><button type="button" data-dir="south" class="' + (this._dir === "south" ? "on" : "") + '">Inbound</button><button type="button" data-dir="north" class="' + (this._dir === "north" ? "on" : "") + '">Outbound</button></div></div><div class="cols"><span>Time</span><span>Destination</span><span style="text-align:center">Platform</span><span style="text-align:right">Expected</span></div>' + this._rows(trains) + "</section>" : "") +
@@ -424,12 +464,16 @@
         const side = root.querySelector("[data-sidebar]");
         const railLine = root.querySelector("[data-rail-line]");
         const busLine = root.querySelector("[data-bus-line]");
+        const busStop = root.querySelector("[data-bus-stop]");
+        const busDest = root.querySelector("[data-bus-dest]");
         if (dest) this._draft.destination = dest.value;
         if (home) this._draft.station = home.value;
         if (walk) this._draft.walk_minutes = Number(walk.value);
         if (side) this._draft.show_sidebar = side.checked;
         if (railLine) this._draft.rail_line = railLine.value;
         if (busLine) this._draft.bus_line = busLine.value;
+        if (busStop) this._draft.bus_stop = busStop.value;
+        if (busDest) this._draft.bus_destination = busDest.value;
         ["metro", "trolley"].forEach((mode) => {
           const line = root.querySelector("[data-" + mode + "-line]");
           const home = root.querySelector("[data-" + mode + "-home]");
@@ -456,6 +500,22 @@
       };
       root.querySelectorAll("[data-dir]").forEach((btn) => btn.addEventListener("click", () => { this._dir = btn.getAttribute("data-dir"); this._paint(); }));
       root.querySelectorAll("[data-tab]").forEach((btn) => btn.addEventListener("click", () => { this._tab = btn.getAttribute("data-tab"); this._paint(); }));
+      const busLineSel = root.querySelector("[data-bus-line]");
+      if (busLineSel) busLineSel.addEventListener("change", async () => {
+        grab();
+        this._draft.bus_stop = "";
+        this._draft.bus_destination = "";
+        this._busRoute = this._draft.bus_line || "";
+        await this._fillBus();
+        this._paint();
+      });
+      const busStopSel = root.querySelector("[data-bus-stop]");
+      if (busStopSel) busStopSel.addEventListener("change", async () => {
+        grab();
+        this._draft.bus_destination = "";
+        await this._fillBus();
+        this._paint();
+      });
       root.querySelectorAll("[data-mode]").forEach((btn) => btn.addEventListener("click", () => {
         grab();
         const key = btn.getAttribute("data-mode");
@@ -510,6 +570,8 @@
             show_trolley: this._draft.show_trolley === true,
             rail_line: this._draft.rail_line || "",
             bus_line: this._draft.bus_line || "",
+            bus_stop: this._draft.bus_stop || "",
+            bus_destination: this._draft.bus_destination || "",
             metro_line: this._draft.metro_line || "",
             trolley_line: this._draft.trolley_line || "",
             metro_home: this._draft.metro_home || "",
@@ -527,13 +589,18 @@
           if (!ok) this._msg = "Saved. The board will catch up in a moment.";
           this._busy = false;
           this._paint();
-          const until = Date.now() + 8000;
-          const tick = () => {
-            if (!this._hass || Date.now() > until) return;
+          const until = Date.now() + 20000;
+          const tick = async () => {
+            if (!this._hass || Date.now() > until || this._busy) return;
+            if (this.shadowRoot && this.shadowRoot.activeElement) {
+              setTimeout(tick, 1500);
+              return;
+            }
+            await this._load(true);
             this._paint();
-            setTimeout(tick, 1000);
+            setTimeout(tick, 2000);
           };
-          setTimeout(tick, 1000);
+          setTimeout(tick, 1500);
           return;
         } catch (err) {
           this._msg = (err && err.message) || "Save failed";

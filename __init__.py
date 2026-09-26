@@ -15,6 +15,7 @@ from homeassistant.helpers.event import async_call_later
 from .bus_routes import BUS_ROUTES
 from .const import (
     CONF_BUS_LINE,
+    CONF_BUS_STOP,
     CONF_DESTINATION,
     CONF_METRO_DEST,
     CONF_METRO_LINE,
@@ -45,7 +46,7 @@ _FRONTEND = f"{DOMAIN}_frontend_registered"
 _CARD_JS = "septa-live-card.js"
 _PANEL_JS = "septa-live-panel.js"
 _PANEL_PATH = "septa-live"
-_CARD_VERSION = "1.9.9"
+_CARD_VERSION = "1.9.10"
 _PANEL_SIG: tuple | None = None
 _RELOADING: set[str] = set()
 _SKIP_RELOAD: set[str] = set()
@@ -56,6 +57,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     websocket_api.async_register_command(hass, websocket_board)
     websocket_api.async_register_command(hass, websocket_panel)
     websocket_api.async_register_command(hass, websocket_options)
+    websocket_api.async_register_command(hass, websocket_bus_picker)
     return True
 
 
@@ -147,6 +149,20 @@ async def websocket_board(
     connection.send_result(msg["id"], board)
 
 
+def _live_board(coordinator: SeptaCoordinator) -> dict:
+    data = coordinator.data or {}
+    bus = data.get("next_bus") if isinstance(data.get("next_bus"), dict) else None
+    lines = data.get("lines") if isinstance(data.get("lines"), dict) else {}
+    return {
+        "updated": data.get("updated"),
+        "status": data.get("status"),
+        "southbound": (data.get("southbound_board") or [])[:8],
+        "northbound": (data.get("northbound_board") or [])[:8],
+        "bus": bus,
+        "lines": lines,
+    }
+
+
 @websocket_api.websocket_command({vol.Required("type"): "septa_live/panel"})
 @websocket_api.async_response
 async def websocket_panel(
@@ -173,6 +189,8 @@ async def websocket_panel(
                 "show_sidebar": _sidebar_enabled(coordinator.entry),
                 "rail_line": coordinator.rail_line,
                 "bus_line": coordinator.bus_line,
+                "bus_stop": coordinator.bus_stop,
+                "bus_destination": coordinator.bus_dest,
                 "metro_line": coordinator.metro_line,
                 "trolley_line": coordinator.trolley_line,
                 "metro_home": coordinator.metro_home,
@@ -181,6 +199,7 @@ async def websocket_panel(
                 "trolley_dest": coordinator.trolley_dest,
                 "watches": coordinator.watches(),
                 "entities": _entity_map(hass, entry_id, coordinator.station, coordinator.destination),
+                "live": _live_board(coordinator),
             }
         )
     connection.send_result(
@@ -245,6 +264,32 @@ def _clean_watches(raw: object) -> list[dict[str, str]]:
 
 @websocket_api.websocket_command(
     {
+        vol.Required("type"): "septa_live/bus_picker",
+        vol.Required("entry_id"): str,
+        vol.Optional("route"): str,
+        vol.Optional("stop_id"): str,
+    }
+)
+@websocket_api.async_response
+async def websocket_bus_picker(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict,
+) -> None:
+    """Stops and destinations for the selected bus route."""
+    coordinator = (hass.data.get(DOMAIN) or {}).get(msg["entry_id"])
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_found", "SEPTA Transit entry not found")
+        return
+    choices = await coordinator.async_bus_choices(
+        str(msg.get("route") or ""),
+        str(msg.get("stop_id") or ""),
+    )
+    connection.send_result(msg["id"], choices)
+
+
+@websocket_api.websocket_command(
+    {
         vol.Required("type"): "septa_live/options",
         vol.Required("entry_id"): str,
         vol.Optional("destination"): str,
@@ -257,6 +302,8 @@ def _clean_watches(raw: object) -> list[dict[str, str]]:
         vol.Optional("station"): str,
         vol.Optional("rail_line"): str,
         vol.Optional("bus_line"): str,
+        vol.Optional("bus_stop"): str,
+        vol.Optional("bus_destination"): str,
         vol.Optional("metro_line"): str,
         vol.Optional("trolley_line"): str,
         vol.Optional("metro_home"): str,
@@ -289,6 +336,8 @@ async def websocket_options(
         "show_trolley": CONF_SHOW_TROLLEY,
         "rail_line": CONF_RAIL_LINE,
         "bus_line": CONF_BUS_LINE,
+        "bus_stop": CONF_BUS_STOP,
+        "bus_destination": CONF_BUS_DEST,
         "metro_line": CONF_METRO_LINE,
         "trolley_line": CONF_TROLLEY_LINE,
         "metro_home": CONF_METRO_STATION,
@@ -306,11 +355,19 @@ async def websocket_options(
     structural = _structure_changed(entry, data, options)
     if not structural:
         _SKIP_RELOAD.add(entry.entry_id)
+    else:
+        _SKIP_RELOAD.add(entry.entry_id)
+        _RELOADING.add(entry.entry_id)
     hass.config_entries.async_update_entry(entry, data=data, options=options)
-    if structural:
-        coordinator = (hass.data.get(DOMAIN) or {}).get(entry.entry_id)
-        if coordinator is not None:
-            await coordinator.async_request_refresh()
+    try:
+        if structural:
+            await hass.config_entries.async_reload(entry.entry_id)
+        else:
+            coordinator = (hass.data.get(DOMAIN) or {}).get(entry.entry_id)
+            if coordinator is not None:
+                await coordinator.async_request_refresh()
+    finally:
+        _RELOADING.discard(entry.entry_id)
     connection.send_result(msg["id"], {"ok": True, "reloaded": structural})
 
 
@@ -418,9 +475,6 @@ async def _async_reload(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload sensors without tearing down the sidebar page."""
     if entry.entry_id in _SKIP_RELOAD:
         _SKIP_RELOAD.discard(entry.entry_id)
-        coordinator = (hass.data.get(DOMAIN) or {}).get(entry.entry_id)
-        if coordinator is not None:
-            await coordinator.async_request_refresh()
         return
     _RELOADING.add(entry.entry_id)
     try:
