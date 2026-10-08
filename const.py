@@ -3,7 +3,7 @@
 from typing import Final
 
 DOMAIN: Final = "septa_live"
-PLATFORMS: Final = ["sensor"]
+PLATFORMS: Final = ["sensor", "binary_sensor"]
 
 CONF_STATION: Final = "station"
 CONF_DESTINATION: Final = "destination"
@@ -25,6 +25,17 @@ CONF_BUS_LINE: Final = "bus_line"
 CONF_METRO_LINE: Final = "metro_line"
 CONF_TROLLEY_LINE: Final = "trolley_line"
 CONF_WATCHES: Final = "watches"
+CONF_RIDE_TRACKER: Final = "ride_tracker"
+CONF_RIDE_RADIUS: Final = "ride_radius_m"
+CONF_RIDE_MIN_SPEED: Final = "ride_min_speed_mph"
+CONF_RIDE_MATCHES: Final = "ride_matches"
+CONF_RIDE_MAX_ACCURACY: Final = "ride_max_accuracy_m"
+CONF_RIDE_REQUEST: Final = "ride_request_updates"
+
+DEFAULT_RIDE_RADIUS: Final = 300
+DEFAULT_RIDE_MIN_SPEED: Final = 15
+DEFAULT_RIDE_MATCHES: Final = 2
+DEFAULT_RIDE_MAX_ACCURACY: Final = 100
 
 DEFAULT_STATION: Final = "Lansdale"
 DEFAULT_DESTINATION: Final = "Jefferson Station"
@@ -43,6 +54,8 @@ LOCATIONS_URL: Final = "https://www3.septa.org/api/locations/get_locations.php"
 BUS_SCHEDULES_URL: Final = "https://www3.septa.org/api/BusSchedules/index.php"
 TRANSITVIEW_URL: Final = "https://www3.septa.org/api/TransitView/index.php"
 TRAINVIEW_URL: Final = "https://www3.septa.org/api/TrainView/index.php"
+RRSCHEDULES_URL: Final = "https://www3.septa.org/api/RRSchedules/index.php"
+RIDE_FAST_SCAN: Final = 30
 V2_TRIPS_URL: Final = "https://www3.septa.org/api/v2/trips/"
 METRO_ROUTE_IDS: Final = ["L1", "B1", "B2", "B3", "M1"]
 TROLLEY_ROUTE_IDS: Final = ["T1", "T2", "T3", "T4", "T5", "G1", "D1", "D2"]

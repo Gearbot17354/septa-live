@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 import json
 import logging
 import re
+import time
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -316,8 +317,14 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self.session = async_get_clientsession(hass)
         self._board_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._stops_cache: dict[str, tuple[float, list]] = {}
+        self.trainview_rows: list = []
+        self.trainview_ts = 0.0
         self.add_sensors = None
         self.sensors: dict[str, Any] = {}
+        self.add_binary = None
+        self.binary_sensors: dict[str, Any] = {}
+        self.ride = None
         self.device_station = entry.data.get(CONF_STATION)
         self.sidebar_on = True
 
@@ -541,6 +548,8 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             try:
                 raw = await self._get(TRAINVIEW_URL, {})
                 rows = raw if isinstance(raw, list) else []
+                self.trainview_rows = rows
+                self.trainview_ts = time.time()
                 for item in rows:
                     if not isinstance(item, dict):
                         continue
@@ -767,20 +776,34 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "routes": sorted({str(item.get("route_id") or "") for item in matched}),
         }
 
+    async def async_line_stops(self, line: str) -> list[dict[str, Any]]:
+        """Rail stops for one line, cached for 24 hours."""
+        code = (line or "").strip().upper()
+        if not code:
+            return []
+        now = time.time()
+        cached = self._stops_cache.get(code)
+        if cached and now - cached[0] < 86400:
+            return cached[1]
+        try:
+            raw = await self._get(STOPS_URL, {"req1": code})
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("Stops lookup failed for %s", code)
+            return cached[1] if cached else []
+        rows = [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+        self._stops_cache[code] = (now, rows)
+        return rows
+
     async def _station_coords(self) -> tuple[float, float] | None:
         want = _norm_name(self.station)
-        for line in RAIL_LINES:
-            try:
-                raw = await self._get(STOPS_URL, {"req1": line})
-            except Exception:  # noqa: BLE001
+        preferred = (self.rail_line or "").upper()
+        lines = [preferred] + [line for line in RAIL_LINES if line != preferred] if preferred else list(RAIL_LINES)
+        for line in lines:
+            if not line:
                 continue
-            if not isinstance(raw, list):
-                continue
-            for item in raw:
-                if not isinstance(item, dict):
-                    continue
+            for item in await self.async_line_stops(line):
                 name = _norm_name(str(item.get("stopname") or ""))
-                if name == want or want in name or name in want:
+                if name == want or (want and (want in name or name in want)):
                     try:
                         return float(item["lat"]), float(item.get("lng") or item.get("lon"))
                     except (TypeError, ValueError, KeyError):

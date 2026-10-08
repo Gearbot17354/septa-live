@@ -10,12 +10,13 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity_registry import async_entries_for_config_entry
 from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import CONF_RIDE_TRACKER, DOMAIN
 from .coordinator import NY, SeptaCoordinator, slug
 
 # Card and YAML expect these object ids, not the device-area prefix HA would add.
@@ -40,7 +41,7 @@ def _stabilize_entity_ids(hass: HomeAssistant, entry: ConfigEntry, coordinator: 
     registry = async_get_entity_registry(hass)
     prefix = f"{slug(coordinator.station)}_{slug(coordinator.destination)}_"
     for item in list(registry.entities.values()):
-        if item.config_entry_id != entry.entry_id:
+        if item.config_entry_id != entry.entry_id or item.domain != "sensor":
             continue
         uid = item.unique_id or ""
         if not uid.startswith(prefix):
@@ -105,6 +106,8 @@ def _wanted_entities(coordinator: SeptaCoordinator) -> list[SensorEntity]:
         else:
             entities.append(SeptaLineSensor(coordinator, watch))
     entities.append(SeptaMapSensor(coordinator))
+    if _ride_tracker_set(coordinator):
+        entities.append(SeptaMyTrainSensor(coordinator))
     return entities
 
 
@@ -139,7 +142,7 @@ def _drop_removed_entities(
         stale = [
             item
             for item in async_entries_for_config_entry(registry, entry.entry_id)
-            if item.unique_id and item.unique_id not in keep
+            if item.domain == "sensor" and item.unique_id and item.unique_id not in keep
         ]
     except Exception:  # noqa: BLE001
         return
@@ -510,3 +513,48 @@ class SeptaMapSensor(_Base):
             "longitude": home.get("lon") if isinstance(home, dict) else None,
             "vehicles": vehicles if isinstance(vehicles, list) else [],
         }
+
+
+def _ride_tracker_set(coordinator: SeptaCoordinator) -> bool:
+    raw = coordinator.entry.options.get(
+        CONF_RIDE_TRACKER, coordinator.entry.data.get(CONF_RIDE_TRACKER, "")
+    )
+    return bool(str(raw or "").strip())
+
+
+class SeptaMyTrainSensor(_Base):
+    """Train the phone is currently riding. State is the train number, or nothing."""
+
+    _attr_name = "My train"
+    _attr_icon = "mdi:train"
+
+    def __init__(self, coordinator: SeptaCoordinator) -> None:
+        super().__init__(coordinator, "my_train")
+
+    def _ride(self) -> dict[str, Any]:
+        ride = getattr(self.coordinator, "ride", None)
+        if ride is None:
+            return {}
+        return ride.attributes()
+
+    @property
+    def native_value(self) -> str | None:
+        data = self._ride()
+        if not data.get("riding"):
+            return None
+        train = data.get("train")
+        return str(train) if train else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return self._ride()
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        ride = getattr(self.coordinator, "ride", None)
+        if ride is None:
+            return
+        self.async_on_remove(async_dispatcher_connect(self.hass, ride.signal(), self._on_ride))
+
+    def _on_ride(self, _payload=None) -> None:
+        self.async_write_ha_state()

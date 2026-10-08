@@ -21,6 +21,12 @@ from .const import (
     CONF_METRO_LINE,
     CONF_METRO_STATION,
     CONF_RAIL_LINE,
+    CONF_RIDE_MATCHES,
+    CONF_RIDE_MAX_ACCURACY,
+    CONF_RIDE_MIN_SPEED,
+    CONF_RIDE_RADIUS,
+    CONF_RIDE_REQUEST,
+    CONF_RIDE_TRACKER,
     CONF_SHOW_BUS,
     CONF_SHOW_METRO,
     CONF_SHOW_RAIL,
@@ -46,7 +52,7 @@ _FRONTEND = f"{DOMAIN}_frontend_registered"
 _CARD_JS = "septa-live-card.js"
 _PANEL_JS = "septa-live-panel.js"
 _PANEL_PATH = "septa-live"
-_CARD_VERSION = "1.9.13"
+_CARD_VERSION = "1.10.0"
 _PANEL_SIG: tuple | None = None
 _RELOADING: set[str] = set()
 
@@ -63,6 +69,9 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await _async_register_lovelace_cards(hass)
     coordinator = SeptaCoordinator(hass, entry)
+    from .ride_ha import RideController
+
+    coordinator.ride = RideController(hass, coordinator)
     await coordinator.async_config_entry_first_refresh()
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     coordinator.sidebar_on = _sidebar_enabled(entry)
@@ -73,6 +82,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator.async_add_listener(_push)
     entry.async_on_unload(lambda: coordinator.async_remove_listener(_push))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    try:
+        await coordinator.ride.async_start()
+    except Exception:  # noqa: BLE001
+        _LOGGER.exception("SEPTA ride tracker did not start")
+    entry.async_on_unload(coordinator.ride.async_stop)
     entry.async_on_unload(entry.add_update_listener(_async_entry_updated))
     await _async_sync_panel(hass)
     return True
@@ -307,6 +321,12 @@ async def websocket_bus_picker(
         vol.Optional("trolley_home"): str,
         vol.Optional("trolley_dest"): str,
         vol.Optional("watches"): list,
+        vol.Optional("ride_tracker"): str,
+        vol.Optional("ride_radius_m"): int,
+        vol.Optional("ride_min_speed_mph"): int,
+        vol.Optional("ride_matches"): int,
+        vol.Optional("ride_max_accuracy_m"): int,
+        vol.Optional("ride_request_updates"): bool,
     }
 )
 @websocket_api.async_response
@@ -347,6 +367,22 @@ async def websocket_options(
                 options[dest] = msg[src]
         if "watches" in msg:
             options[CONF_WATCHES] = _clean_watches(msg.get("watches"))
+        if "ride_tracker" in msg:
+            tracker = str(msg.get("ride_tracker") or "").strip()
+            if tracker:
+                options[CONF_RIDE_TRACKER] = tracker
+            else:
+                options.pop(CONF_RIDE_TRACKER, None)
+        ride_map = {
+            "ride_radius_m": CONF_RIDE_RADIUS,
+            "ride_min_speed_mph": CONF_RIDE_MIN_SPEED,
+            "ride_matches": CONF_RIDE_MATCHES,
+            "ride_max_accuracy_m": CONF_RIDE_MAX_ACCURACY,
+            "ride_request_updates": CONF_RIDE_REQUEST,
+        }
+        for src, dest in ride_map.items():
+            if src in msg:
+                options[dest] = msg[src]
         if msg.get("station"):
             data[CONF_STATION] = msg["station"]
         hass.config_entries.async_update_entry(entry, data=data, options=options)
@@ -499,6 +535,18 @@ async def _apply_saved_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
         await async_sync_sensors(coordinator)
     except Exception:  # noqa: BLE001
         _LOGGER.exception("SEPTA sensor sync failed")
+    try:
+        from .binary_sensor import async_sync_binary_sensors
+
+        await async_sync_binary_sensors(coordinator)
+    except Exception:  # noqa: BLE001
+        _LOGGER.exception("SEPTA riding sensor sync failed")
+    ride = getattr(coordinator, "ride", None)
+    if ride is not None:
+        try:
+            await ride.async_reconfigure()
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("SEPTA ride reconfigure failed")
     show = _sidebar_enabled(entry)
     if show != bool(coordinator.sidebar_on):
         coordinator.sidebar_on = show

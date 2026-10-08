@@ -12,7 +12,7 @@ This is a **custom repository** — the same way most community plugins are inst
 2. Open the three-dot menu → **Custom repositories**.
 3. Paste `https://github.com/Gearbot17354/septa-live`.
 4. Category: **Integration**.
-5. **Add**, then find **SEPTA Transit** and **Download** **1.9.13**.
+5. **Add**, then find **SEPTA Transit** and **Download** **1.10.0**.
 6. **Restart Home Assistant**.
 7. **Settings → Devices & Services → Add Integration → SEPTA Transit**.
 8. Pick a station (for example Lansdale) and a destination (Jefferson Station) used for the leave-now countdown.
@@ -26,7 +26,7 @@ Repo: [github.com/Gearbot17354/septa-live](https://github.com/Gearbot17354/septa
 If Add card still does not list SEPTA Transit, enable Advanced Mode in your profile, then **Settings → Dashboards → ⋮ → Resources → Add**:
 
 ```
-/local/septa-live-card.js?v=1.9.13
+/local/septa-live-card.js?v=1.10.0
 type: module
 ```
 
@@ -37,6 +37,13 @@ Hard-refresh the dashboard (or open it in a private window).
 After you restart, **SEPTA** shows up in the left menu. That page is the live board (inbound, outbound, bus, leave-in, and the departure list) plus setup for destination, walk time, and which services to poll.
 
 Turn the menu item off from the page (**Show in sidebar**) or from **Settings → Devices & Services → SEPTA Transit → Configure → Show SEPTA in the sidebar**. Turn it back on the same way. The page is always at `/septa-live` even when the menu item is hidden.
+
+## What's new in 1.10.0
+
+- **Which train am I on.** Pick your phone's `device_tracker` (or a `person`) under Configure. After two moving fixes near a TrainView train, `binary_sensor.septa_<station>_riding` turns on and `sensor.septa_<station>_my_train` shows the train number.
+- The new **SEPTA Transit My Train** card hides until you are actually on board. It shows the train, line, destination, delay, next stop, and the next remaining stops.
+- Boarded and exited events: `septa_live_train_boarded` and `septa_live_train_exited`.
+- Saving options still does not reload the integration, and the options form no longer wipes sidebar watches or line picks.
 
 ## What's new in 1.9.13
 
@@ -159,6 +166,7 @@ Search **SEPTA** in Add card. These drop in with your sensors already wired. Car
 | **SEPTA Transit Metro** | L, B, M plus trolleys |
 | **SEPTA Transit Trolley** | T, G, and D |
 | **SEPTA Transit Map** | Live GPS map on OpenStreetMap (no API key) |
+| **SEPTA Transit My Train** | The train you are riding. Hidden until you board, unless `show_idle: true` |
 | **SEPTA Transit Bubble** | Build your own from those pieces |
 
 YAML if you want to paste:
@@ -216,12 +224,101 @@ Each station creates a device with:
 | Metro | number of L / B / M trips in service |
 | Trolley | number of T / G / D vehicles reporting |
 | Map | number of GPS vehicles; `vehicles` lists lat/lon for the live map card |
+| My train | train number while you are riding, otherwise empty. Attributes: line, destination, next stop, late minutes, consist, remaining stops |
+| Riding | on while the phone is matched to that train (`binary_sensor.septa_<station>_riding`) |
 
-Train attributes include train number, destination, track / platform, scheduled time, and delay. Board sensors expose a `trains` list of up to five upcoming trips. The Next Bus sensor includes route, destination, stop name, clock, live delay, and whether the time is GPS-backed. Leave in includes the train number, depart/arrive times, and destination.
+Object ids stay `sensor.septa_<station>_my_train` and `binary_sensor.septa_<station>_riding`. If Home Assistant prefixes an area, the card still finds `sensor.<area>_septa_<station>_my_train`.
 
-Nearby bus stops are discovered from the rail station coordinates. Routes such as 132 and 96 at Lansdale show up automatically.
+## Which train am I on
 
-Data is fetched from SEPTA’s public Arrivals, NextToArrive, TrainView, Alerts, BusSchedules, locations, TransitView, and Metro v2 trip APIs. No SEPTA, map, or Home Assistant token is stored in this repository.
+In **Settings → Devices & Services → SEPTA Transit → Configure**, set **Phone tracker** to the Companion app's `device_tracker` (or the `person` that uses it). Leave it empty and nothing extra is created: no listeners, no extra SEPTA calls, no new entities.
+
+The integration compares that tracker's existing Home Assistant location to SEPTA TrainView. It does not run a separate location service and it does not put your coordinates on the sensor. Attributes include distance, train, and stops only.
+
+Defaults: within 300 m (plus a little slack when the train position is a few seconds old), at least 15 mph, two fixes in a row on the same train, ignore GPS worse than 100 m. A heading check drops the train going the other way on the same track.
+
+While you are riding, or a candidate is pending, or the phone is at a station on your line, TrainView is checked every 30 seconds. The normal board refresh stays on whatever interval you set.
+
+Events fire once per board and once per exit:
+
+```yaml
+alias: SEPTA - boarded notification
+triggers:
+  - trigger: event
+    event_type: septa_live_train_boarded
+actions:
+  - action: notify.mobile_app_ryans_iphone
+    data:
+      title: "🚆 Train {{ trigger.event.data.train }}"
+      message: >-
+        You're on train {{ trigger.event.data.train }} to {{ trigger.event.data.destination }},
+        {{ 'on time' if trigger.event.data.late_min|int(0) <= 0 else trigger.event.data.late_min ~ ' min late' }},
+        next stop {{ trigger.event.data.next_stop }}
+      data:
+        url: "/dashboard-home/0#train"
+        clickAction: "/dashboard-home/0#train"
+        push:
+          interruption-level: time-sensitive
+```
+
+Replace `notify.mobile_app_ryans_iphone` with your Companion notify service. Tapping the notification opens the dashboard hash. It does not force a pop-up on an idle screen; that needs browser_mod, which this does not assume.
+
+Bubble Card pop-up (use the entity id Home Assistant actually created if it prefixed an area):
+
+```yaml
+type: vertical-stack
+cards:
+  - type: custom:bubble-card
+    card_type: pop-up
+    hash: "#train"
+    name: My train
+    icon: mdi:train
+  - type: custom:septa-live-my-train
+    entity: sensor.server_rack_septa_lansdale_my_train
+```
+
+On a sections dashboard the reliable hide is a visibility condition, because a hidden custom card can still leave an empty slot:
+
+```yaml
+type: custom:septa-live-my-train
+entity: sensor.septa_lansdale_my_train
+visibility:
+  - condition: state
+    entity: binary_sensor.septa_lansdale_riding
+    state: "on"
+```
+
+### Phone location
+
+Detection is only as good as the Companion app's updates. The "allow location" popup is the Companion app, not SEPTA.
+
+iPhone has no high-accuracy command. Updates come from significant-location changes (often a few hundred meters and a few minutes), zone enter and exit, background refresh, opening the app, and occasional `request_location_update` pushes. Companion's own docs say not to rely on those pushes.
+
+- Allow Location **Always**, Precise on.
+- Add Home Assistant zones about 200–250 m around Lansdale (40.24278, -75.28500) and the usual destination (Jefferson 39.95250, -75.15806; Suburban 39.95389, -75.16778). iOS watches up to 20 regions. Entering or leaving a zone forces a fix when the train arrives or leaves.
+- Optional **Ask the phone for a fresh location near a station** (off by default) sends `request_location_update` at most every 2 minutes while a candidate is pending or you are near a station. It does not send it while you are already matched, and the push itself has no coordinates.
+- Expect the first match a minute or two after departure. If fixes are sparse, set **Fixes in a row** to 1. The heading check still rejects the opposite train.
+
+Android can turn on high accuracy from a zone automation:
+
+```yaml
+alias: SEPTA - high accuracy at the station
+triggers:
+  - trigger: zone
+    entity_id: person.ryan
+    zone: zone.lansdale
+    event: enter
+actions:
+  - action: notify.mobile_app_ryans_phone
+    data:
+      message: command_high_accuracy_mode
+      data:
+        command: turn_on
+```
+
+Turn it off on zone exit, or when `septa_live_train_exited` fires. `high_accuracy_update_interval` can go as low as 5 seconds.
+
+`last_updated` on the tracker has to change when a fix arrives. A position that does not bump `last_updated` is ignored.
 
 ## Privacy
 
@@ -229,3 +326,4 @@ Data is fetched from SEPTA’s public Arrivals, NextToArrive, TrainView, Alerts,
 - **No Home Assistant tokens.** Lovelace cards read sensors already in your HA; they do not need a long-lived access token.
 - **Your commute stays in Home Assistant.** Station and destination are config-entry options on your machine, not committed here. Sample YAML uses Lansdale only as an example.
 - **Map GPS is vehicles, not you.** The map plots SEPTA train/bus/trolley positions. It does not upload phone location.
+- **Ride detection stays in Home Assistant.** The phone position already in your Companion `device_tracker` is compared locally to TrainView. It is not logged, not stored on the sensor, and not sent anywhere new. The location permission popup is the Companion app, not this integration.

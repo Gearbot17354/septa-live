@@ -1,5 +1,5 @@
 (() => {
-  const CARD_VERSION = "1.9.13";
+  const CARD_VERSION = "1.10.0";
 
 const RAIL_STATIONS = [
     {name:'9th St',api:'9th St'},
@@ -2240,11 +2240,148 @@ const RAIL_STATIONS = [
     }
   }
 
+  class SeptaLiveMyTrain extends HTMLElement {
+    constructor() {
+      super();
+      this._config = {};
+      this._hass = null;
+      this._last = "";
+      this.attachShadow({ mode: "open" });
+    }
+
+    setConfig(config) {
+      this._config = config || {};
+      this._last = "";
+      this._render();
+    }
+
+    _entity() {
+      return this._config.entity || findEntity(this._hass, "_my_train", "");
+    }
+
+    _state() {
+      return stateOf(this._hass, this._entity());
+    }
+
+    _riding() {
+      const state = this._state();
+      return !!(state && state.attributes && state.attributes.riding);
+    }
+
+    set hass(hass) {
+      this._hass = hass;
+      const state = this._state();
+      const attrs = (state && state.attributes) || {};
+      const sig = [
+        this._entity(),
+        this._riding() ? "1" : "0",
+        attrs.train,
+        attrs.late_min,
+        attrs.next_stop,
+        attrs.current_stop,
+        attrs.gps_gap ? "1" : "0",
+        (attrs.remaining_stops || []).length,
+        this._config.show_idle ? "1" : "0",
+      ].join("|");
+      if (sig === this._last && this.shadowRoot.querySelector("ha-card")) return;
+      this._last = sig;
+      this._render();
+    }
+
+    getCardSize() {
+      if (this._riding()) return 4;
+      if (this._config.show_idle) return 1;
+      return 0;
+    }
+
+    static getLayoutOptions() {
+      return { grid_columns: 2, grid_rows: 3, grid_min_columns: 2, grid_min_rows: 2 };
+    }
+
+    static getStubConfig(hass) {
+      return { entity: findEntity(hass, "_my_train", ""), name: "My train" };
+    }
+
+    static getConfigForm() {
+      return {
+        schema: [
+          { name: "name", selector: { text: {} } },
+          { name: "entity", selector: { entity: { domain: "sensor" } } },
+          { name: "show_idle", selector: { boolean: {} } },
+        ],
+      };
+    }
+
+    _render() {
+      const riding = this._riding();
+      const idle = !!this._config.show_idle;
+      this.style.display = riding || idle ? "" : "none";
+      if (!riding && !idle) {
+        this.shadowRoot.innerHTML = "";
+        return;
+      }
+      const state = this._state();
+      const a = (state && state.attributes) || {};
+      const name = this._config.name || "My train";
+      let body = "";
+      if (!riding) {
+        body = `<div class="kicker-row">${modeIcon("rail")}<div class="kicker">${esc(name)}</div></div><div class="empty">Not on a train</div>`;
+      } else {
+        const late = Number(a.late_min || 0);
+        const next = (a.remaining_stops || [])[0] || {};
+        const nextName = a.next_stop || next.station || "";
+        const nextEst = next.est || next.sched || "";
+        const stops = Array.isArray(a.remaining_stops) ? a.remaining_stops : [];
+        const shown = stops.slice(0, 6);
+        const more = stops.length - shown.length;
+        const cars = Number(a.cars || 0);
+        const boardedClock = a.boarded_time ? new Date(a.boarded_time) : null;
+        const boardedLabel =
+          boardedClock && !Number.isNaN(boardedClock.getTime())
+            ? boardedClock.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+            : "";
+        const stopRows = shown
+          .map(
+            (row) =>
+              `<li><span>${esc(row.station)}</span><span>${esc(row.est || row.sched || "")}</span></li>`,
+          )
+          .join("");
+        body = `
+          <div class="kicker-row">${modeIcon("rail")}<div class="kicker">On board</div>${railBadge(a.line || a.line_code || "")}</div>
+          <div class="train-no">You're on train ${esc(a.train)} to ${esc(a.destination || "—")}</div>
+          <div class="meta" style="color:${tone(late, false)}">${esc(delayLabel(late, false, ""))}</div>
+          <div class="meta">${esc(a.current_stop || "—")} → ${esc(nextName || "—")}${nextEst ? ` · est ${esc(nextEst)}` : ""}</div>
+          ${a.distance_m != null ? `<div class="meta">${esc(a.distance_m)} m from the train</div>` : ""}
+          ${stopRows ? `<ul class="ride-stops">${stopRows}</ul>` : ""}
+          ${more > 0 ? `<div class="hint">+${more} more</div>` : ""}
+          ${a.gps_gap ? `<div class="hint">GPS paused (tunnel)</div>` : ""}
+          <div class="foot">Boarded ${esc(a.boarded_at || "—")}${boardedLabel ? ` ${esc(boardedLabel)}` : ""}${cars ? ` · ${cars} car${cars === 1 ? "" : "s"}` : ""}</div>
+        `;
+      }
+      this.shadowRoot.innerHTML = `
+        <style>${BASE_CSS}
+          .train-no { font-size: 26px; font-weight: 560; letter-spacing: -0.03em; line-height: 1.2; margin-top: 10px; }
+          .ride-stops { list-style: none; margin: 12px 0 0; padding: 0; }
+          .ride-stops li { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; padding: 6px 0; border-top: 1px solid var(--divider-color, rgba(127,127,127,0.25)); }
+          .hint { margin-top: 8px; font-size: 12px; opacity: 0.65; }
+          .foot { margin-top: 12px; font-size: 12px; opacity: 0.72; }
+        </style>
+        <ha-card><button class="hit" type="button"><div class="wrap">${body}</div></button></ha-card>
+      `;
+      const hit = this.shadowRoot.querySelector("button.hit");
+      if (hit) hit.addEventListener("click", () => moreInfo(this, this._entity()));
+    }
+  }
+
   window.customCards = window.customCards || [];
   const cards = window.customCards;
   function suggestSepta(hass, entityId) {
-    if (!entityId || !String(entityId).startsWith("sensor.septa_")) return null;
+    if (!entityId) return null;
     const id = String(entityId);
+    if (id.includes("septa_") && id.endsWith("_my_train")) {
+      return { label: "My train", config: { type: "custom:septa-live-my-train", entity: id, name: "My train" } };
+    }
+    if (!id.startsWith("sensor.septa_")) return null;
     const e = entitiesStub(hass);
     if (id.endsWith("_next_bus")) {
       return [
@@ -2330,4 +2467,5 @@ const RAIL_STATIONS = [
   );
   registerCard("septa-live-bubble", SeptaLiveBubble, "SEPTA Transit Bubble", "Pick bus, Metro, trolley, and map bubbles");
   registerCard("septa-live-map", SeptaLiveMap, "SEPTA Transit Map", "Live GPS map of trains, buses, Metro, and trolleys");
+  registerCard("septa-live-my-train", SeptaLiveMyTrain, "SEPTA Transit My Train", "The train you're riding right now");
 })();

@@ -18,7 +18,13 @@
           "show_bus": "Buses",
           "show_metro": "Metro (L, B, M)",
           "show_trolley": "Trolley (T, G, D)",
-          "show_sidebar": "Show SEPTA in the sidebar"
+          "show_sidebar": "Show SEPTA in the sidebar",
+          "ride_tracker": "Phone tracker (which train am I on)",
+          "ride_radius_m": "Match radius (meters)",
+          "ride_min_speed_mph": "Minimum speed (mph)",
+          "ride_matches": "Fixes in a row before boarding",
+          "ride_max_accuracy_m": "Ignore fixes worse than (meters)",
+          "ride_request_updates": "Ask the phone for a fresh location near a station"
         }
       }
     },
@@ -30,7 +36,7 @@
     "step": {
       "init": {
         "title": "SEPTA Transit options",
-        "description": "Turn services on or off. Disabled services are not fetched and their sensors are removed.",
+        "description": "Turn services on or off. Disabled services are not fetched and their sensors are removed. The phone tracker is optional and only used to detect which train you are on.",
         "data": {
           "destination": "Regional Rail destination",
           "bus_destination": "Bus commute destination (optional)",
@@ -44,7 +50,13 @@
           "show_bus": "Buses",
           "show_metro": "Metro (L, B, M)",
           "show_trolley": "Trolley (T, G, D)",
-          "show_sidebar": "Show SEPTA in the sidebar"
+          "show_sidebar": "Show SEPTA in the sidebar",
+          "ride_tracker": "Phone tracker (which train am I on)",
+          "ride_radius_m": "Match radius (meters)",
+          "ride_min_speed_mph": "Minimum speed (mph)",
+          "ride_matches": "Fixes in a row before boarding",
+          "ride_max_accuracy_m": "Ignore fixes worse than (meters)",
+          "ride_request_updates": "Ask the phone for a fresh location near a station"
         }
       }
     }

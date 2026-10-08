@@ -66,3 +66,10 @@ views:
           - type: custom:septa-live-map
             entity: sensor.septa_lansdale_map
             name: Live map
+          - type: custom:septa-live-my-train
+            entity: sensor.septa_lansdale_my_train
+            name: My train
+            visibility:
+              - condition: state
+                entity: binary_sensor.septa_lansdale_riding
+                state: "on"

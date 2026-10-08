@@ -14,6 +14,12 @@ from .const import (
     CONF_DESTINATION,
     CONF_METRO_DEST,
     CONF_METRO_STATION,
+    CONF_RIDE_MATCHES,
+    CONF_RIDE_MAX_ACCURACY,
+    CONF_RIDE_MIN_SPEED,
+    CONF_RIDE_RADIUS,
+    CONF_RIDE_REQUEST,
+    CONF_RIDE_TRACKER,
     CONF_SCAN,
     CONF_SHOW_BUS,
     CONF_SHOW_METRO,
@@ -25,6 +31,10 @@ from .const import (
     CONF_TROLLEY_STATION,
     CONF_WALK,
     DEFAULT_DESTINATION,
+    DEFAULT_RIDE_MATCHES,
+    DEFAULT_RIDE_MAX_ACCURACY,
+    DEFAULT_RIDE_MIN_SPEED,
+    DEFAULT_RIDE_RADIUS,
     DEFAULT_SCAN,
     DEFAULT_SHOW_BUS,
     DEFAULT_SHOW_METRO,
@@ -48,6 +58,7 @@ STATION_SELECTOR = selector(
 )
 TEXT_SELECTOR = selector({"text": {}})
 BOOL_SELECTOR = selector({"boolean": {}})
+TRACKER_SELECTOR = selector({"entity": {"domain": ["device_tracker", "person"]}})
 
 
 def _flag(entry, key: str, default: bool) -> bool:
@@ -115,7 +126,20 @@ class SeptaOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         entry = self.config_entry
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            merged = {**entry.options, **user_input}
+            tracker = str(merged.get(CONF_RIDE_TRACKER) or "").strip()
+            if tracker:
+                merged[CONF_RIDE_TRACKER] = tracker
+            else:
+                merged.pop(CONF_RIDE_TRACKER, None)
+            return self.async_create_entry(title="", data=merged)
+        current_tracker = str(
+            entry.options.get(CONF_RIDE_TRACKER, entry.data.get(CONF_RIDE_TRACKER, "")) or ""
+        ).strip()
+        tracker_key = vol.Optional(
+            CONF_RIDE_TRACKER,
+            description={"suggested_value": current_tracker} if current_tracker else {},
+        )
         schema = vol.Schema(
             {
                 vol.Optional(
@@ -173,6 +197,27 @@ class SeptaOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(
                     CONF_SIDEBAR,
                     default=_flag(entry, CONF_SIDEBAR, True),
+                ): BOOL_SELECTOR,
+                tracker_key: TRACKER_SELECTOR,
+                vol.Optional(
+                    CONF_RIDE_RADIUS,
+                    default=int(entry.options.get(CONF_RIDE_RADIUS, DEFAULT_RIDE_RADIUS)),
+                ): vol.All(vol.Coerce(int), vol.Range(min=100, max=1500)),
+                vol.Optional(
+                    CONF_RIDE_MIN_SPEED,
+                    default=int(entry.options.get(CONF_RIDE_MIN_SPEED, DEFAULT_RIDE_MIN_SPEED)),
+                ): vol.All(vol.Coerce(int), vol.Range(min=5, max=60)),
+                vol.Optional(
+                    CONF_RIDE_MATCHES,
+                    default=int(entry.options.get(CONF_RIDE_MATCHES, DEFAULT_RIDE_MATCHES)),
+                ): vol.All(vol.Coerce(int), vol.Range(min=1, max=5)),
+                vol.Optional(
+                    CONF_RIDE_MAX_ACCURACY,
+                    default=int(entry.options.get(CONF_RIDE_MAX_ACCURACY, DEFAULT_RIDE_MAX_ACCURACY)),
+                ): vol.All(vol.Coerce(int), vol.Range(min=20, max=500)),
+                vol.Optional(
+                    CONF_RIDE_REQUEST,
+                    default=bool(entry.options.get(CONF_RIDE_REQUEST, False)),
                 ): BOOL_SELECTOR,
             }
         )
