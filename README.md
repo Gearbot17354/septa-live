@@ -12,7 +12,7 @@ This is a **custom repository** — the same way most community plugins are inst
 2. Open the three-dot menu → **Custom repositories**.
 3. Paste `https://github.com/Gearbot17354/septa-live`.
 4. Category: **Integration**.
-5. **Add**, then find **SEPTA Transit** and **Download** **1.10.2**.
+5. **Add**, then find **SEPTA Transit** and **Download** **1.10.3**. Restart Home Assistant after the update so the new ride code is the code that is running.
 6. **Restart Home Assistant**.
 7. **Settings → Devices & Services → Add Integration → SEPTA Transit**.
 8. Pick a station (for example Lansdale) and a destination (Jefferson Station) used for the leave-now countdown.
@@ -26,7 +26,7 @@ Repo: [github.com/Gearbot17354/septa-live](https://github.com/Gearbot17354/septa
 If Add card still does not list SEPTA Transit, enable Advanced Mode in your profile, then **Settings → Dashboards → ⋮ → Resources → Add**:
 
 ```
-/local/septa-live-card.js?v=1.10.2
+/local/septa-live-card.js?v=1.10.3
 type: module
 ```
 
@@ -37,6 +37,15 @@ Hard-refresh the dashboard (or open it in a private window).
 After you restart, **SEPTA** shows up in the left menu. That page is the live board (inbound, outbound, bus, leave-in, and the departure list) plus setup for destination, walk time, and which services to poll.
 
 Turn the menu item off from the page (**Show in sidebar**) or from **Settings → Devices & Services → SEPTA Transit → Configure → Show SEPTA in the sidebar**. Turn it back on the same way. The page is always at `/septa-live` even when the menu item is hidden.
+
+## What's new in 1.10.3
+
+- iPhone fixes that report speed `0` are no longer treated as stopped. Speed is taken from the distance between fixes (about every 3 minutes), and a reported course of `0` is ignored unless the phone is actually moving.
+- A match can survive one miss, and an older TrainView position is projected forward so a sparse fix can still land on the train.
+- My Train and Riding write their state on the event loop even if a dispatcher calls them from a worker thread. Restart after updating. Audit: ride updates are sent with `async_dispatcher_send` from the event loop only; both ride listeners are `@callback` and reschedule if they are somehow off-loop. No `dispatcher_send`, `async_add_executor_job`, or `run_coroutine_threadsafe` is used on the ride path. The timetable file is read once in an executor before the first refresh.
+- The sidebar panel is removed only when it is actually registered, so a clean start does not log "Removing unknown panel septa-live".
+- Optional phone activity sensor. `Automotive` can count a fix only when no speed can be derived, and only if a train is already inside the match radius.
+- Riding and My Train now show `last_reason`, speed, and the closest trains. `septa_live.simulate_ride` replays fixes without changing the live sensor.
 
 ## What's new in 1.10.2
 

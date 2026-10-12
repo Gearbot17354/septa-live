@@ -16,6 +16,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_state_change_event, async_track_time_interval
 
 from .const import (
+    CONF_RIDE_ACTIVITY,
     CONF_RIDE_MATCHES,
     CONF_RIDE_MAX_ACCURACY,
     CONF_RIDE_MIN_SPEED,
@@ -31,7 +32,7 @@ from .const import (
     RRSCHEDULES_URL,
     TRAINVIEW_URL,
 )
-from .coordinator import NY, _LINE_NAMES, _load_schedule
+from .coordinator import NY, _LINE_NAMES, cached_schedule
 from .ride import (
     Fix,
     RideMatcher,
@@ -87,6 +88,13 @@ class RideController:
 
     def signal(self) -> str:
         return f"{DOMAIN}_ride_{self.entry.entry_id}"
+
+    def _activity_automotive(self) -> bool:
+        entity = str(self._pick(CONF_RIDE_ACTIVITY, "") or "").strip()
+        if not entity:
+            return False
+        state = self.hass.states.get(entity)
+        return bool(state and str(state.state).lower() == "automotive")
 
     def _preferred_line(self) -> str:
         code = (self.coordinator.rail_line or "").upper()
@@ -231,11 +239,21 @@ class RideController:
             trains, trains_ts = await self._trains_for(fix)
         snap = copy.deepcopy(self.matcher)
         try:
+            self.matcher.activity_moving = self._activity_automotive()
             self.matcher.set_tracker_state(str(tracked.state), _state_ts(tracked))
             self.matcher.tracker_status = "ok"
             if fix is None:
                 return
-            self.matcher.update(fix, trains, trains_ts)
+            self.matcher.update(fix, trains, trains_ts, now=time.time())
+            _LOGGER.debug(
+                "SEPTA ride %s mph=%s source=%s gap=%s tv_age=%s candidates=%s",
+                self.matcher.last_reason,
+                self.matcher.phone_speed_mph,
+                self.matcher.speed_source,
+                self.matcher.fix_gap_s,
+                self.matcher.trainview_age_s,
+                self.matcher.candidates,
+            )
         except Exception:
             self.matcher = snap
             raise
@@ -319,7 +337,7 @@ class RideController:
             now_ny = datetime.now(NY)
             minutes = now_ny.hour * 60 + now_ny.minute
             self._remaining = remaining_from_timetable(
-                _load_schedule(), train.trainno, now_ny.weekday(), minutes
+                cached_schedule(), train.trainno, now_ny.weekday(), minutes
             )
             self._remaining_source = "timetable"
         self._rr_train = train.trainno

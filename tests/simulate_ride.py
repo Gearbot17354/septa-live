@@ -48,7 +48,7 @@ def main() -> None:
             state = matcher.payload()
             print(
                 f"t={sample.ts:.0f} riding={state['riding']} train={state['train']} "
-                f"conf={state['confidence']} event={event.kind if event else '-'}"
+                f"conf={state['confidence']} reason={state.get('last_reason')} event={event.kind if event else '-'}"
             )
 
 

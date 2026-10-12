@@ -14,6 +14,7 @@ from .const import (
     CONF_DESTINATION,
     CONF_METRO_DEST,
     CONF_METRO_STATION,
+    CONF_RIDE_ACTIVITY,
     CONF_RIDE_MATCHES,
     CONF_RIDE_MAX_ACCURACY,
     CONF_RIDE_MIN_SPEED,
@@ -59,6 +60,7 @@ STATION_SELECTOR = selector(
 TEXT_SELECTOR = selector({"text": {}})
 BOOL_SELECTOR = selector({"boolean": {}})
 TRACKER_SELECTOR = selector({"entity": {"domain": ["device_tracker", "person"]}})
+ACTIVITY_SELECTOR = selector({"entity": {"domain": "sensor"}})
 
 
 def _flag(entry, key: str, default: bool) -> bool:
@@ -132,6 +134,11 @@ class SeptaOptionsFlow(config_entries.OptionsFlow):
                 merged[CONF_RIDE_TRACKER] = tracker
             else:
                 merged.pop(CONF_RIDE_TRACKER, None)
+            activity = str(merged.get(CONF_RIDE_ACTIVITY) or "").strip()
+            if activity:
+                merged[CONF_RIDE_ACTIVITY] = activity
+            else:
+                merged.pop(CONF_RIDE_ACTIVITY, None)
             return self.async_create_entry(title="", data=merged)
         current_tracker = str(
             entry.options.get(CONF_RIDE_TRACKER, entry.data.get(CONF_RIDE_TRACKER, "")) or ""
@@ -199,6 +206,14 @@ class SeptaOptionsFlow(config_entries.OptionsFlow):
                     default=_flag(entry, CONF_SIDEBAR, True),
                 ): BOOL_SELECTOR,
                 tracker_key: TRACKER_SELECTOR,
+                vol.Optional(
+                    CONF_RIDE_ACTIVITY,
+                    description={
+                        "suggested_value": str(
+                            entry.options.get(CONF_RIDE_ACTIVITY, entry.data.get(CONF_RIDE_ACTIVITY, "")) or ""
+                        )
+                    },
+                ): ACTIVITY_SELECTOR,
                 vol.Optional(
                     CONF_RIDE_RADIUS,
                     default=int(entry.options.get(CONF_RIDE_RADIUS, DEFAULT_RIDE_RADIUS)),

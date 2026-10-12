@@ -143,6 +143,11 @@ _LINE_NAMES = {
 _SCHEDULE: dict[str, Any] | None = None
 
 
+def cached_schedule() -> dict[str, Any]:
+    """Timetable already loaded by the executor. Never reads the file."""
+    return _SCHEDULE if isinstance(_SCHEDULE, dict) else {"stations": {}}
+
+
 def _load_schedule() -> dict[str, Any]:
     global _SCHEDULE
     if _SCHEDULE is None:
@@ -155,7 +160,7 @@ def _load_schedule() -> dict[str, Any]:
 
 
 def _station_schedule(station: str) -> dict[str, Any] | None:
-    stations = (_load_schedule().get("stations") or {}) if isinstance(_load_schedule(), dict) else {}
+    stations = cached_schedule().get("stations") or {}
     if not isinstance(stations, dict):
         return None
     want = station.strip().lower()

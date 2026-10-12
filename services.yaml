@@ -1,0 +1,18 @@
+simulate_ride:
+  name: Simulate a ride
+  description: Replay phone fixes through a copy of the matcher. Does not change the live riding sensor.
+  fields:
+    entry_id:
+      name: Config entry
+      required: true
+      selector:
+        text:
+    fixes:
+      name: Fixes
+      required: true
+      selector:
+        object:
+    trainview:
+      name: TrainView rows
+      selector:
+        object:

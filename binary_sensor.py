@@ -16,6 +16,7 @@ from homeassistant.helpers.entity_registry import async_get as async_get_entity_
 from .const import CONF_RIDE_TRACKER, DOMAIN
 from .coordinator import SeptaCoordinator, slug
 from .sensor import _device_model
+from .ride import write_state_on_loop
 
 
 def _tracker_set(coordinator: SeptaCoordinator) -> bool:
@@ -126,4 +127,4 @@ class SeptaRidingBinarySensor(BinarySensorEntity):
 
     @callback
     def _on_ride(self, _payload=None) -> None:
-        self.async_write_ha_state()
+        write_state_on_loop(self.hass, self.async_write_ha_state)

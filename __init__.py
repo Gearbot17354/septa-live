@@ -45,14 +45,14 @@ from .const import (
     STATIONS,
     TROLLEY_STATIONS,
 )
-from .coordinator import SeptaCoordinator, _LINE_NAMES, _ha_home, slug
+from .coordinator import SeptaCoordinator, _LINE_NAMES, _ha_home, _load_schedule, slug
 
 _LOGGER = logging.getLogger(__name__)
 _FRONTEND = f"{DOMAIN}_frontend_registered"
 _CARD_JS = "septa-live-card.js"
 _PANEL_JS = "septa-live-panel.js"
 _PANEL_PATH = "septa-live"
-_CARD_VERSION = "1.10.2"
+_CARD_VERSION = "1.10.3"
 _PANEL_SIG: tuple | None = None
 _RELOADING: set[str] = set()
 
@@ -63,10 +63,97 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     websocket_api.async_register_command(hass, websocket_panel)
     websocket_api.async_register_command(hass, websocket_options)
     websocket_api.async_register_command(hass, websocket_bus_picker)
+    _register_simulate(hass)
     return True
 
 
+def _register_simulate(hass: HomeAssistant) -> None:
+    """Replay fixes on a fresh matcher. The live riding sensor is not touched."""
+    try:
+        from homeassistant.core import SupportsResponse
+
+        support = SupportsResponse.ONLY
+    except ImportError:
+        support = None
+
+    async def _simulate(call):
+        from .ride import Fix, Train, replay_fixes
+
+        coordinator = (hass.data.get(DOMAIN) or {}).get(call.data.get("entry_id"))
+        kwargs = {"radius_m": 300, "min_speed_mps": 15 * 0.44704, "need_matches": 2, "max_accuracy_m": 100}
+        before = None
+        if coordinator is not None and getattr(coordinator, "ride", None) is not None:
+            matcher = coordinator.ride.matcher
+            kwargs = {
+                "radius_m": matcher.radius_m,
+                "min_speed_mps": matcher.min_speed_mps,
+                "need_matches": matcher.need_matches,
+                "max_accuracy_m": matcher.max_accuracy_m,
+                "preferred_line": matcher.preferred_line,
+            }
+            before = (matcher.riding, matcher.match_count, matcher.last_reason)
+        trains = []
+        for item in call.data.get("trainview") or []:
+            if not isinstance(item, dict):
+                continue
+            try:
+                trains.append(
+                    Train(
+                        trainno=str(item.get("trainno") or item.get("train") or ""),
+                        lat=float(item["lat"]),
+                        lon=float(item["lon"]),
+                        heading=float(item["heading"]) if item.get("heading") is not None else None,
+                        dest=str(item.get("dest") or ""),
+                        line=str(item.get("line") or ""),
+                    )
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+        samples = []
+        for item in call.data.get("fixes") or []:
+            if not isinstance(item, dict):
+                continue
+            try:
+                sample_fix = Fix(
+                    lat=float(item["lat"]),
+                    lon=float(item["lon"]),
+                    acc_m=float(item["acc"]) if item.get("acc") is not None else None,
+                    speed_mps=float(item["speed"]) if item.get("speed") is not None else None,
+                    course=float(item["course"]) if item.get("course") is not None else None,
+                    ts=float(item["ts"]),
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+            samples.append(
+                {
+                    "fix": sample_fix,
+                    "trains": trains,
+                    "trains_ts": float(item.get("trains_ts", item["ts"])),
+                }
+            )
+        result = replay_fixes(samples, **kwargs)
+        if before is not None and coordinator is not None:
+            matcher = coordinator.ride.matcher
+            if (matcher.riding, matcher.match_count, matcher.last_reason) != before:
+                _LOGGER.error("SEPTA simulate_ride changed the live matcher")
+        return result
+
+    register_kwargs = {
+        "schema": vol.Schema(
+            {
+                vol.Required("entry_id"): str,
+                vol.Required("fixes"): [dict],
+                vol.Optional("trainview"): [dict],
+            }
+        )
+    }
+    if support is not None:
+        register_kwargs["supports_response"] = support
+    hass.services.async_register(DOMAIN, "simulate_ride", _simulate, **register_kwargs)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    await hass.async_add_executor_job(_load_schedule)
     await _async_register_lovelace_cards(hass)
     coordinator = SeptaCoordinator(hass, entry)
     from .ride_ha import RideController
@@ -446,7 +533,9 @@ async def _async_sync_panel(hass: HomeAssistant) -> None:
     try:
         from homeassistant.components.frontend import async_remove_panel
 
-        async_remove_panel(hass, _PANEL_PATH)
+        panels = hass.data.get("frontend_panels") or {}
+        if _PANEL_PATH in panels:
+            async_remove_panel(hass, _PANEL_PATH)
     except Exception as err:  # noqa: BLE001
         _LOGGER.debug("SEPTA Transit panel remove skipped: %s", err)
     if not entries:

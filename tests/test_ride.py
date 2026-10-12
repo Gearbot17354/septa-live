@@ -197,3 +197,141 @@ def test_parse_trainview_sample():
     assert any(item.trainno == "3540" and item.consist for item in trains)
     blank = next(item for item in trains if item.consist == [] or item.trainno == "1082")
     assert isinstance(blank.consist, list)
+
+
+def _et(hour, minute, second):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    return datetime(2026, 10, 12, hour, minute, second, tzinfo=ZoneInfo("America/New_York")).timestamp()
+
+
+def _iphone_fixes(speed=0, course=0):
+    return [
+        (40.23747, -75.28388, _et(9, 46, 52), 19.6),
+        (40.18434, -75.25670, _et(9, 59, 34), 18.8),
+        (40.16986, -75.24350, _et(10, 2, 37), 37.9),
+        (40.1560, -75.2310, _et(10, 5, 37), 30.0),
+    ], speed, course
+
+
+def _pair(phone, heading, distance=250, behind_s=0, speed_mps=10.7):
+    """Inbound train near the phone, plus an outbound train on the opposite heading."""
+    back = R.project_position(phone[0], phone[1], (heading + 180) % 360, speed_mps, behind_s) if behind_s else phone
+    inbound_at = R.project_position(back[0], back[1], heading, 1, distance if not behind_s else 0)
+    if behind_s:
+        inbound_at = back
+    outbound_at = inbound_at
+    inbound = train("4302", inbound_at[0], inbound_at[1], heading, dest="Jefferson", line="Lansdale/Doylestown")
+    outbound = train("4321", outbound_at[0], outbound_at[1], (heading + 180) % 360, dest="Doylestown", line="Lansdale/Doylestown")
+    return [inbound, outbound]
+
+
+def _replay_iphone(speed, trains_offset, place):
+    points, speed, course = _iphone_fixes(speed, 0 if speed == 0 else None)
+    heading = R.bearing_deg(points[1][0], points[1][1], points[2][0], points[2][1])
+    samples = []
+    for lat, lon, ts, acc in points:
+        rows = [] if place == "none" else _pair((lat, lon), heading, distance=380 if trains_offset else 200, behind_s=trains_offset)
+        samples.append(
+            {
+                "fix": R.Fix(lat, lon, acc, speed, course, ts),
+                "trains": rows,
+                "trains_ts": ts - trains_offset,
+                "now": ts,
+            }
+        )
+    live = R.RideMatcher()
+    before = live.riding
+    result = R.replay_fixes(samples, radius_m=300, min_speed_mps=15 * 0.44704, need_matches=2, max_accuracy_m=100)
+    assert live.riding is before
+    return result
+
+
+def test_sparse_iphone_speed_zero_boards_inbound():
+    result = _replay_iphone(0, 0, "near")
+    third = result["steps"][2]
+    assert third["speed_source"] == "derived"
+    assert 20 < third["phone_speed_mph"] < 30
+    assert third["reason"] == "candidate"
+    assert result["steps"][3]["reason"] == "boarded"
+    assert result["riding"] is True
+    assert result["events"][-1]["train"] == "4302"
+
+
+def test_sparse_iphone_missing_speed_boards_inbound():
+    result = _replay_iphone(None, 0, "near")
+    assert result["steps"][2]["speed_source"] == "derived"
+    assert result["events"][-1]["train"] == "4302"
+    assert result["riding"] is True
+
+
+def test_sparse_iphone_stale_trainview_still_boards():
+    result = _replay_iphone(0, 90, "near")
+    assert result["riding"] is True
+    assert result["events"][-1]["train"] == "4302"
+
+
+def test_sparse_iphone_no_train_nearby():
+    result = _replay_iphone(0, 0, "none")
+    assert result["riding"] is False
+    assert result["events"] == []
+    assert result["steps"][-1]["reason"] == "no_train_in_radius"
+
+
+def test_stationary_phone_does_not_board():
+    here = train("4302", 40.17, -75.24, 150, dest="Jefferson", line="Lansdale/Doylestown")
+    samples = []
+    ts = _et(10, 0, 0)
+    for index in range(4):
+        samples.append(
+            {
+                "fix": R.Fix(40.17, -75.24, 20, 0, 0, ts + index * 180),
+                "trains": [here],
+                "trains_ts": ts + index * 180,
+                "now": ts + index * 180,
+            }
+        )
+    result = R.replay_fixes(samples, radius_m=300, min_speed_mps=15 * 0.44704, need_matches=2)
+    assert result["riding"] is False
+    assert result["steps"][-1]["reason"] == "not_moving"
+
+
+def test_state_write_from_a_thread_is_scheduled():
+    import threading
+
+    class Loop:
+        def __init__(self):
+            self.calls = []
+
+        def call_soon_threadsafe(self, fn):
+            self.calls.append(fn)
+
+    class Hass:
+        def __init__(self):
+            self.loop = Loop()
+            self.loop_thread_id = threading.get_ident()
+
+    hass = Hass()
+    wrote = []
+    box = {}
+
+    def from_thread():
+        R.write_state_on_loop(hass, lambda: wrote.append("my_train"))
+        R.write_state_on_loop(hass, lambda: wrote.append("riding"))
+
+    worker = threading.Thread(target=from_thread)
+    worker.start()
+    worker.join()
+    assert wrote == []
+    assert len(hass.loop.calls) == 2
+    for call in hass.loop.calls:
+        call()
+    assert wrote == ["my_train", "riding"]
+    sensor = (ROOT / "sensor.py").read_text()
+    binary = (ROOT / "binary_sensor.py").read_text()
+    assert "write_state_on_loop(self.hass, self.async_write_ha_state)" in sensor
+    assert "write_state_on_loop(self.hass, self.async_write_ha_state)" in binary
+    box["ok"] = True
+    assert box["ok"]
+

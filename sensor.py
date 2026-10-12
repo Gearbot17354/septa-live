@@ -18,6 +18,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import CONF_RIDE_TRACKER, DOMAIN
 from .coordinator import NY, SeptaCoordinator, slug
+from .ride import write_state_on_loop
 
 # Card and YAML expect these object ids, not the device-area prefix HA would add.
 _OBJECT_KEY = {
@@ -558,4 +559,4 @@ class SeptaMyTrainSensor(_Base):
 
     @callback
     def _on_ride(self, _payload=None) -> None:
-        self.async_write_ha_state()
+        write_state_on_loop(self.hass, self.async_write_ha_state)
