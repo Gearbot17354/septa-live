@@ -8,7 +8,7 @@ from typing import Any
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfTime
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -556,5 +556,6 @@ class SeptaMyTrainSensor(_Base):
             return
         self.async_on_remove(async_dispatcher_connect(self.hass, ride.signal(), self._on_ride))
 
+    @callback
     def _on_ride(self, _payload=None) -> None:
         self.async_write_ha_state()
