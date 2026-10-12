@@ -388,7 +388,21 @@
       const trains = this._dir === "north" ? north : south;
       const leaveText = leave && !blank(leave) ? leave.state + " min" : "—";
       const statusText = status && !blank(status) ? status.state : "Live";
-      const homeOpts = stations.map((name) => '<option value="' + esc(name) + '"' + (name === draft.station ? " selected" : "") + ">" + esc(name) + "</option>").join("");
+      const nearest = (this._cfg && this._cfg.nearest_stations) || [];
+      const stationSelect = (value) => {
+        const opt = (name, miles) =>
+          '<option value="' + esc(name) + '"' + (name === value ? " selected" : "") + ">" + esc(miles != null ? name + " · " + miles + " mi" : name) + "</option>";
+        if (!nearest.length) {
+          return stations.map((name) => opt(name, null)).join("");
+        }
+        let html = '<optgroup label="Nearest to home">';
+        nearest.forEach((row) => { html += opt(row.name, row.miles); });
+        html += '</optgroup><optgroup label="All stations">';
+        stations.forEach((name) => { html += opt(name, null); });
+        html += "</optgroup>";
+        return html;
+      };
+      const homeOpts = stationSelect(draft.station);
       const destOpts = stations.map((name) => '<option value="' + esc(name) + '"' + (name === draft.destination ? " selected" : "") + ">" + esc(name) + "</option>").join("");
       const lineOpts = '<option value="">Any line</option>' + lines.map((line) => '<option value="' + esc(line.id) + '"' + (line.id === draft.rail_line ? " selected" : "") + ">" + esc(line.name) + "</option>").join("");
       const selectOpts = (list, value, empty, labelOf) =>
@@ -396,7 +410,8 @@
         list.map((item) => {
           const id = typeof item === "string" ? item : item.id;
           const label = labelOf ? labelOf(item) : (typeof item === "string" ? item : item.name);
-          return '<option value="' + esc(id) + '"' + (String(id) === String(value || "") ? " selected" : "") + ">" + esc(label) + "</option>";
+          const miles = item && typeof item === "object" && item.miles != null ? " · " + item.miles + " mi" : "";
+          return '<option value="' + esc(id) + '"' + (String(id) === String(value || "") ? " selected" : "") + ">" + esc(label + miles) + "</option>";
         }).join("");
       const busStops = this._busStops || [];
       const busDests = this._busDests || [];
@@ -414,7 +429,10 @@
         const placeList = w.mode === "metro" ? metroStops : w.mode === "trolley" ? trolleyStops : stations;
         const title = { rail: "Regional Rail", bus: "Buses", metro: "Metro", trolley: "Trolley" }[w.mode];
         const lineLabel = (item) => (w.mode === "bus" ? item.id + " · " + item.name : item.name);
-        return '<div class="commute-row"><div class="who">' + esc(title) + '</div><label class="field">Line<select data-watch-line="' + esc(w.id) + '">' + selectOpts(lineList, w.line, "Any line", lineLabel) + '</select></label><label class="field">Home<select data-watch-home="' + esc(w.id) + '">' + selectOpts(placeList, w.home, "Same as above", null) + '</select></label><span class="swap">↔</span><label class="field">Commute to<select data-watch-dest="' + esc(w.id) + '">' + selectOpts(placeList, w.dest, "Any destination", null) + "</select></label></div>";
+        const homeChoices = w.mode === "rail"
+          ? '<option value="">Same as above</option>' + stationSelect(w.home)
+          : selectOpts(placeList, w.home, "Same as above", null);
+        return '<div class="commute-row"><div class="who">' + esc(title) + '</div><label class="field">Line<select data-watch-line="' + esc(w.id) + '">' + selectOpts(lineList, w.line, "Any line", lineLabel) + '</select></label><label class="field">Home<select data-watch-home="' + esc(w.id) + '">' + homeChoices + '</select></label><span class="swap">↔</span><label class="field">Commute to<select data-watch-dest="' + esc(w.id) + '">' + selectOpts(placeList, w.dest, "Any destination", null) + "</select></label></div>";
       }).join("");
       const serviceCard = (title, state) => {
         const summary = state && state.attributes && state.attributes.summary ? String(state.attributes.summary) : "";
@@ -472,7 +490,8 @@
         (showTrolley ? '<div class="commute-row"><div class="who">Trolley</div><label class="field">Line<select data-trolley-line>' + selectOpts(trolleyLines, draft.trolley_line, "Any line", (item) => item.name) + '</select></label><label class="field">Home<select data-trolley-home>' + selectOpts(trolleyStops, draft.trolley_home, "All trolleys", null) + '</select></label><span class="swap">↔</span><label class="field">Commute to<select data-trolley-dest>' + selectOpts(trolleyStops, draft.trolley_dest, "Any destination", null) + "</select></label></div>" : "") +
         watchRows +
         '<button class="save" type="button" data-save ' + (this._busy ? "disabled" : "") + ">Save</button>" +
-        '<p class="note">Plus adds another line. Minus removes the last one and, after Save, deletes its sensors.</p>' +
+        '<p class="note">Plus adds another line. Minus removes the last one and, after Save, deletes its sensors.' +
+        (nearest.length ? " Home lists the closest stations to your Home Assistant home." : "") + "</p>" +
         (this._msg ? '<div class="note">' + esc(this._msg) + "</div>" : "") +
         '<section class="board"><div class="board-head"><p class="label" style="margin:0">Board</p><span class="sub">' + esc(entry ? entry.station : "") + '</span></div><div class="modes" style="padding:0 12px"><button type="button" data-tab="all" class="' + (this._tab === "all" ? "on" : "") + '">All</button>' + (showRail ? '<button type="button" data-tab="rail" class="' + (this._tab === "rail" ? "on" : "") + '">Regional Rail</button>' : "") + (showBus ? '<button type="button" data-tab="bus" class="' + (this._tab === "bus" ? "on" : "") + '">Buses</button>' : "") + (showMetro ? '<button type="button" data-tab="metro" class="' + (this._tab === "metro" ? "on" : "") + '">Metro</button>' : "") + (showTrolley ? '<button type="button" data-tab="trolley" class="' + (this._tab === "trolley" ? "on" : "") + '">Trolley</button>' : "") + '</div><div class="bubbles">' + bubbles + busBubble + metroBubble + trolleyBubble + lineBubbles + "</div></section>" +
         (showRail ? '<section class="deps"><div class="dep-head"><div><div class="eyebrow">Departures</div><div class="sub">' + esc(this._dir === "north" ? "Outbound" : "Inbound") + '</div></div><div class="modes" style="margin:0"><button type="button" data-dir="south" class="' + (this._dir === "south" ? "on" : "") + '">Inbound</button><button type="button" data-dir="north" class="' + (this._dir === "north" ? "on" : "") + '">Outbound</button></div></div><div class="cols"><span>Time</span><span>Destination</span><span style="text-align:center">Platform</span><span style="text-align:right">Expected</span></div>' + this._rows(trains) + "</section>" : "") +

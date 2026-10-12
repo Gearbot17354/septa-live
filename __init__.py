@@ -45,14 +45,14 @@ from .const import (
     STATIONS,
     TROLLEY_STATIONS,
 )
-from .coordinator import SeptaCoordinator, _LINE_NAMES, slug
+from .coordinator import SeptaCoordinator, _LINE_NAMES, _ha_home, slug
 
 _LOGGER = logging.getLogger(__name__)
 _FRONTEND = f"{DOMAIN}_frontend_registered"
 _CARD_JS = "septa-live-card.js"
 _PANEL_JS = "septa-live-panel.js"
 _PANEL_PATH = "septa-live"
-_CARD_VERSION = "1.10.0"
+_CARD_VERSION = "1.10.1"
 _PANEL_SIG: tuple | None = None
 _RELOADING: set[str] = set()
 
@@ -233,6 +233,7 @@ async def websocket_panel(
         {
             "entries": entries,
             "stations": list(STATIONS),
+            "nearest_stations": await _nearest_stations(data),
             "lines": [{"id": code, "name": name} for code, name in _LINE_NAMES.items()],
             "bus_routes": [{"id": rid, "name": name} for rid, name in BUS_ROUTES],
             "metro_lines": [{"id": rid, "name": name} for rid, name in SERVICE_LINES["metro"]],
@@ -241,6 +242,18 @@ async def websocket_panel(
             "trolley_stations": list(TROLLEY_STATIONS),
         },
     )
+
+
+async def _nearest_stations(data: dict) -> list[dict]:
+    """Names and distances only. Home coordinates stay on the HA box."""
+    coordinator = next((item for item in data.values() if hasattr(item, "async_nearest_stations")), None)
+    if coordinator is None:
+        return []
+    try:
+        return await coordinator.async_nearest_stations(list(STATIONS), _ha_home(coordinator.hass))
+    except Exception:  # noqa: BLE001
+        _LOGGER.debug("SEPTA nearest stations skipped")
+        return []
 
 
 def _clean_watches(raw: object) -> list[dict[str, str]]:

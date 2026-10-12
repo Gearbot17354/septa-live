@@ -10,6 +10,7 @@ import json
 import logging
 import re
 import time
+import asyncio
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -57,6 +58,8 @@ from .const import (
     TROLLEY_ROUTE_IDS,
     V2_TRIPS_URL,
 )
+
+from .ride import haversine_m
 
 _LOGGER = logging.getLogger(__name__)
 NY = ZoneInfo("America/New_York")
@@ -281,6 +284,55 @@ def _norm_name(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", text).strip()
 
 
+def _ha_home(hass: HomeAssistant) -> tuple[float, float] | None:
+    """Home Assistant home zone. Callers must not log or return this."""
+    try:
+        lat = float(hass.config.latitude)
+        lon = float(hass.config.longitude)
+    except (TypeError, ValueError):
+        return None
+    if not -90 <= lat <= 90 or not -180 <= lon <= 180:
+        return None
+    if abs(lat) < 0.01 and abs(lon) < 0.01:
+        return None
+    return lat, lon
+
+
+def _match_point(name: str, index: dict[str, tuple[float, float]]) -> tuple[float, float] | None:
+    key = _norm_name(name)
+    if not key:
+        return None
+    if key in index:
+        return index[key]
+    best = None
+    best_len = -1
+    for stop_key, point in index.items():
+        if key in stop_key or stop_key in key:
+            if len(stop_key) > best_len:
+                best = point
+                best_len = len(stop_key)
+    return best
+
+
+def _miles(meters: float) -> float:
+    shown = round(meters / 1609.344, 1)
+    return 0.1 if shown <= 0 else shown
+
+
+def _rank_stops(stops: list[dict[str, Any]], home: tuple[float, float] | None) -> list[dict[str, Any]]:
+    ranked: list[dict[str, Any]] = []
+    for item in stops:
+        row: dict[str, Any] = {"id": item.get("id"), "name": item.get("name")}
+        if home:
+            point = _ll({"lat": item.get("lat"), "lng": item.get("lng")})
+            if point:
+                row["miles"] = _miles(haversine_m(home[0], home[1], point[0], point[1]))
+        ranked.append(row)
+    if home:
+        ranked.sort(key=lambda row: (row.get("miles") is None, row.get("miles") or 0, str(row.get("name") or "")))
+    return ranked
+
+
 def _parse_bus_calendar(raw: str) -> datetime | None:
     match = re.match(
         r"^\s*(\d{1,2})/(\d{1,2})/(\d{2})\s+(\d{1,2}):(\d{2})\s*(am|pm)",
@@ -364,7 +416,9 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if not sid or not name or sid in seen:
                 continue
             seen.add(sid)
-            stops.append({"id": sid, "name": name})
+            lat = item.get("lat")
+            lng = item.get("lng") if item.get("lng") is not None else item.get("lon")
+            stops.append({"id": sid, "name": name, "lat": lat, "lng": lng})
         return stops
 
     async def _nearby_bus_stops(self) -> list[dict[str, str]]:
@@ -383,7 +437,14 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             sid = str(item.get("location_id") or "").strip()
             name = str(item.get("location_name") or sid).strip()
             if sid:
-                stops.append({"id": sid, "name": name})
+                stops.append(
+                    {
+                        "id": sid,
+                        "name": name,
+                        "lat": item.get("location_lat") or item.get("lat"),
+                        "lng": item.get("location_lon") or item.get("lng") or item.get("lon"),
+                    }
+                )
         return stops
 
     async def _stop_destinations(self, stop_id: str, route: str) -> list[str]:
@@ -421,6 +482,7 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 stops = await self._nearby_bus_stops()
             except Exception as err:  # noqa: BLE001
                 _LOGGER.debug("Nearby bus stops failed: %s", err)
+        stops = _rank_stops(stops, _ha_home(self.hass))
         chosen = stop_id if any(item["id"] == stop_id for item in stops) else ""
         dests: list[str] = []
         if chosen:
@@ -793,6 +855,38 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         rows = [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
         self._stops_cache[code] = (now, rows)
         return rows
+
+    async def async_nearest_stations(self, names: list[str], home: tuple[float, float] | None) -> list[dict[str, Any]]:
+        """Closest official stations to the Home Assistant home zone. No coordinates leave this method."""
+        if not home or not names:
+            return []
+        fetched = await asyncio.gather(
+            *(self.async_line_stops(line) for line in RAIL_LINES),
+            return_exceptions=True,
+        )
+        index: dict[str, tuple[float, float]] = {}
+        for rows in fetched:
+            if isinstance(rows, Exception) or not isinstance(rows, list):
+                continue
+            for item in rows:
+                if not isinstance(item, dict):
+                    continue
+                lat = _coord(item.get("lat"))
+                lng = _coord(item.get("lng") if item.get("lng") is not None else item.get("lon"))
+                if lat is None or lng is None:
+                    continue
+                key = _norm_name(str(item.get("stopname") or ""))
+                if key and key not in index:
+                    index[key] = (lat, lng)
+        ranked: list[dict[str, Any]] = []
+        for name in names:
+            point = _match_point(name, index)
+            if point is None:
+                continue
+            miles = haversine_m(home[0], home[1], point[0], point[1])
+            ranked.append({"name": name, "miles": _miles(miles)})
+        ranked.sort(key=lambda row: (row["miles"], row["name"]))
+        return ranked[:6]
 
     async def _station_coords(self) -> tuple[float, float] | None:
         want = _norm_name(self.station)
