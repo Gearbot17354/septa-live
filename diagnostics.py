@@ -49,6 +49,8 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
                     "max_accuracy_m": matcher.max_accuracy_m,
                     "max_fix_age_s": matcher.max_fix_age_s,
                     "preferred_line": matcher.preferred_line,
+                    "cooldown_train": matcher.cooldown_train,
+                    "cooldown_until": matcher.cooldown_until,
                 },
                 "reasons": list(matcher.reason_log),
             }
@@ -67,6 +69,8 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
             "max_accuracy_m": primary.max_accuracy_m,
             "max_fix_age_s": primary.max_fix_age_s,
             "preferred_line": primary.preferred_line,
+            "cooldown_train": primary.cooldown_train,
+            "cooldown_until": primary.cooldown_until,
         },
         "reasons": list(primary.reason_log),
     }

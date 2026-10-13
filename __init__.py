@@ -54,7 +54,7 @@ _FRONTEND = f"{DOMAIN}_frontend_registered"
 _CARD_JS = "septa-live-card.js"
 _PANEL_JS = "septa-live-panel.js"
 _PANEL_PATH = "septa-live"
-_CARD_VERSION = "1.12.1"
+_CARD_VERSION = "1.12.2"
 _PANEL_SIG: tuple | None = None
 _RELOADING: set[str] = set()
 
@@ -253,6 +253,9 @@ async def _async_migrate_entity_ids(hass: HomeAssistant, entry: ConfigEntry) -> 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await _async_migrate_entity_ids(hass, entry)
+    from .ride import async_preload
+
+    await async_preload(hass)
     await hass.async_add_executor_job(_load_schedule)
     from datetime import date
 

@@ -40,6 +40,16 @@ DEFAULT_RIDE_MIN_SPEED: Final = 15
 DEFAULT_RIDE_MATCHES: Final = 2
 DEFAULT_RIDE_MAX_ACCURACY: Final = 100
 
+# Ride end. The matcher also accepts these as constructor arguments.
+ARRIVAL_RADIUS_M: Final = 250
+SLOW_MPH: Final = 5
+SLOW_SECONDS: Final = 180
+APART_M: Final = 600
+APART_FIXES: Final = 2
+MAX_RIDE_SECONDS: Final = 3 * 3600
+REBOARD_COOLDOWN_S: Final = 600
+TERMINAL_GRACE_S: Final = 120
+
 DEFAULT_STATION: Final = "Lansdale"
 DEFAULT_DESTINATION: Final = "Jefferson Station"
 DEFAULT_WALK: Final = 8

@@ -561,6 +561,209 @@ def test_riders_count_starts_at_zero():
     assert 'self.entity_id = "sensor.septa_riders_count"' in sensor
 
 
+def _exits(events):
+    return [item for item in events if item.kind == "exited"]
+
+
+def test_arrived_when_the_train_leaves():
+    matcher = R.RideMatcher(need_matches=1, min_speed_mps=5, radius_m=300)
+    matcher.set_expected({"train": "8", "destination": "Lansdale"})
+    here = train("8", 40.24278, -75.285, 0, current="Lansdale", line="Lansdale/Doylestown")
+    matcher.update(fix(40.24278, -75.285, 0, speed=20, course=0), [here], 0)
+    assert matcher.riding is True
+    stayed = matcher.update(fix(40.24278, -75.285, 20, speed=20, course=0), [here], 20)
+    assert stayed is None
+    assert matcher.riding is True
+    gone = train("8", 40.30, -75.20, 0, current="Doylestown", line="Lansdale/Doylestown")
+    event = matcher.update(fix(40.24278, -75.285, 40, speed=20, course=0), [gone], 40)
+    assert event is not None and event.kind == "exited"
+    assert event.payload["reason"] == "arrived"
+    assert len(_exits(matcher.events)) == 1
+    assert matcher.payload()["ended_reason"] == "arrived"
+    assert matcher.payload()["ended_at"]
+
+
+def test_walk_beside_estimated_train_ends_slow():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    when = datetime(2026, 10, 13, 16, 0, tzinfo=ZoneInfo("America/New_York"))
+    ts = when.timestamp()
+    row = train(
+        "3544",
+        39.9538889,
+        -75.1677778,
+        342,
+        dest="Doylestown",
+        line="Lansdale/Doylestown",
+        current="Temple University",
+        nxt="Fort Washington",
+    )
+    row.consist = []
+    row.late = 0
+    phone = (39.98139, -75.14944)
+    matcher = R.RideMatcher(need_matches=1, min_speed_mps=5, radius_m=400)
+    matcher.update(fix(phone[0], phone[1], ts, speed=20, course=342), [row], ts)
+    assert matcher.riding is True
+    event = None
+    for step in (60, 120, 200):
+        event = matcher.update(
+            fix(phone[0], phone[1], ts + step, speed=3 * 0.44704, course=342),
+            [row],
+            ts,
+        )
+    assert event is not None and event.kind == "exited"
+    assert event.payload["reason"] == "slow"
+    assert len(_exits(matcher.events)) == 1
+    assert matcher.payload()["ended_reason"] == "slow"
+
+
+def test_live_train_stopped_at_a_signal_stays_on():
+    here = train("8", 40.0, -75.0, 0, current="Between", dest="Doylestown")
+    matcher = R.RideMatcher(need_matches=1, min_speed_mps=5, radius_m=200)
+    matcher.update(fix(40.0, -75.0, 0, speed=20, course=0), [here], 0)
+    event = None
+    for ts in (60, 120, 200):
+        event = matcher.update(fix(40.0, -75.0, ts, speed=0, course=0), [here], ts)
+    assert matcher.riding is True
+    assert event is None
+
+
+def test_estimated_train_separates_after_two_far_fixes():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    when = datetime(2026, 10, 13, 16, 0, tzinfo=ZoneInfo("America/New_York"))
+    ts = when.timestamp()
+    row = train(
+        "3544",
+        39.9538889,
+        -75.1677778,
+        342,
+        line="Lansdale/Doylestown",
+        current="Temple University",
+        nxt="Fort Washington",
+    )
+    row.consist = []
+    row.late = 0
+    phone = (39.98139, -75.14944)
+    matcher = R.RideMatcher(need_matches=1, min_speed_mps=5, radius_m=400)
+    matcher.update(fix(phone[0], phone[1], ts, speed=20, course=342), [row], ts)
+    assert matcher.riding is True
+    one = matcher.update(fix(41.2, -74.2, ts + 30, speed=20, course=0), [row], ts)
+    assert one is None
+    assert matcher.riding is True
+    two = matcher.update(fix(41.2, -74.2, ts + 50, speed=20, course=0), [row], ts)
+    assert two is not None and two.payload["reason"] == "separated"
+    assert len(_exits(matcher.events)) == 1
+    assert matcher.payload()["ended_reason"] == "separated"
+
+
+def test_leaving_the_corridor_ends_the_ride():
+    phone = (39.98139, -75.14944)
+    here = train("8", phone[0], phone[1], 342, line="Lansdale/Doylestown", current="Temple University")
+    matcher = R.RideMatcher(need_matches=1, min_speed_mps=5, radius_m=300)
+    matcher.update(fix(phone[0], phone[1], 0, speed=20, course=342), [here], 0)
+    assert matcher.riding is True
+    east = -75.14944 + (550 / 85_000)
+    moved = train("8", phone[0], east, 342, line="Lansdale/Doylestown", current="Temple University")
+    first = matcher.update(fix(phone[0], east, 20, speed=20, course=90), [moved], 20)
+    assert first is None and matcher.riding is True
+    second = matcher.update(fix(phone[0], east, 40, speed=20, course=90), [moved], 40)
+    assert second is not None and second.payload["reason"] == "left_corridor"
+    assert len(_exits(matcher.events)) == 1
+    assert matcher.payload()["ended_reason"] == "left_corridor"
+
+
+def test_terminal_ends_on_the_next_fix():
+    here = train("8", 40.0, -75.0, 0, dest="Doylestown", current="Penllyn")
+    matcher = R.RideMatcher(need_matches=1, min_speed_mps=5, radius_m=200)
+    matcher.update(fix(40.0, -75.0, 0, speed=20, course=0), [here], 0)
+    done = train("8", 40.0, -75.0, 0, dest="Doylestown", current="Doylestown")
+    marked = matcher.update(fix(40.0, -75.0, 20, speed=20, course=0), [done], 20)
+    assert marked is None and matcher.riding is True
+    event = matcher.update(fix(40.0, -75.0, 40, speed=20, course=0), [done], 40)
+    assert event is not None and event.payload["reason"] == "terminal"
+    assert len(_exits(matcher.events)) == 1
+    assert matcher.payload()["ended_reason"] == "terminal"
+
+
+def test_max_duration_ends_the_ride():
+    here = train("zz", 40.0, -75.0, 0, current="Penllyn")
+    matcher = R.RideMatcher(need_matches=1, min_speed_mps=5, radius_m=200, max_ride_seconds=100)
+    matcher.update(fix(40.0, -75.0, 0, speed=20, course=0), [here], 0)
+    event = matcher.tick(101, [here], 101)
+    assert event is not None and event.payload["reason"] == "max_duration"
+    assert len(_exits(matcher.events)) == 1
+    assert matcher.payload()["ended_reason"] == "max_duration"
+
+
+def test_reboard_cooldown_blocks_only_that_train():
+    matcher = R.RideMatcher(need_matches=1, min_speed_mps=5, radius_m=200)
+    first = train("111", 40.0, -75.0, 0)
+    second = train("222", 40.0, -75.0, 0)
+    matcher.update(fix(40.0, -75.0, 0, speed=20, course=0), [first], 0)
+    assert matcher.riding_train.trainno == "111"
+    matcher.set_tracker_state("home", ts=10)
+    assert matcher.riding is False
+    blocked = matcher.update(fix(40.0, -75.0, 30, speed=20, course=0), [first], 30)
+    assert blocked is None and matcher.riding is False
+    other = matcher.update(fix(40.0, -75.0, 40, speed=20, course=0), [second], 40)
+    assert other is not None and matcher.riding_train.trainno == "222"
+    matcher.set_tracker_state("home", ts=50)
+    later = matcher.update(fix(40.0, -75.0, 660, speed=20, course=0), [first], 660)
+    assert later is not None and matcher.riding_train.trainno == "111"
+
+
+def test_handover_is_not_blocked_by_cooldown():
+    matcher = R.RideMatcher(need_matches=1, min_speed_mps=5, radius_m=300)
+    matcher.set_expected({"train": "222", "connection_train": "333", "connection_station": "Suburban Station"})
+    first = train("222", 40.0, -75.0, 0, current="Temple University")
+    matcher.update(fix(40.0, -75.0, 0, speed=20, course=0), [first], 0)
+    matcher.leg = 2
+    matcher._cooldown["333"] = 0
+    second = train("333", 40.0, -75.0, 0, current="Suburban Station")
+    event = matcher.update(fix(40.0, -75.0, 30, speed=20, course=0), [second], 30)
+    assert event is not None and event.kind == "boarded"
+    assert matcher.riding_train.trainno == "333"
+
+
+def test_geo_files_are_read_once_and_preloaded_off_loop():
+    import asyncio
+
+    R._GEO = None
+    R._TIMES = None
+    calls = {"n": 0}
+    original = Path.read_text
+
+    def wrapped(self, *args, **kwargs):
+        if self.name in {"rail-geo.json", "rail-schedule.json"}:
+            calls["n"] += 1
+        return original(self, *args, **kwargs)
+
+    Path.read_text = wrapped
+    try:
+        R._load_geo()
+        R._load_times()
+        R._load_geo()
+        R._load_times()
+        assert calls["n"] == 2
+    finally:
+        Path.read_text = original
+
+    class Hass:
+        def __init__(self):
+            self.jobs = []
+
+        async def async_add_executor_job(self, func, *args):
+            self.jobs.append(func.__name__)
+            return func(*args)
+
+    hass = Hass()
+    asyncio.run(R.async_preload(hass))
+    assert hass.jobs == ["_load_geo", "_load_times"]
+
+
 def _frozen_3544():
     row = train(
         "3544",

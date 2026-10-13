@@ -375,6 +375,7 @@ class RiderController:
         train = self.matcher.riding_train
         if train is None:
             self._remaining = []
+            self.matcher.remaining_stops = []
             self._remaining_source = ""
             self._rr_train = ""
             self._rr_raw = None
@@ -414,6 +415,7 @@ class RiderController:
             if self.matcher.leg == 1 and expected and expected.get("connection_station"):
                 until = expected.get("connection_station")
             self._remaining = remaining_stops(self._rr_raw, train.currentstop, train.nextstop, until)
+            self.matcher.remaining_stops = self._remaining
             self._remaining_source = "rrschedules"
             return
         now_ny = datetime.now(NY)
@@ -426,6 +428,7 @@ class RiderController:
             train.currentstop,
             train.nextstop,
         )
+        self.matcher.remaining_stops = self._remaining
         self._remaining_source = "timetable"
 
     async def _on_fast(self, now) -> None:
@@ -491,6 +494,24 @@ class RiderController:
             for key in ("latitude", "longitude", "lat", "lon"):
                 data.pop(key, None)
             self.hass.bus.async_fire(name, data)
+            if event.kind == "exited":
+                self.hass.bus.async_fire(
+                    "septa_live_ride_ended",
+                    {
+                        "reason": data.get("reason") or data.get("ended_reason"),
+                        "train": data.get("train"),
+                        "line": data.get("line"),
+                        "boarded_at": data.get("boarded_at"),
+                        "exited_at": data.get("exited_at"),
+                        "duration": data.get("duration"),
+                        "position_source": data.get("position_source"),
+                        "stale_gps": data.get("stale_gps"),
+                        "final_destination": data.get("final_destination"),
+                        "ended_at": data.get("ended_at"),
+                        "rider": data.get("rider"),
+                        "entry_id": data.get("entry_id"),
+                    },
+                )
         self._push()
         self._sync_fast()
 

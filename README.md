@@ -12,7 +12,7 @@ This is a **custom repository** — the same way most community plugins are inst
 2. Open the three-dot menu → **Custom repositories**.
 3. Paste `https://github.com/Gearbot17354/septa-live`.
 4. Category: **Integration**.
-5. **Add**, then find **SEPTA Transit** and **Download** **1.12.1**. Restart Home Assistant after the update so the new ride code is the code that is running.
+5. **Add**, then find **SEPTA Transit** and **Download** **1.12.2**. Restart Home Assistant after the update so the new ride code is the code that is running.
 6. **Restart Home Assistant**.
 7. **Settings → Devices & Services → Add Integration → SEPTA Transit**.
 8. Pick a station (for example Lansdale) and a destination (Jefferson Station) used for the leave-now countdown.
@@ -26,7 +26,7 @@ Repo: [github.com/Gearbot17354/septa-live](https://github.com/Gearbot17354/septa
 If Add card still does not list SEPTA Transit, enable Advanced Mode in your profile, then **Settings → Dashboards → ⋮ → Resources → Add**:
 
 ```
-/local/septa-live-card.js?v=1.12.1
+/local/septa-live-card.js?v=1.12.2
 type: module
 ```
 
@@ -67,6 +67,27 @@ Track and platform are copied from Arrivals only when SEPTA sends them. Empty me
 | `trips` | The next departures. For a transfer, arrival is the final station |
 | `day` | Today's full list, only when Full day is on |
 | `connection` | Transfer station, connecting train, wait, and `at_risk` |
+
+## What's new in 1.12.2
+
+A ride now ends when you get off, instead of following a TrainView dot that keeps sliding down the line.
+
+The riding sensor keeps `ended_reason` and `ended_at` after the ride. `septa_live_train_exited` still fires. A second event, `septa_live_ride_ended`, carries `reason`, `train`, `line`, `boarded_at`, `exited_at`, `duration`, `position_source`, `stale_gps`, and `final_destination`.
+
+| Reason | When |
+| --- | --- |
+| `arrived` | You are still at the planned destination and the train has left |
+| `slow` | Under 5 mph for 3 minutes. An estimated train position cannot keep the ride alive |
+| `stationary` | The same slow end, when the phone is barely moving and a live GPS train has left |
+| `separated` | Two fixes more than 600 m from an estimated train |
+| `left_corridor` | Two fixes more than 300 m off the line you were on |
+| `terminal` | The train's current stop is the end of its run |
+| `max_duration` | Longer than 3 hours, or the scheduled trip plus an hour |
+| `misses`, `transfer`, `train_gone`, `no_fix`, `home` | Unchanged |
+
+The same train cannot be boarded again for 10 minutes. A different train can, and a planned transfer is not blocked. Diagnostics show `cooldown_train` and `cooldown_until`.
+
+Thresholds live in `const.py`: `ARRIVAL_RADIUS_M` 250, `SLOW_MPH` 5, `SLOW_SECONDS` 180, `APART_M` 600, `APART_FIXES` 2, `MAX_RIDE_SECONDS` 3 hours, `REBOARD_COOLDOWN_S` 600. The station file and the timetable are read off the event loop at startup.
 
 ## What's new in 1.12.1
 
