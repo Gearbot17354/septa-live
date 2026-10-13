@@ -335,59 +335,61 @@ def test_state_write_from_a_thread_is_scheduled():
 
 
 def test_old_tracker_option_is_the_primary_rider():
-    riders = R.configured_riders({}, {"ride_tracker": "device_tracker.ryans_iphone_2"})
-    assert riders == ["device_tracker.ryans_iphone_2"]
+    riders = R.configured_riders({}, {"ride_tracker": "device_tracker.alex_phone"})
+    assert riders == ["device_tracker.alex_phone"]
     specs = R.dedupe_riders(
         riders,
-        {"person.ryan": "device_tracker.ryans_iphone_2"},
+        {"person.alex": "device_tracker.alex_phone"},
     )
-    assert specs[0]["slug"] == "ryan"
+    assert specs[0]["slug"] == "alex"
     assert specs[0]["primary"] is True
-    assert specs[0]["person"] == "person.ryan"
+    assert specs[0]["person"] == "person.alex"
 
 
 def test_person_and_their_phone_are_one_rider():
     specs = R.dedupe_riders(
-        ["person.ryan", "device_tracker.ryans_iphone_2", "person.rachael", "person.brandon"],
+        ["person.alex", "device_tracker.alex_phone", "person.sam", "person.jordan"],
         {
-            "person.ryan": "device_tracker.ryans_iphone_2",
-            "person.rachael": "device_tracker.rachaels_iphone",
-            "person.brandon": "device_tracker.brandons_iphone",
+            "person.alex": "device_tracker.alex_phone",
+            "person.sam": "device_tracker.sam_phone",
+            "person.jordan": "device_tracker.jordan_phone",
         },
     )
-    assert [item["slug"] for item in specs] == ["ryan", "rachael", "brandon"]
+    assert [item["slug"] for item in specs] == ["alex", "sam", "jordan"]
     assert sum(1 for item in specs if item["primary"]) == 1
 
 
 def test_two_riders_do_not_share_a_matcher():
-    ryan = _replay_iphone(0, 0, "near")
-    rachael = _replay_iphone(0, 0, "none")
-    assert ryan["riding"] is True
-    assert rachael["riding"] is False
+    first = _replay_iphone(0, 0, "near")
+    second = _replay_iphone(0, 0, "none")
+    assert first["riding"] is True
+    assert second["riding"] is False
     summary = R.riders_summary(
         [
             {
-                "rider": "ryan",
+                "rider": "alex",
                 "riding": True,
                 "train": "4302",
-                "person": "person.ryan",
-                "friendly_name_rider": "Ryan",
+                "person": "person.alex",
+                "friendly_name_rider": "Alex",
+                "entity_picture": "/api/image/alex",
                 "line": "Lansdale/Doylestown",
                 "next_stop": "Penllyn",
             },
             {
-                "rider": "rachael",
+                "rider": "sam",
                 "riding": True,
                 "train": "4302",
-                "person": "person.rachael",
-                "friendly_name_rider": "Rachael",
+                "person": "person.sam",
+                "friendly_name_rider": "Sam",
                 "line": "Lansdale/Doylestown",
                 "next_stop": "Penllyn",
             },
         ]
     )
     assert summary["count"] == 2
-    assert summary["trains"]["4302"] == ["ryan", "rachael"]
+    assert summary["trains"]["4302"] == ["alex", "sam"]
+    assert summary["riding"][0]["entity_picture"] == "/api/image/alex"
 
 
 def test_one_trainview_fetch_for_three_riders():

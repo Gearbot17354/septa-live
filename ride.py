@@ -837,6 +837,7 @@ def riders_summary(rows: list[dict]) -> dict:
                     "rider": slug,
                     "person": row.get("person"),
                     "friendly_name": row.get("friendly_name_rider"),
+                    "entity_picture": row.get("entity_picture"),
                     "train": row.get("train"),
                     "line": row.get("line"),
                     "next_stop": row.get("next_stop"),

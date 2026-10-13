@@ -12,7 +12,7 @@ This is a **custom repository** — the same way most community plugins are inst
 2. Open the three-dot menu → **Custom repositories**.
 3. Paste `https://github.com/Gearbot17354/septa-live`.
 4. Category: **Integration**.
-5. **Add**, then find **SEPTA Transit** and **Download** **1.11.0**. Restart Home Assistant after the update so the new ride code is the code that is running.
+5. **Add**, then find **SEPTA Transit** and **Download** **1.11.1**. Restart Home Assistant after the update so the new ride code is the code that is running.
 6. **Restart Home Assistant**.
 7. **Settings → Devices & Services → Add Integration → SEPTA Transit**.
 8. Pick a station (for example Lansdale) and a destination (Jefferson Station) used for the leave-now countdown.
@@ -26,7 +26,7 @@ Repo: [github.com/Gearbot17354/septa-live](https://github.com/Gearbot17354/septa
 If Add card still does not list SEPTA Transit, enable Advanced Mode in your profile, then **Settings → Dashboards → ⋮ → Resources → Add**:
 
 ```
-/local/septa-live-card.js?v=1.11.0
+/local/septa-live-card.js?v=1.11.1
 type: module
 ```
 
@@ -38,11 +38,15 @@ After you restart, **SEPTA** shows up in the left menu. That page is the live bo
 
 Turn the menu item off from the page (**Show in sidebar**) or from **Settings → Devices & Services → SEPTA Transit → Configure → Show SEPTA in the sidebar**. Turn it back on the same way. The page is always at `/septa-live` even when the menu item is hidden.
 
+## What's new in 1.11.1
+
+The My Train card shows a picture for each person who is on a train. People sharing a train sit side by side. If a person has no picture, the card shows their initials, or a plain person icon when there is no name either.
+
 ## What's new in 1.11.0
 
-More than one person can be on a train at the same time. In the integration options, **People and phones on the train** takes `person.ryan`, `person.rachael`, and `person.brandon` (or their phone trackers). A person and that person's phone count as one rider.
+More than one person can be on a train at the same time. In the integration options, **People and phones on the train** takes whoever you pick, for example `person.alex` and `person.sam`, or their phone trackers. A person and that person's phone count as one rider.
 
-Ryan stays on the sensors you already have: `binary_sensor.septa_lansdale_riding` and `sensor.septa_lansdale_my_train`. Those keep their history. Rachael and Brandon get `binary_sensor.septa_riding_rachael`, `sensor.septa_my_train_rachael`, and the same for Brandon. `sensor.septa_riders_count` is how many of them are aboard, and its `trains` attribute shows when two people are on the same train.
+The first person stays on the sensors you already have: `binary_sensor.septa_<station>_riding` and `sensor.septa_<station>_my_train`. Those keep their history. Each other person gets `binary_sensor.septa_riding_<name>` and `sensor.septa_my_train_<name>`. `sensor.septa_riders_count` is how many of them are aboard, and its `trains` attribute shows when two people are on the same train.
 
 Each person has a separate matcher. Train positions are fetched once and shared. If you only had a phone tracker set, it is treated as the first rider until you open options.
 
@@ -274,7 +278,7 @@ triggers:
   - trigger: event
     event_type: septa_live_train_boarded
 actions:
-  - action: notify.mobile_app_ryans_iphone
+  - action: notify.mobile_app_phone
     data:
       title: "🚆 Train {{ trigger.event.data.train }}"
       message: >-
@@ -288,7 +292,7 @@ actions:
           interruption-level: time-sensitive
 ```
 
-Replace `notify.mobile_app_ryans_iphone` with your Companion notify service. Tapping the notification opens the dashboard hash. It does not force a pop-up on an idle screen; that needs browser_mod, which this does not assume.
+Replace `notify.mobile_app_phone` with your Companion notify service. Tapping the notification opens the dashboard hash. It does not force a pop-up on an idle screen; that needs browser_mod, which this does not assume.
 
 Bubble Card pop-up (use the entity id Home Assistant actually created if it prefixed an area):
 
@@ -332,11 +336,11 @@ Android can turn on high accuracy from a zone automation:
 alias: SEPTA - high accuracy at the station
 triggers:
   - trigger: zone
-    entity_id: person.ryan
+    entity_id: person.alex
     zone: zone.lansdale
     event: enter
 actions:
-  - action: notify.mobile_app_ryans_phone
+  - action: notify.mobile_app_phone
     data:
       message: command_high_accuracy_mode
       data:

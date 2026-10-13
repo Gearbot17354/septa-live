@@ -1,5 +1,5 @@
 (() => {
-  const CARD_VERSION = "1.11.0";
+  const CARD_VERSION = "1.11.1";
 
 const RAIL_STATIONS = [
     {name:'9th St',api:'9th St'},
@@ -2240,6 +2240,71 @@ const RAIL_STATIONS = [
     }
   }
 
+  function pictureUrl(hass, picture) {
+    if (!picture) return "";
+    const raw = String(picture);
+    if (/^https?:/i.test(raw)) return raw;
+    try {
+      return hass && typeof hass.hassUrl === "function" ? hass.hassUrl(raw) : raw;
+    } catch (err) {
+      return raw;
+    }
+  }
+
+  function riderInitials(name) {
+    const parts = String(name || "")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+    if (!parts.length) return "";
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  }
+
+  function riderAvatar(hass, row) {
+    const name = row.friendly_name_rider || row.rider || "";
+    const picture = pictureUrl(hass, row.entity_picture);
+    if (picture) {
+      return `<span class="avatar" title="${esc(name)}"><img src="${esc(picture)}" alt="${esc(name)}"></span>`;
+    }
+    const letters = riderInitials(name);
+    if (letters) return `<span class="avatar initials" title="${esc(name)}">${esc(letters)}</span>`;
+    return `<span class="avatar initials" title="Rider"><ha-icon icon="mdi:account"></ha-icon></span>`;
+  }
+
+  function trainBody(a, avatars) {
+    const late = Number(a.late_min || 0);
+    const next = (a.remaining_stops || [])[0] || {};
+    const nextName = a.next_stop || next.station || "";
+    const nextEst = next.est || next.sched || "";
+    const stops = Array.isArray(a.remaining_stops) ? a.remaining_stops : [];
+    const shown = stops.slice(0, 6);
+    const more = stops.length - shown.length;
+    const cars = Number(a.cars || 0);
+    const boardedClock = a.boarded_time ? new Date(a.boarded_time) : null;
+    const boardedLabel =
+      boardedClock && !Number.isNaN(boardedClock.getTime())
+        ? boardedClock.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+        : "";
+    const stopRows = shown
+      .map(
+        (row) =>
+          `<li><span>${esc(row.station)}</span><span>${esc(row.est || row.sched || "")}</span></li>`,
+      )
+      .join("");
+    return `
+      <div class="kicker-row"><div class="avatars">${avatars}</div>${modeIcon("rail")}<div class="kicker">On board</div>${railBadge(a.line || a.line_code || "")}</div>
+      <div class="train-no">You're on train ${esc(a.train)} to ${esc(a.destination || "—")}</div>
+      <div class="meta" style="color:${tone(late, false)}">${esc(delayLabel(late, false, ""))}</div>
+      <div class="meta">${esc(a.current_stop || "—")} → ${esc(nextName || "—")}${nextEst ? ` · est ${esc(nextEst)}` : ""}</div>
+      ${a.distance_m != null ? `<div class="meta">${esc(a.distance_m)} m from the train</div>` : ""}
+      ${stopRows ? `<ul class="ride-stops">${stopRows}</ul>` : ""}
+      ${more > 0 ? `<div class="hint">+${more} more</div>` : ""}
+      ${a.gps_gap ? `<div class="hint">GPS paused (tunnel)</div>` : ""}
+      <div class="foot">Boarded ${esc(a.boarded_at || "—")}${boardedLabel ? ` ${esc(boardedLabel)}` : ""}${cars ? ` · ${cars} car${cars === 1 ? "" : "s"}` : ""}</div>
+    `;
+  }
+
   class SeptaLiveMyTrain extends HTMLElement {
     constructor() {
       super();
@@ -2264,23 +2329,51 @@ const RAIL_STATIONS = [
     }
 
     _riding() {
-      const state = this._state();
-      return !!(state && state.attributes && state.attributes.riding);
+      return this._riders().length > 0;
+    }
+
+    _riders() {
+      const hass = this._hass;
+      const seen = new Set();
+      const rows = [];
+      const add = (id) => {
+        const state = stateOf(hass, id);
+        if (!state || !state.attributes || !state.attributes.riding) return;
+        const key = state.attributes.rider || state.attributes.person || id;
+        if (seen.has(key)) return;
+        seen.add(key);
+        rows.push(state.attributes);
+      };
+      add(this._entity());
+      if (hass && hass.states) {
+        Object.keys(hass.states).forEach((id) => {
+          if (id.indexOf("sensor.septa_my_train_") === 0) add(id);
+        });
+      }
+      return rows;
+    }
+
+    _groups(rows) {
+      const groups = [];
+      rows.forEach((row) => {
+        const train = String(row.train || "");
+        let group = groups.find((item) => item.train === train);
+        if (!group) {
+          group = { train, people: [] };
+          groups.push(group);
+        }
+        group.people.push(row);
+      });
+      return groups;
     }
 
     set hass(hass) {
       this._hass = hass;
-      const state = this._state();
-      const attrs = (state && state.attributes) || {};
+      const riders = this._riders();
       const sig = [
         this._entity(),
-        this._riding() ? "1" : "0",
-        attrs.train,
-        attrs.late_min,
-        attrs.next_stop,
-        attrs.current_stop,
-        attrs.gps_gap ? "1" : "0",
-        (attrs.remaining_stops || []).length,
+        riders.length ? "1" : "0",
+        riders.map((row) => [row.rider, row.train, row.entity_picture, row.late_min, row.next_stop].join(":")).join(","),
         this._config.show_idle ? "1" : "0",
       ].join("|");
       if (sig === this._last && this.shadowRoot.querySelector("ha-card")) return;
@@ -2323,40 +2416,18 @@ const RAIL_STATIONS = [
       const state = this._state();
       const a = (state && state.attributes) || {};
       const name = this._config.name || "My train";
+      const riders = this._riders();
       let body = "";
       if (!riding) {
         body = `<div class="kicker-row">${modeIcon("rail")}<div class="kicker">${esc(name)}</div></div><div class="empty">Not on a train</div>`;
       } else {
-        const late = Number(a.late_min || 0);
-        const next = (a.remaining_stops || [])[0] || {};
-        const nextName = a.next_stop || next.station || "";
-        const nextEst = next.est || next.sched || "";
-        const stops = Array.isArray(a.remaining_stops) ? a.remaining_stops : [];
-        const shown = stops.slice(0, 6);
-        const more = stops.length - shown.length;
-        const cars = Number(a.cars || 0);
-        const boardedClock = a.boarded_time ? new Date(a.boarded_time) : null;
-        const boardedLabel =
-          boardedClock && !Number.isNaN(boardedClock.getTime())
-            ? boardedClock.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
-            : "";
-        const stopRows = shown
-          .map(
-            (row) =>
-              `<li><span>${esc(row.station)}</span><span>${esc(row.est || row.sched || "")}</span></li>`,
-          )
+        body = this._groups(riders)
+          .map((group) => {
+            const detail = group.people.find((row) => row.remaining_stops) || group.people[0] || a;
+            const avatars = group.people.map((row) => riderAvatar(this._hass, row)).join("");
+            return `<section class="party">${trainBody(detail, avatars)}</section>`;
+          })
           .join("");
-        body = `
-          <div class="kicker-row">${modeIcon("rail")}<div class="kicker">On board</div>${railBadge(a.line || a.line_code || "")}</div>
-          <div class="train-no">You're on train ${esc(a.train)} to ${esc(a.destination || "—")}</div>
-          <div class="meta" style="color:${tone(late, false)}">${esc(delayLabel(late, false, ""))}</div>
-          <div class="meta">${esc(a.current_stop || "—")} → ${esc(nextName || "—")}${nextEst ? ` · est ${esc(nextEst)}` : ""}</div>
-          ${a.distance_m != null ? `<div class="meta">${esc(a.distance_m)} m from the train</div>` : ""}
-          ${stopRows ? `<ul class="ride-stops">${stopRows}</ul>` : ""}
-          ${more > 0 ? `<div class="hint">+${more} more</div>` : ""}
-          ${a.gps_gap ? `<div class="hint">GPS paused (tunnel)</div>` : ""}
-          <div class="foot">Boarded ${esc(a.boarded_at || "—")}${boardedLabel ? ` ${esc(boardedLabel)}` : ""}${cars ? ` · ${cars} car${cars === 1 ? "" : "s"}` : ""}</div>
-        `;
       }
       this.shadowRoot.innerHTML = `
         <style>${BASE_CSS}
@@ -2365,6 +2436,20 @@ const RAIL_STATIONS = [
           .ride-stops li { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; padding: 6px 0; border-top: 1px solid var(--divider-color, rgba(127,127,127,0.25)); }
           .hint { margin-top: 8px; font-size: 12px; opacity: 0.65; }
           .foot { margin-top: 12px; font-size: 12px; opacity: 0.72; }
+          .party + .party { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--divider-color, rgba(127,127,127,0.25)); }
+          .avatars { display: flex; align-items: center; margin-right: 4px; }
+          .avatar {
+            width: 36px; height: 36px; border-radius: 50%; margin-left: -10px; overflow: hidden;
+            display: inline-flex; align-items: center; justify-content: center;
+            border: 2px solid var(--ha-card-background, var(--card-background-color, #1c1c1e));
+            background: var(--secondary-background-color, #2c2c2e);
+            color: var(--primary-text-color, #f5f5f7);
+            font-size: 12px; font-weight: 650; letter-spacing: 0.02em;
+            box-shadow: 0 0 0 1px var(--divider-color, rgba(255,255,255,0.12));
+          }
+          .avatar:first-child { margin-left: 0; }
+          .avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+          .avatar ha-icon { --mdc-icon-size: 20px; color: var(--primary-text-color, #f5f5f7); }
         </style>
         <ha-card><button class="hit" type="button"><div class="wrap">${body}</div></button></ha-card>
       `;
