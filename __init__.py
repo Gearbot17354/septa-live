@@ -12,6 +12,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_call_later
 
 from .bus_routes import BUS_ROUTES
+from .ids import legacy_key, plan_registry_migration
 from .const import (
     CONF_BUS_DEST,
     CONF_BUS_LINE,
@@ -52,7 +53,7 @@ _FRONTEND = f"{DOMAIN}_frontend_registered"
 _CARD_JS = "septa-live-card.js"
 _PANEL_JS = "septa-live-panel.js"
 _PANEL_PATH = "septa-live"
-_CARD_VERSION = "1.11.3"
+_CARD_VERSION = "1.11.4"
 _PANEL_SIG: tuple | None = None
 _RELOADING: set[str] = set()
 
@@ -154,7 +155,36 @@ def _register_simulate(hass: HomeAssistant) -> None:
     hass.services.async_register(DOMAIN, "simulate_ride", _simulate, **register_kwargs)
 
 
+async def _async_migrate_entity_ids(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Point old unique ids at the config entry and put _2 names back."""
+    try:
+        from homeassistant.helpers import entity_registry as er
+    except ImportError:
+        return
+    registry = er.async_get(hass)
+    station = str(entry.data.get(CONF_STATION) or "Lansdale")
+    try:
+        current = er.async_entries_for_config_entry(registry, entry.entry_id)
+    except Exception:  # noqa: BLE001
+        return
+    items = [
+        {"unique_id": item.unique_id, "entity_id": item.entity_id, "domain": item.domain}
+        for item in current
+    ]
+    for action in plan_registry_migration(entry.entry_id, station, items):
+        try:
+            if action["op"] == "remove":
+                registry.async_remove(action["entity_id"])
+            elif action["op"] == "unique_id":
+                registry.async_update_entity(action["entity_id"], new_unique_id=action["unique_id"])
+            elif action["op"] == "rename" and registry.async_get(action["new_entity_id"]) is None:
+                registry.async_update_entity(action["entity_id"], new_entity_id=action["new_entity_id"])
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("SEPTA entity id migration skipped for %s", action.get("entity_id"))
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    await _async_migrate_entity_ids(hass, entry)
     await hass.async_add_executor_job(_load_schedule)
     from datetime import date
 
@@ -471,8 +501,11 @@ async def websocket_options(
             "trolley_dest": CONF_TROLLEY_DEST,
         }
         for src, dest in mapping.items():
-            if src in msg:
-                options[dest] = msg[src]
+            if src not in msg:
+                continue
+            if dest == CONF_DESTINATION and not str(msg.get(src) or "").strip():
+                continue
+            options[dest] = msg[src]
         if "watches" in msg:
             options[CONF_WATCHES] = _clean_watches(msg.get("watches"))
         if "ride_tracker" in msg:
@@ -511,7 +544,7 @@ def _entity_map(hass: HomeAssistant, entry_id: str, station: str, dest: str) -> 
         found: dict[str, str] = {}
         for item in er.async_entries_for_config_entry(registry, entry_id):
             uid = item.unique_id or ""
-            key = uid[len(prefix) :] if uid.startswith(prefix) else uid
+            key = legacy_key(uid) or (uid[len(prefix) :] if uid.startswith(prefix) else "")
             if key:
                 found[key] = item.entity_id
         return found

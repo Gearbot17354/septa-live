@@ -390,12 +390,20 @@
       const statusText = status && !blank(status) ? status.state : "Live";
       const nearest = (this._cfg && this._cfg.nearest_stations) || [];
       const stationSelect = (value) => {
-        const opt = (name, miles) =>
-          '<option value="' + esc(name) + '"' + (name === value ? " selected" : "") + ">" + esc(miles != null ? name + " · " + miles + " mi" : name) + "</option>";
-        if (!nearest.length) {
-          return stations.map((name) => opt(name, null)).join("");
+        const seen = {};
+        const opt = (name, miles) => {
+          if (!name || seen[name]) return "";
+          seen[name] = true;
+          return '<option value="' + esc(name) + '"' + (name === value ? " selected" : "") + ">" + esc(miles != null ? name + " · " + miles + " mi" : name) + "</option>";
+        };
+        let html = "";
+        if (value && stations.indexOf(value) === -1 && !nearest.some((row) => row.name === value)) {
+          html += opt(value, null);
         }
-        let html = '<optgroup label="Nearest to home">';
+        if (!nearest.length) {
+          return html + stations.map((name) => opt(name, null)).join("");
+        }
+        html += '<optgroup label="Nearest to home">';
         nearest.forEach((row) => { html += opt(row.name, row.miles); });
         html += '</optgroup><optgroup label="All stations">';
         stations.forEach((name) => { html += opt(name, null); });
@@ -403,7 +411,9 @@
         return html;
       };
       const homeOpts = stationSelect(draft.station);
-      const destOpts = stations.map((name) => '<option value="' + esc(name) + '"' + (name === draft.destination ? " selected" : "") + ">" + esc(name) + "</option>").join("");
+      const destOpts = (draft.destination && stations.indexOf(draft.destination) === -1
+        ? '<option value="' + esc(draft.destination) + '" selected>' + esc(draft.destination) + "</option>"
+        : "") + stations.map((name) => '<option value="' + esc(name) + '"' + (name === draft.destination ? " selected" : "") + ">" + esc(name) + "</option>").join("");
       const lineOpts = '<option value="">Any line</option>' + lines.map((line) => '<option value="' + esc(line.id) + '"' + (line.id === draft.rail_line ? " selected" : "") + ">" + esc(line.name) + "</option>").join("");
       const selectOpts = (list, value, empty, labelOf) =>
         '<option value="">' + esc(empty) + "</option>" +

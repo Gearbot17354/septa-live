@@ -17,21 +17,21 @@ from homeassistant.helpers.entity_registry import async_get as async_get_entity_
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import CONF_RIDE_TRACKER, DOMAIN
-from .ride import configured_riders, dedupe_riders
+from .ids import object_key, stable_unique_id
 from .coordinator import NY, SeptaCoordinator, slug
-from .ride import write_state_on_loop
+from .ride import configured_riders, dedupe_riders, write_state_on_loop
 
 # Card and YAML expect these object ids, not the device-area prefix HA would add.
 _OBJECT_KEY = {
-    "south": "next_inbound",
-    "north": "next_outbound",
+    "south": "next_southbound",
+    "north": "next_northbound",
     "south_board": "inbound_board",
     "north_board": "outbound_board",
 }
 
 
 def _object_key(key: str) -> str:
-    return _OBJECT_KEY.get(key, key)
+    return object_key(key)
 
 
 def _entity_id(station: str, key: str) -> str:
@@ -179,12 +179,11 @@ class _Base(CoordinatorEntity[SeptaCoordinator], SensorEntity):
     def __init__(self, coordinator: SeptaCoordinator, key: str) -> None:
         super().__init__(coordinator)
         station = coordinator.station
-        dest = coordinator.destination
         self._key = key
-        self._attr_unique_id = f"{slug(station)}_{slug(dest)}_{key}"
+        self._attr_unique_id = stable_unique_id(coordinator.entry.entry_id, key)
         self.entity_id = _entity_id(station, key)
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, f"{slug(station)}_{slug(dest)}")},
+            identifiers={(DOMAIN, coordinator.entry.entry_id)},
             name=f"SEPTA {station}",
             manufacturer="SEPTA",
             model=_device_model(coordinator),
@@ -309,7 +308,13 @@ class SeptaLeaveSensor(_Base):
     @property
     def native_value(self) -> int | None:
         data = self.coordinator.data or {}
-        return data.get("leave_in")
+        value = data.get("leave_in")
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return None
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:

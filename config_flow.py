@@ -132,6 +132,14 @@ class SeptaOptionsFlow(config_entries.OptionsFlow):
         entry = self.config_entry
         if user_input is not None:
             merged = {**entry.options, **user_input}
+            saved_dest = str(
+                entry.options.get(CONF_DESTINATION) or entry.data.get(CONF_DESTINATION) or DEFAULT_DESTINATION
+            )
+            submitted = str(merged.get(CONF_DESTINATION) or "").strip()
+            if submitted and (submitted in STATIONS or submitted == saved_dest):
+                merged[CONF_DESTINATION] = submitted
+            else:
+                merged[CONF_DESTINATION] = saved_dest
             riders = merged.get(CONF_RIDE_RIDERS) or []
             if isinstance(riders, str):
                 riders = [part.strip() for part in riders.split(",") if part.strip()]
@@ -148,6 +156,9 @@ class SeptaOptionsFlow(config_entries.OptionsFlow):
             else:
                 merged.pop(CONF_RIDE_ACTIVITY, None)
             return self.async_create_entry(title="", data=merged)
+        saved_dest = str(
+            entry.options.get(CONF_DESTINATION) or entry.data.get(CONF_DESTINATION) or DEFAULT_DESTINATION
+        )
         current_riders = configured_riders(entry.options, entry.data)
         riders_key = vol.Optional(
             CONF_RIDE_RIDERS,
@@ -155,12 +166,7 @@ class SeptaOptionsFlow(config_entries.OptionsFlow):
         )
         schema = vol.Schema(
             {
-                vol.Optional(
-                    CONF_DESTINATION,
-                    default=entry.options.get(
-                        CONF_DESTINATION, entry.data.get(CONF_DESTINATION, DEFAULT_DESTINATION)
-                    ),
-                ): STATION_SELECTOR,
+                vol.Required(CONF_DESTINATION, default=saved_dest): STATION_SELECTOR,
                 vol.Optional(
                     CONF_BUS_DEST,
                     default=entry.options.get(CONF_BUS_DEST, entry.data.get(CONF_BUS_DEST, "")),

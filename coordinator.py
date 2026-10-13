@@ -17,6 +17,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
+from .ids import pick_leave
 from .const import (
     ALERTS_URL,
     ARRIVALS_URL,
@@ -1085,13 +1086,10 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         next_s = south[0] if south else None
         next_n = north[0] if north else None
-        next_c = commute[0] if commute else None
+        leave, next_c = pick_leave(commute, self.walk, now)
         next_bus = buses[0] if buses else None
         if isinstance(next_bus, dict):
             next_bus = {key: value for key, value in next_bus.items() if key != "sched_dt"}
-        leave = None
-        if next_c and next_c.get("depart_dt"):
-            leave = minutes_until(next_c["depart_dt"] - timedelta(minutes=self.walk), now)
 
         worst = 0
         for row in north + south:

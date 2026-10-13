@@ -15,6 +15,7 @@ from homeassistant.helpers.entity_registry import async_get as async_get_entity_
 
 from .const import DOMAIN
 from .coordinator import SeptaCoordinator, slug
+from .ids import stable_unique_id
 from .sensor import _device_model, _rider_specs
 from .ride import write_state_on_loop
 
@@ -91,11 +92,10 @@ class SeptaRidingBinarySensor(BinarySensorEntity):
     def __init__(self, coordinator: SeptaCoordinator) -> None:
         self.coordinator = coordinator
         station = coordinator.station
-        dest = coordinator.destination
-        self._attr_unique_id = f"{slug(station)}_{slug(dest)}_riding"
+        self._attr_unique_id = stable_unique_id(coordinator.entry.entry_id, "riding")
         self.entity_id = f"binary_sensor.septa_{slug(station)}_riding"
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, f"{slug(station)}_{slug(dest)}")},
+            identifiers={(DOMAIN, coordinator.entry.entry_id)},
             name=f"SEPTA {station}",
             manufacturer="SEPTA",
             model=_device_model(coordinator),
@@ -136,10 +136,8 @@ class SeptaRiderBinarySensor(SeptaRidingBinarySensor):
 
     def __init__(self, coordinator: SeptaCoordinator, spec: dict) -> None:
         super().__init__(coordinator)
-        station = coordinator.station
-        dest = coordinator.destination
         self._spec = spec
-        self._attr_unique_id = f"{slug(station)}_{slug(dest)}_riding_{spec['slug']}"
+        self._attr_unique_id = stable_unique_id(coordinator.entry.entry_id, f"riding_{spec['slug']}")
         self.entity_id = f"binary_sensor.septa_riding_{spec['slug']}"
         self._attr_name = f"Riding {spec['slug'].replace('_', ' ').title()}"
 

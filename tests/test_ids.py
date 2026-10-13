@@ -1,0 +1,133 @@
+"""Entity id stability. No Home Assistant required."""
+
+from __future__ import annotations
+
+import importlib.util
+import sys
+from datetime import datetime, timedelta
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load():
+    spec = importlib.util.spec_from_file_location("septa_ids", ROOT / "ids.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["septa_ids"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+ids = _load()
+canonical_entity_id = ids.canonical_entity_id
+legacy_key = ids.legacy_key
+pick_leave = ids.pick_leave
+plan_registry_migration = ids.plan_registry_migration
+stable_unique_id = ids.stable_unique_id
+
+
+def test_unique_id_ignores_destination():
+    first = stable_unique_id("abc", "my_train")
+    second = stable_unique_id("abc", "my_train")
+    assert first == second == "abc_my_train"
+    assert "jefferson" not in first
+    assert "suburban" not in first
+    assert canonical_entity_id("sensor", "Lansdale", "south") == "sensor.septa_lansdale_next_southbound"
+    assert canonical_entity_id("sensor", "Lansdale", "my_train") == "sensor.septa_lansdale_my_train"
+    assert canonical_entity_id("binary_sensor", "Lansdale", "riding") == "binary_sensor.septa_lansdale_riding"
+    assert canonical_entity_id("sensor", "Lansdale", "riders_count") == "sensor.septa_riders_count"
+    assert canonical_entity_id("sensor", "Lansdale", "my_train_sam") == "sensor.septa_my_train_sam"
+
+
+def test_registry_with_suffix_2_migrates_back():
+    items = [
+        {
+            "unique_id": "lansdale_jefferson_station_leave_in",
+            "entity_id": "sensor.septa_lansdale_leave_in",
+            "domain": "sensor",
+        },
+        {
+            "unique_id": "lansdale_suburban_station_leave_in",
+            "entity_id": "sensor.septa_lansdale_leave_in_2",
+            "domain": "sensor",
+        },
+        {
+            "unique_id": "lansdale_suburban_station_south",
+            "entity_id": "sensor.septa_lansdale_next_inbound",
+            "domain": "sensor",
+        },
+        {
+            "unique_id": "lansdale_suburban_station_my_train",
+            "entity_id": "sensor.septa_lansdale_my_train_2",
+            "domain": "sensor",
+        },
+        {
+            "unique_id": "lansdale_suburban_station_riding",
+            "entity_id": "binary_sensor.septa_lansdale_riding_2",
+            "domain": "binary_sensor",
+        },
+        {
+            "unique_id": "lansdale_suburban_station_my_train_brandon",
+            "entity_id": "sensor.septa_my_train_brandon_2",
+            "domain": "sensor",
+        },
+        {
+            "unique_id": "lansdale_suburban_station_riding_rachael",
+            "entity_id": "binary_sensor.septa_riding_rachael_2",
+            "domain": "binary_sensor",
+        },
+        {
+            "unique_id": "lansdale_suburban_station_riders_count",
+            "entity_id": "sensor.septa_riders_count_2",
+            "domain": "sensor",
+        },
+        {
+            "unique_id": "lansdale_jefferson_station_status",
+            "entity_id": "sensor.my_custom_status",
+            "domain": "sensor",
+        },
+    ]
+    actions = plan_registry_migration("abc", "Lansdale", items)
+    removed = {item["entity_id"] for item in actions if item["op"] == "remove"}
+    renamed = {item["entity_id"]: item["new_entity_id"] for item in actions if item["op"] == "rename"}
+    unique = {item["entity_id"]: item["unique_id"] for item in actions if item["op"] == "unique_id"}
+    assert "sensor.septa_lansdale_leave_in_2" in removed
+    assert "sensor.septa_lansdale_leave_in" not in removed
+    assert unique["sensor.septa_lansdale_leave_in"] == "abc_leave_in"
+    assert renamed["sensor.septa_lansdale_next_inbound"] == "sensor.septa_lansdale_next_southbound"
+    assert renamed["sensor.septa_lansdale_my_train_2"] == "sensor.septa_lansdale_my_train"
+    assert renamed["binary_sensor.septa_lansdale_riding_2"] == "binary_sensor.septa_lansdale_riding"
+    assert renamed["sensor.septa_my_train_brandon_2"] == "sensor.septa_my_train_brandon"
+    assert renamed["binary_sensor.septa_riding_rachael_2"] == "binary_sensor.septa_riding_rachael"
+    assert renamed["sensor.septa_riders_count_2"] == "sensor.septa_riders_count"
+    assert "sensor.my_custom_status" not in renamed
+    assert unique["sensor.my_custom_status"] == "abc_status"
+    assert legacy_key("abc_my_train") == "my_train"
+
+
+def test_adding_a_rider_does_not_change_existing_ids():
+    before = {
+        "my_train": stable_unique_id("abc", "my_train"),
+        "riding": stable_unique_id("abc", "riding"),
+        "south": stable_unique_id("abc", "south"),
+    }
+    after = dict(before)
+    after["riding_sam"] = stable_unique_id("abc", "riding_sam")
+    assert after["my_train"] == before["my_train"]
+    assert after["riding"] == before["riding"]
+    assert after["south"] == before["south"]
+    changed_dest = stable_unique_id("abc", "leave_in")
+    assert changed_dest == stable_unique_id("abc", "leave_in")
+
+
+def test_leave_in_is_never_negative():
+    now = datetime(2026, 10, 12, 8, 0)
+    gone = {"depart_dt": now - timedelta(minutes=5), "train_id": "1"}
+    later = {"depart_dt": now + timedelta(minutes=20), "train_id": "2"}
+    mins, row = pick_leave([gone, later], 8, now)
+    assert mins == 12
+    assert row["train_id"] == "2"
+    mins, row = pick_leave([gone], 8, now)
+    assert mins == 0
+    assert row["train_id"] == "1"
+    assert pick_leave([], 8, now) == (None, None)
