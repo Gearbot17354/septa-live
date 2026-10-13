@@ -94,6 +94,7 @@ class RiderController:
         self._remaining_source = ""
         self._rr_train = ""
         self._rr_ts = 0.0
+        self._rr_raw: list[dict] | None = None
         self.apply_tuning()
 
     def signal(self) -> str:
@@ -137,7 +138,10 @@ class RiderController:
 
     def attributes(self) -> dict:
         payload = self.matcher.payload()
-        payload["remaining_stops"] = list(self._remaining) if self.matcher.riding else []
+        remaining = list(self._remaining) if self.matcher.riding else []
+        payload["remaining_stops"] = remaining
+        if self.matcher.riding and remaining:
+            payload["next_stop"] = remaining[0].get("station") or payload.get("next_stop")
         payload["remaining_source"] = self._remaining_source if self.matcher.riding else None
         payload["tracker"] = self._resolved or self._tracker_hint or self._configured or None
         payload["last_fix"] = _iso(self.matcher.last_fix.ts) if self.matcher.last_fix else None
@@ -336,34 +340,52 @@ class RiderController:
             self._remaining = []
             self._remaining_source = ""
             self._rr_train = ""
+            self._rr_raw = None
             return
         now = time.time()
-        if not force and self._rr_train == train.trainno and now - self._rr_ts < 60 and self._remaining:
-            return
-        rows: list[dict] | None = None
-        try:
-            raw = await self.coordinator._get(RRSCHEDULES_URL, {"req1": train.trainno})
-            if isinstance(raw, dict):
-                for value in raw.values():
-                    if isinstance(value, list):
-                        raw = value
-                        break
-            rows = remaining_stops(raw)
-        except Exception:  # noqa: BLE001
-            _LOGGER.debug("RRSchedules failed for train %s", train.trainno)
-            rows = None
-        if rows:
-            self._remaining = rows
+        fetch = (
+            force
+            or self._rr_train != train.trainno
+            or self._rr_raw is None
+            or now - self._rr_ts >= 60
+        )
+        if fetch:
+            raw_rows: list[dict] | None = None
+            try:
+                raw = await self.coordinator._get(RRSCHEDULES_URL, {"req1": train.trainno})
+                if isinstance(raw, dict):
+                    for value in raw.values():
+                        if isinstance(value, list):
+                            raw = value
+                            break
+                if isinstance(raw, list):
+                    raw_rows = [row for row in raw if isinstance(row, dict)]
+            except Exception:  # noqa: BLE001
+                _LOGGER.debug("RRSchedules failed for train %s", train.trainno)
+                raw_rows = None
+            if raw_rows:
+                self._rr_raw = raw_rows
+                self._rr_train = train.trainno
+                self._rr_ts = now
+            elif self._rr_train != train.trainno:
+                self._rr_raw = None
+                self._rr_train = train.trainno
+                self._rr_ts = 0.0
+        if self._rr_raw:
+            self._remaining = remaining_stops(self._rr_raw, train.currentstop, train.nextstop)
             self._remaining_source = "rrschedules"
-        else:
-            now_ny = datetime.now(NY)
-            minutes = now_ny.hour * 60 + now_ny.minute
-            self._remaining = remaining_from_timetable(
-                cached_schedule(), train.trainno, now_ny.weekday(), minutes
-            )
-            self._remaining_source = "timetable"
-        self._rr_train = train.trainno
-        self._rr_ts = now
+            return
+        now_ny = datetime.now(NY)
+        minutes = now_ny.hour * 60 + now_ny.minute
+        self._remaining = remaining_from_timetable(
+            cached_schedule(),
+            train.trainno,
+            now_ny.weekday(),
+            minutes,
+            train.currentstop,
+            train.nextstop,
+        )
+        self._remaining_source = "timetable"
 
     async def _on_fast(self, now) -> None:
         try:
@@ -404,6 +426,8 @@ class RiderController:
             if isinstance(data.get("boarded_time"), (int, float)):
                 data["boarded_time"] = _iso(data["boarded_time"])
             data["remaining_stops"] = list(self._remaining)
+            if self._remaining:
+                data["next_stop"] = self._remaining[0].get("station") or data.get("next_stop")
             data["remaining_source"] = self._remaining_source or None
             data["tracker"] = self._resolved or self._tracker_hint or self._configured or None
             data["rider"] = self.slug

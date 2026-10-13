@@ -191,6 +191,98 @@ def test_remaining_stops_filter_actual_times():
     assert again[0]["station"] != target
 
 
+def _train_6581():
+    real = {
+        "Chalfont",
+        "Link Belt",
+        "Fortuna",
+        "9TH Street Lansdale",
+        "Lansdale",
+        "North Wales",
+        "Penllyn",
+        "Ambler",
+        "Fort Washington",
+    }
+    names = [
+        "Doylestown",
+        "Delaware Valley College",
+        "New Britain",
+        "Chalfont",
+        "Link Belt",
+        "Fortuna",
+        "Colmar",
+        "Pennbrook",
+        "Lansdale",
+        "9TH Street Lansdale",
+        "North Wales",
+        "Penllyn",
+        "Gwynedd Valley",
+        "Ambler",
+        "Fort Washington",
+        "Temple University",
+        "Jefferson Station",
+        "Suburban Station",
+        "Gray 30th Street",
+    ]
+    return [
+        {"station": name, "sched_tm": "7:00 am", "est_tm": "7:08 am", "act_tm": "7:08 am" if name in real else "na"}
+        for name in names
+    ]
+
+
+def test_remaining_stops_6581_starts_after_current():
+    rows = _train_6581()
+    pending = R.remaining_stops(rows, "Fort Washington", "Temple University")
+    assert [row["station"] for row in pending] == [
+        "Temple University",
+        "Jefferson Station",
+        "Suburban Station",
+        "Gray 30th Street",
+    ]
+    assert pending[0]["station"] == "Temple University"
+    assert pending[0]["sched"] == "7:00 am"
+
+
+def test_remaining_stops_falls_back_to_last_actual():
+    rows = _train_6581()
+    pending = R.remaining_stops(rows, "Not A Stop")
+    assert pending[0]["station"] == "Temple University"
+
+
+def test_remaining_stops_not_departed_keeps_the_list():
+    rows = [
+        {"station": "Doylestown", "sched_tm": "6:00 am", "est_tm": "6:00 am", "act_tm": "na"},
+        {"station": "Lansdale", "sched_tm": "6:20 am", "est_tm": "6:20 am", "act_tm": ""},
+        {"station": "Temple University", "sched_tm": "7:00 am", "est_tm": "7:00 am", "act_tm": "na"},
+    ]
+    pending = R.remaining_stops(rows)
+    assert [row["station"] for row in pending] == ["Doylestown", "Lansdale", "Temple University"]
+
+
+def test_timetable_remaining_starts_after_current():
+    schedule = {
+        "stations": {
+            "Doylestown": {"S": [{"t": "06:10", "n": "6581", "days": 127}]},
+            "Fort Washington": {"S": [{"t": "06:40", "n": "6581", "days": 127}]},
+            "Temple University": {"S": [{"t": "07:05", "n": "6581", "days": 127}]},
+            "Gray 30th Street": {"S": [{"t": "07:20", "n": "6581", "days": 127}]},
+        }
+    }
+    pending = R.remaining_from_timetable(schedule, "6581", 0, 7 * 60, "Fort Washington", "Temple University")
+    assert [row["station"] for row in pending] == ["Temple University", "Gray 30th Street"]
+    assert pending[0]["station"] == "Temple University"
+
+
+def test_stop_name_normalisation():
+    rows = _train_6581()
+    by_current = R.remaining_stops(rows, "Fort Washington Station")
+    by_gray = R.remaining_stops(rows, "30th Street Gray")
+    assert by_current[0]["station"] == "Temple University"
+    assert by_gray == []
+    aligned = R.remaining_stops(rows, "Ambler", "temple university station")
+    assert aligned[0]["station"] == "Temple University"
+
+
 def test_parse_trainview_sample():
     rows = json.loads((FIX / "trainview_sample.json").read_text())
     trains = R.parse_trainview(rows)

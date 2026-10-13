@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import threading
 import traceback
 from dataclasses import dataclass, field
@@ -189,24 +190,64 @@ def parse_trainview(rows: object) -> list[Train]:
     return [train for train in out if train.trainno]
 
 
-def remaining_stops(rows: object) -> list[dict]:
-    """RRSchedules rows that have not been passed (`act_tm == na`)."""
+def _stop_key(name: object) -> str:
+    """Compare stop names. 'Gray 30th Street' matches '30th Street Gray'."""
+    text = re.sub(r"[^a-z0-9]+", " ", str(name or "").lower())
+    text = re.sub(r"\bstation\b", " ", text)
+    return " ".join(sorted(tok for tok in text.split() if tok))
+
+
+def _passed_act(value: object) -> bool:
+    act = str(value or "").strip().lower()
+    return bool(act) and act not in {"na", "n/a", "null", "none"}
+
+
+def _pack_stop(row: dict) -> dict:
+    return {
+        "station": str(row.get("station") or ""),
+        "sched": str(row.get("sched_tm") or row.get("sched") or ""),
+        "est": str(row.get("est_tm") or row.get("est") or ""),
+    }
+
+
+def _cut_index(rows: list[dict], currentstop: str | None) -> int | None:
+    """Last stop the train has already reached. None means it has not departed."""
+    want = _stop_key(currentstop)
+    if want:
+        for index, row in enumerate(rows):
+            if _stop_key(row.get("station")) == want:
+                return index
+    last = None
+    for index, row in enumerate(rows):
+        if _passed_act(row.get("act_tm")):
+            last = index
+    return last
+
+
+def align_remaining(rows: list[dict], nextstop: str | None) -> list[dict]:
+    """Start the list at TrainView's next stop when that stop is still ahead."""
+    want = _stop_key(nextstop)
+    if not want:
+        return rows
+    for index, row in enumerate(rows):
+        if _stop_key(row.get("station")) == want:
+            return rows[index:]
+    return rows
+
+
+def remaining_stops(rows: object, currentstop: str | None = None, nextstop: str | None = None) -> list[dict]:
+    """Stops after the train's current position, in schedule order.
+
+    A blank act_tm does not mean the train has not been there. SEPTA leaves
+    act_tm as "na" on stops the train already passed.
+    """
     if not isinstance(rows, list):
         return []
-    out: list[dict] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        if str(row.get("act_tm") or "").strip().lower() != "na":
-            continue
-        out.append(
-            {
-                "station": str(row.get("station") or ""),
-                "sched": str(row.get("sched_tm") or ""),
-                "est": str(row.get("est_tm") or ""),
-            }
-        )
-    return out
+    clean = [row for row in rows if isinstance(row, dict)]
+    cut = _cut_index(clean, currentstop)
+    start = 0 if cut is None else cut + 1
+    pending = [_pack_stop(row) for row in clean[start:]]
+    return align_remaining(pending, nextstop)
 
 
 def weekday_bit(weekday: int) -> int:
@@ -219,6 +260,8 @@ def remaining_from_timetable(
     trainno: str,
     weekday: int,
     after_minutes: int | None = None,
+    currentstop: str | None = None,
+    nextstop: str | None = None,
 ) -> list[dict]:
     """Stop order for a train number from the bundled timetable."""
     stations = (schedule or {}).get("stations") if isinstance(schedule, dict) else None
@@ -248,9 +291,18 @@ def remaining_from_timetable(
                     continue
                 found.append((mins, str(name), clock))
     found.sort()
-    if after_minutes is not None:
+    matched = False
+    if _stop_key(currentstop):
+        needle = _stop_key(currentstop)
+        for index, row in enumerate(found):
+            if _stop_key(row[1]) == needle:
+                found = found[index + 1 :]
+                matched = True
+                break
+    if not matched and after_minutes is not None:
         found = [row for row in found if row[0] >= after_minutes]
-    return [{"station": name, "sched": clock, "est": clock} for _, name, clock in found]
+    pending = [{"station": name, "sched": clock, "est": clock} for _, name, clock in found]
+    return align_remaining(pending, nextstop)
 
 
 def project_position(

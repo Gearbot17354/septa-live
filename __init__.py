@@ -53,7 +53,7 @@ _FRONTEND = f"{DOMAIN}_frontend_registered"
 _CARD_JS = "septa-live-card.js"
 _PANEL_JS = "septa-live-panel.js"
 _PANEL_PATH = "septa-live"
-_CARD_VERSION = "1.11.4"
+_CARD_VERSION = "1.11.5"
 _PANEL_SIG: tuple | None = None
 _RELOADING: set[str] = set()
 
