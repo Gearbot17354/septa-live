@@ -12,7 +12,7 @@ This is a **custom repository** — the same way most community plugins are inst
 2. Open the three-dot menu → **Custom repositories**.
 3. Paste `https://github.com/Gearbot17354/septa-live`.
 4. Category: **Integration**.
-5. **Add**, then find **SEPTA Transit** and **Download** **1.10.3**. Restart Home Assistant after the update so the new ride code is the code that is running.
+5. **Add**, then find **SEPTA Transit** and **Download** **1.11.0**. Restart Home Assistant after the update so the new ride code is the code that is running.
 6. **Restart Home Assistant**.
 7. **Settings → Devices & Services → Add Integration → SEPTA Transit**.
 8. Pick a station (for example Lansdale) and a destination (Jefferson Station) used for the leave-now countdown.
@@ -26,7 +26,7 @@ Repo: [github.com/Gearbot17354/septa-live](https://github.com/Gearbot17354/septa
 If Add card still does not list SEPTA Transit, enable Advanced Mode in your profile, then **Settings → Dashboards → ⋮ → Resources → Add**:
 
 ```
-/local/septa-live-card.js?v=1.10.3
+/local/septa-live-card.js?v=1.11.0
 type: module
 ```
 
@@ -37,6 +37,16 @@ Hard-refresh the dashboard (or open it in a private window).
 After you restart, **SEPTA** shows up in the left menu. That page is the live board (inbound, outbound, bus, leave-in, and the departure list) plus setup for destination, walk time, and which services to poll.
 
 Turn the menu item off from the page (**Show in sidebar**) or from **Settings → Devices & Services → SEPTA Transit → Configure → Show SEPTA in the sidebar**. Turn it back on the same way. The page is always at `/septa-live` even when the menu item is hidden.
+
+## What's new in 1.11.0
+
+More than one person can be on a train at the same time. In the integration options, **People and phones on the train** takes `person.ryan`, `person.rachael`, and `person.brandon` (or their phone trackers). A person and that person's phone count as one rider.
+
+Ryan stays on the sensors you already have: `binary_sensor.septa_lansdale_riding` and `sensor.septa_lansdale_my_train`. Those keep their history. Rachael and Brandon get `binary_sensor.septa_riding_rachael`, `sensor.septa_my_train_rachael`, and the same for Brandon. `sensor.septa_riders_count` is how many of them are aboard, and its `trains` attribute shows when two people are on the same train.
+
+Each person has a separate matcher. Train positions are fetched once and shared. If you only had a phone tracker set, it is treated as the first rider until you open options.
+
+The bundled timetable file ends October 17, 2026. After that date the integration logs a warning and the timetable fallback can be stale until that file is replaced. Live TrainView matching does not use it.
 
 ## What's new in 1.10.3
 

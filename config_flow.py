@@ -20,6 +20,7 @@ from .const import (
     CONF_RIDE_MIN_SPEED,
     CONF_RIDE_RADIUS,
     CONF_RIDE_REQUEST,
+    CONF_RIDE_RIDERS,
     CONF_RIDE_TRACKER,
     CONF_SCAN,
     CONF_SHOW_BUS,
@@ -47,6 +48,7 @@ from .const import (
     STATIONS,
 )
 from .coordinator import slug
+from .ride import configured_riders
 
 STATION_SELECTOR = selector(
     {
@@ -60,6 +62,7 @@ STATION_SELECTOR = selector(
 TEXT_SELECTOR = selector({"text": {}})
 BOOL_SELECTOR = selector({"boolean": {}})
 TRACKER_SELECTOR = selector({"entity": {"domain": ["device_tracker", "person"]}})
+RIDERS_SELECTOR = selector({"entity": {"domain": ["person", "device_tracker"], "multiple": True}})
 ACTIVITY_SELECTOR = selector({"entity": {"domain": "sensor"}})
 
 
@@ -129,10 +132,15 @@ class SeptaOptionsFlow(config_entries.OptionsFlow):
         entry = self.config_entry
         if user_input is not None:
             merged = {**entry.options, **user_input}
-            tracker = str(merged.get(CONF_RIDE_TRACKER) or "").strip()
-            if tracker:
-                merged[CONF_RIDE_TRACKER] = tracker
+            riders = merged.get(CONF_RIDE_RIDERS) or []
+            if isinstance(riders, str):
+                riders = [part.strip() for part in riders.split(",") if part.strip()]
+            riders = [str(item).strip() for item in riders if str(item).strip()]
+            if riders:
+                merged[CONF_RIDE_RIDERS] = riders
+                merged[CONF_RIDE_TRACKER] = riders[0]
             else:
+                merged.pop(CONF_RIDE_RIDERS, None)
                 merged.pop(CONF_RIDE_TRACKER, None)
             activity = str(merged.get(CONF_RIDE_ACTIVITY) or "").strip()
             if activity:
@@ -140,12 +148,10 @@ class SeptaOptionsFlow(config_entries.OptionsFlow):
             else:
                 merged.pop(CONF_RIDE_ACTIVITY, None)
             return self.async_create_entry(title="", data=merged)
-        current_tracker = str(
-            entry.options.get(CONF_RIDE_TRACKER, entry.data.get(CONF_RIDE_TRACKER, "")) or ""
-        ).strip()
-        tracker_key = vol.Optional(
-            CONF_RIDE_TRACKER,
-            description={"suggested_value": current_tracker} if current_tracker else {},
+        current_riders = configured_riders(entry.options, entry.data)
+        riders_key = vol.Optional(
+            CONF_RIDE_RIDERS,
+            description={"suggested_value": current_riders} if current_riders else {},
         )
         schema = vol.Schema(
             {
@@ -205,7 +211,7 @@ class SeptaOptionsFlow(config_entries.OptionsFlow):
                     CONF_SIDEBAR,
                     default=_flag(entry, CONF_SIDEBAR, True),
                 ): BOOL_SELECTOR,
-                tracker_key: TRACKER_SELECTOR,
+                riders_key: RIDERS_SELECTOR,
                 vol.Optional(
                     CONF_RIDE_ACTIVITY,
                     description={

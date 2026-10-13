@@ -16,3 +16,8 @@ simulate_ride:
       name: TrainView rows
       selector:
         object:
+    rider:
+      name: Rider
+      description: Person, tracker, or slug. Blank uses the primary rider. Does not change live state.
+      selector:
+        text:

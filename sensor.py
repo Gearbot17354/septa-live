@@ -17,6 +17,7 @@ from homeassistant.helpers.entity_registry import async_get as async_get_entity_
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import CONF_RIDE_TRACKER, DOMAIN
+from .ride import configured_riders, dedupe_riders
 from .coordinator import NY, SeptaCoordinator, slug
 from .ride import write_state_on_loop
 
@@ -47,7 +48,10 @@ def _stabilize_entity_ids(hass: HomeAssistant, entry: ConfigEntry, coordinator: 
         uid = item.unique_id or ""
         if not uid.startswith(prefix):
             continue
-        desired = _entity_id(coordinator.station, uid[len(prefix) :])
+        key = uid[len(prefix) :]
+        if key == "riders_count" or key.startswith("my_train_"):
+            continue
+        desired = _entity_id(coordinator.station, key)
         stable = f"sensor.septa_{slug(coordinator.station)}_"
         if item.entity_id == desired or item.entity_id.startswith(stable):
             continue
@@ -107,8 +111,14 @@ def _wanted_entities(coordinator: SeptaCoordinator) -> list[SensorEntity]:
         else:
             entities.append(SeptaLineSensor(coordinator, watch))
     entities.append(SeptaMapSensor(coordinator))
-    if _ride_tracker_set(coordinator):
+    specs = _rider_specs(coordinator)
+    if specs:
         entities.append(SeptaMyTrainSensor(coordinator))
+        entities.append(SeptaRidersCountSensor(coordinator))
+        for spec in specs:
+            if spec.get("primary"):
+                continue
+            entities.append(SeptaRiderTrainSensor(coordinator, spec))
     return entities
 
 
@@ -516,11 +526,24 @@ class SeptaMapSensor(_Base):
         }
 
 
+def _rider_specs(coordinator: SeptaCoordinator) -> list[dict]:
+    ride = getattr(coordinator, "ride", None)
+    if ride is not None and getattr(ride, "riders", None):
+        return [
+            {
+                "key": rider.key,
+                "slug": rider.slug,
+                "person": rider.person,
+                "configured": rider._configured,
+                "primary": rider.is_primary,
+            }
+            for rider in ride.riders.values()
+        ]
+    return dedupe_riders(configured_riders(coordinator.entry.options, coordinator.entry.data), {})
+
+
 def _ride_tracker_set(coordinator: SeptaCoordinator) -> bool:
-    raw = coordinator.entry.options.get(
-        CONF_RIDE_TRACKER, coordinator.entry.data.get(CONF_RIDE_TRACKER, "")
-    )
-    return bool(str(raw or "").strip())
+    return bool(_rider_specs(coordinator))
 
 
 class SeptaMyTrainSensor(_Base):
@@ -560,3 +583,78 @@ class SeptaMyTrainSensor(_Base):
     @callback
     def _on_ride(self, _payload=None) -> None:
         write_state_on_loop(self.hass, self.async_write_ha_state)
+
+
+class SeptaRiderTrainSensor(SeptaMyTrainSensor):
+    """My Train for a rider who is not the primary. Primary keeps sensor.septa_<station>_my_train."""
+
+    def __init__(self, coordinator: SeptaCoordinator, spec: dict) -> None:
+        _Base.__init__(self, coordinator, f"my_train_{spec['slug']}")
+        self._spec = spec
+        self.entity_id = f"sensor.septa_my_train_{spec['slug']}"
+        self._attr_name = f"My train {spec['slug'].replace('_', ' ').title()}"
+
+    @property
+    def suggested_object_id(self) -> str:
+        return f"septa_my_train_{self._spec['slug']}"
+
+    def _rider(self):
+        ride = getattr(self.coordinator, "ride", None)
+        if ride is None:
+            return None
+        for rider in ride.riders.values():
+            if rider.slug == self._spec["slug"] and not rider.is_primary:
+                return rider
+        return None
+
+    def _ride(self) -> dict[str, Any]:
+        rider = self._rider()
+        return rider.attributes() if rider is not None else {}
+
+    async def async_added_to_hass(self) -> None:
+        await SensorEntity.async_added_to_hass(self)
+        rider = self._rider()
+        if rider is None:
+            return
+        self.async_on_remove(async_dispatcher_connect(self.hass, rider.signal(), self._on_ride))
+
+
+class SeptaRidersCountSensor(_Base):
+    """How many configured people are on a train right now."""
+
+    _attr_name = "Riders on a train"
+    _attr_icon = "mdi:account-group"
+
+    def __init__(self, coordinator: SeptaCoordinator) -> None:
+        super().__init__(coordinator, "riders_count")
+        self.entity_id = "sensor.septa_riders_count"
+
+    @property
+    def suggested_object_id(self) -> str:
+        return "septa_riders_count"
+
+    def _summary(self) -> dict[str, Any]:
+        ride = getattr(self.coordinator, "ride", None)
+        if ride is None:
+            return {"count": 0, "riding": [], "riders": [], "trains": {}}
+        return ride.summary()
+
+    @property
+    def native_value(self) -> int:
+        return int(self._summary().get("count") or 0)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self._summary()
+        return {
+            "riding": data.get("riding") or [],
+            "riders": data.get("riders") or [],
+            "trains": data.get("trains") or {},
+        }
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        ride = getattr(self.coordinator, "ride", None)
+        if ride is None:
+            return
+        self.async_on_remove(async_dispatcher_connect(self.hass, ride.summary_signal(), self._on_ride))

@@ -52,7 +52,7 @@ _FRONTEND = f"{DOMAIN}_frontend_registered"
 _CARD_JS = "septa-live-card.js"
 _PANEL_JS = "septa-live-panel.js"
 _PANEL_PATH = "septa-live"
-_CARD_VERSION = "1.10.3"
+_CARD_VERSION = "1.11.0"
 _PANEL_SIG: tuple | None = None
 _RELOADING: set[str] = set()
 
@@ -82,8 +82,10 @@ def _register_simulate(hass: HomeAssistant) -> None:
         coordinator = (hass.data.get(DOMAIN) or {}).get(call.data.get("entry_id"))
         kwargs = {"radius_m": 300, "min_speed_mps": 15 * 0.44704, "need_matches": 2, "max_accuracy_m": 100}
         before = None
+        matcher = None
         if coordinator is not None and getattr(coordinator, "ride", None) is not None:
-            matcher = coordinator.ride.matcher
+            rider = coordinator.ride.rider_for(call.data.get("rider"))
+            matcher = rider.matcher if rider is not None else coordinator.ride.matcher
             kwargs = {
                 "radius_m": matcher.radius_m,
                 "min_speed_mps": matcher.min_speed_mps,
@@ -91,7 +93,7 @@ def _register_simulate(hass: HomeAssistant) -> None:
                 "max_accuracy_m": matcher.max_accuracy_m,
                 "preferred_line": matcher.preferred_line,
             }
-            before = (matcher.riding, matcher.match_count, matcher.last_reason)
+            before = (matcher.riding, matcher.match_count, matcher.last_reason, id(matcher))
         trains = []
         for item in call.data.get("trainview") or []:
             if not isinstance(item, dict):
@@ -132,9 +134,8 @@ def _register_simulate(hass: HomeAssistant) -> None:
                 }
             )
         result = replay_fixes(samples, **kwargs)
-        if before is not None and coordinator is not None:
-            matcher = coordinator.ride.matcher
-            if (matcher.riding, matcher.match_count, matcher.last_reason) != before:
+        if before is not None and matcher is not None:
+            if (matcher.riding, matcher.match_count, matcher.last_reason, id(matcher)) != before:
                 _LOGGER.error("SEPTA simulate_ride changed the live matcher")
         return result
 
@@ -144,6 +145,7 @@ def _register_simulate(hass: HomeAssistant) -> None:
                 vol.Required("entry_id"): str,
                 vol.Required("fixes"): [dict],
                 vol.Optional("trainview"): [dict],
+                vol.Optional("rider"): str,
             }
         )
     }
@@ -154,6 +156,12 @@ def _register_simulate(hass: HomeAssistant) -> None:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.async_add_executor_job(_load_schedule)
+    from datetime import date
+
+    if date.today() >= date(2026, 10, 17):
+        _LOGGER.warning(
+            "SEPTA bundled rail schedule ended 2026-10-17. Timetable fallback may be stale until rail-schedule.json is replaced"
+        )
     await _async_register_lovelace_cards(hass)
     coordinator = SeptaCoordinator(hass, entry)
     from .ride_ha import RideController
@@ -162,6 +170,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinator.async_config_entry_first_refresh()
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     coordinator.sidebar_on = _sidebar_enabled(entry)
+    try:
+        await coordinator.ride.async_start()
+    except Exception:  # noqa: BLE001
+        _LOGGER.exception("SEPTA ride tracker did not start")
+    entry.async_on_unload(coordinator.ride.async_stop)
 
     def _push() -> None:
         hass.bus.async_fire("septa_live_updated", {"entry_id": entry.entry_id})
@@ -169,11 +182,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator.async_add_listener(_push)
     entry.async_on_unload(lambda: coordinator.async_remove_listener(_push))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    try:
-        await coordinator.ride.async_start()
-    except Exception:  # noqa: BLE001
-        _LOGGER.exception("SEPTA ride tracker did not start")
-    entry.async_on_unload(coordinator.ride.async_stop)
     entry.async_on_unload(entry.add_update_listener(_async_entry_updated))
     await _async_sync_panel(hass)
     return True
@@ -631,6 +639,12 @@ async def _apply_saved_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
         finally:
             _RELOADING.discard(entry.entry_id)
         return
+    ride = getattr(coordinator, "ride", None)
+    if ride is not None:
+        try:
+            await ride.async_reconfigure()
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("SEPTA ride reconfigure failed")
     from .sensor import async_sync_sensors
 
     try:
@@ -643,12 +657,6 @@ async def _apply_saved_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
         await async_sync_binary_sensors(coordinator)
     except Exception:  # noqa: BLE001
         _LOGGER.exception("SEPTA riding sensor sync failed")
-    ride = getattr(coordinator, "ride", None)
-    if ride is not None:
-        try:
-            await ride.async_reconfigure()
-        except Exception:  # noqa: BLE001
-            _LOGGER.exception("SEPTA ride reconfigure failed")
     show = _sidebar_enabled(entry)
     if show != bool(coordinator.sidebar_on):
         coordinator.sidebar_on = show

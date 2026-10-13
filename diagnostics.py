@@ -28,16 +28,37 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
     ride = getattr(coordinator, "ride", None) if coordinator is not None else None
     if ride is None:
         return {"ride": None}
-    matcher = ride.matcher
+    riders = []
+    for rider in getattr(ride, "riders", {}).values():
+        matcher = rider.matcher
+        riders.append(
+            {
+                "slug": rider.slug,
+                "person": rider.person,
+                "primary": rider.is_primary,
+                "ride": _redact(rider.attributes()),
+                "settings": {
+                    "radius_m": matcher.radius_m,
+                    "min_speed_mph": round(matcher.min_speed_mps / 0.44704, 1),
+                    "need_matches": matcher.need_matches,
+                    "max_accuracy_m": matcher.max_accuracy_m,
+                    "max_fix_age_s": matcher.max_fix_age_s,
+                    "preferred_line": matcher.preferred_line,
+                },
+                "reasons": list(matcher.reason_log),
+            }
+        )
+    primary = ride.matcher
     return {
         "ride": _redact(ride.attributes()),
+        "riders": riders,
         "settings": {
-            "radius_m": matcher.radius_m,
-            "min_speed_mph": round(matcher.min_speed_mps / 0.44704, 1),
-            "need_matches": matcher.need_matches,
-            "max_accuracy_m": matcher.max_accuracy_m,
-            "max_fix_age_s": matcher.max_fix_age_s,
-            "preferred_line": matcher.preferred_line,
+            "radius_m": primary.radius_m,
+            "min_speed_mph": round(primary.min_speed_mps / 0.44704, 1),
+            "need_matches": primary.need_matches,
+            "max_accuracy_m": primary.max_accuracy_m,
+            "max_fix_age_s": primary.max_fix_age_s,
+            "preferred_line": primary.preferred_line,
         },
-        "reasons": list(matcher.reason_log),
+        "reasons": list(primary.reason_log),
     }

@@ -332,6 +332,75 @@ def test_state_write_from_a_thread_is_scheduled():
     binary = (ROOT / "binary_sensor.py").read_text()
     assert "write_state_on_loop(self.hass, self.async_write_ha_state)" in sensor
     assert "write_state_on_loop(self.hass, self.async_write_ha_state)" in binary
-    box["ok"] = True
-    assert box["ok"]
+
+
+def test_old_tracker_option_is_the_primary_rider():
+    riders = R.configured_riders({}, {"ride_tracker": "device_tracker.ryans_iphone_2"})
+    assert riders == ["device_tracker.ryans_iphone_2"]
+    specs = R.dedupe_riders(
+        riders,
+        {"person.ryan": "device_tracker.ryans_iphone_2"},
+    )
+    assert specs[0]["slug"] == "ryan"
+    assert specs[0]["primary"] is True
+    assert specs[0]["person"] == "person.ryan"
+
+
+def test_person_and_their_phone_are_one_rider():
+    specs = R.dedupe_riders(
+        ["person.ryan", "device_tracker.ryans_iphone_2", "person.rachael", "person.brandon"],
+        {
+            "person.ryan": "device_tracker.ryans_iphone_2",
+            "person.rachael": "device_tracker.rachaels_iphone",
+            "person.brandon": "device_tracker.brandons_iphone",
+        },
+    )
+    assert [item["slug"] for item in specs] == ["ryan", "rachael", "brandon"]
+    assert sum(1 for item in specs if item["primary"]) == 1
+
+
+def test_two_riders_do_not_share_a_matcher():
+    ryan = _replay_iphone(0, 0, "near")
+    rachael = _replay_iphone(0, 0, "none")
+    assert ryan["riding"] is True
+    assert rachael["riding"] is False
+    summary = R.riders_summary(
+        [
+            {
+                "rider": "ryan",
+                "riding": True,
+                "train": "4302",
+                "person": "person.ryan",
+                "friendly_name_rider": "Ryan",
+                "line": "Lansdale/Doylestown",
+                "next_stop": "Penllyn",
+            },
+            {
+                "rider": "rachael",
+                "riding": True,
+                "train": "4302",
+                "person": "person.rachael",
+                "friendly_name_rider": "Rachael",
+                "line": "Lansdale/Doylestown",
+                "next_stop": "Penllyn",
+            },
+        ]
+    )
+    assert summary["count"] == 2
+    assert summary["trains"]["4302"] == ["ryan", "rachael"]
+
+
+def test_one_trainview_fetch_for_three_riders():
+    import asyncio
+
+    cache = R.TrainCache(15)
+
+    async def fetch():
+        return [{"trainno": "4302"}]
+
+    async def main():
+        await asyncio.gather(cache.get(1_000, fetch), cache.get(1_000, fetch), cache.get(1_001, fetch))
+
+    asyncio.run(main())
+    assert cache.fetches == 1
 

@@ -763,3 +763,117 @@ def _line_code(line: str | None) -> str | None:
         if name in text:
             return code
     return None
+
+
+def rider_object_id(entity_id: str) -> str:
+    text = str(entity_id or "").strip()
+    return text.split(".", 1)[1] if "." in text else text
+
+
+def configured_riders(options: dict | None, data: dict | None = None) -> list[str]:
+    """Riders from options. A missing list falls back to the old single tracker."""
+    options = options or {}
+    data = data or {}
+    if "ride_riders" in options:
+        raw = options.get("ride_riders")
+    elif "ride_riders" in data:
+        raw = data.get("ride_riders")
+    else:
+        raw = None
+    if raw is None:
+        tracker = str(options.get("ride_tracker") or data.get("ride_tracker") or "").strip()
+        return [tracker] if tracker else []
+    if isinstance(raw, str):
+        raw = [part.strip() for part in raw.split(",") if part.strip()]
+    return [str(item).strip() for item in (raw or []) if str(item).strip()]
+
+
+def dedupe_riders(entity_ids: list[str], person_to_tracker: dict[str, str] | None = None) -> list[dict]:
+    """One record per person. A person and that person's phone tracker count once."""
+    links = person_to_tracker or {}
+    tracker_to_person: dict[str, str] = {}
+    for person, tracker in links.items():
+        if person and tracker:
+            tracker_to_person.setdefault(str(tracker), str(person))
+    seen: set[str] = set()
+    out: list[dict] = []
+    for entity in entity_ids:
+        entity = str(entity or "").strip()
+        if not entity:
+            continue
+        if entity.startswith("person."):
+            person = entity
+            tracker = str(links.get(person) or "")
+            key = person
+        else:
+            tracker = entity
+            person = tracker_to_person.get(entity, "")
+            key = person or tracker
+        if key in seen:
+            continue
+        seen.add(key)
+        slug_source = person or tracker or entity
+        out.append(
+            {
+                "key": key,
+                "slug": rider_object_id(slug_source),
+                "configured": person or entity,
+                "person": person or None,
+                "tracker": tracker or None,
+                "primary": not out,
+            }
+        )
+    return out
+
+
+def riders_summary(rows: list[dict]) -> dict:
+    riding = []
+    trains: dict[str, list] = {}
+    for row in rows:
+        slug = row.get("rider")
+        if row.get("riding"):
+            riding.append(
+                {
+                    "rider": slug,
+                    "person": row.get("person"),
+                    "friendly_name": row.get("friendly_name_rider"),
+                    "train": row.get("train"),
+                    "line": row.get("line"),
+                    "next_stop": row.get("next_stop"),
+                }
+            )
+            train = row.get("train")
+            if train:
+                trains.setdefault(str(train), []).append(slug)
+        else:
+            pass
+    return {
+        "count": len(riding),
+        "riding": riding,
+        "riders": [row.get("rider") for row in rows],
+        "trains": trains,
+    }
+
+
+class TrainCache:
+    """One TrainView fetch shared by every rider."""
+
+    def __init__(self, ttl: float = 15) -> None:
+        self.ttl = ttl
+        self.rows: list = []
+        self.ts = 0.0
+        self.fetches = 0
+        self._lock = None
+
+    async def get(self, now: float, fetch):
+        import asyncio
+
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        async with self._lock:
+            if self.ts and now - self.ts < self.ttl:
+                return self.rows, self.ts
+            self.rows = await fetch()
+            self.fetches += 1
+            self.ts = now
+            return self.rows, self.ts

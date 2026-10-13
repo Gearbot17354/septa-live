@@ -13,21 +13,22 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity_registry import async_entries_for_config_entry
 from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
 
-from .const import CONF_RIDE_TRACKER, DOMAIN
+from .const import DOMAIN
 from .coordinator import SeptaCoordinator, slug
-from .sensor import _device_model
+from .sensor import _device_model, _rider_specs
 from .ride import write_state_on_loop
 
 
-def _tracker_set(coordinator: SeptaCoordinator) -> bool:
-    raw = coordinator.entry.options.get(CONF_RIDE_TRACKER, coordinator.entry.data.get(CONF_RIDE_TRACKER, ""))
-    return bool(str(raw or "").strip())
-
-
 def _wanted(coordinator: SeptaCoordinator) -> list[BinarySensorEntity]:
-    if not _tracker_set(coordinator):
+    specs = _rider_specs(coordinator)
+    if not specs:
         return []
-    return [SeptaRidingBinarySensor(coordinator)]
+    entities: list[BinarySensorEntity] = [SeptaRidingBinarySensor(coordinator)]
+    for spec in specs:
+        if spec.get("primary"):
+            continue
+        entities.append(SeptaRiderBinarySensor(coordinator, spec))
+    return entities
 
 
 async def async_setup_entry(
@@ -128,3 +129,40 @@ class SeptaRidingBinarySensor(BinarySensorEntity):
     @callback
     def _on_ride(self, _payload=None) -> None:
         write_state_on_loop(self.hass, self.async_write_ha_state)
+
+
+class SeptaRiderBinarySensor(SeptaRidingBinarySensor):
+    """Riding sensor for someone other than the primary rider."""
+
+    def __init__(self, coordinator: SeptaCoordinator, spec: dict) -> None:
+        super().__init__(coordinator)
+        station = coordinator.station
+        dest = coordinator.destination
+        self._spec = spec
+        self._attr_unique_id = f"{slug(station)}_{slug(dest)}_riding_{spec['slug']}"
+        self.entity_id = f"binary_sensor.septa_riding_{spec['slug']}"
+        self._attr_name = f"Riding {spec['slug'].replace('_', ' ').title()}"
+
+    @property
+    def suggested_object_id(self) -> str:
+        return f"septa_riding_{self._spec['slug']}"
+
+    def _rider(self):
+        ride = getattr(self.coordinator, "ride", None)
+        if ride is None:
+            return None
+        for rider in ride.riders.values():
+            if rider.slug == self._spec["slug"] and not rider.is_primary:
+                return rider
+        return None
+
+    def _ride(self) -> dict[str, Any]:
+        rider = self._rider()
+        return rider.attributes() if rider is not None else {}
+
+    async def async_added_to_hass(self) -> None:
+        await BinarySensorEntity.async_added_to_hass(self)
+        rider = self._rider()
+        if rider is None:
+            return
+        self.async_on_remove(async_dispatcher_connect(self.hass, rider.signal(), self._on_ride))

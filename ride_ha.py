@@ -36,10 +36,14 @@ from .coordinator import NY, _LINE_NAMES, cached_schedule
 from .ride import (
     Fix,
     RideMatcher,
+    TrainCache,
+    configured_riders,
+    dedupe_riders,
     haversine_m,
     parse_trainview,
     remaining_from_timetable,
     remaining_stops,
+    riders_summary,
     _line_code,
 )
 
@@ -61,20 +65,26 @@ def _norm(value: object) -> str:
     return "".join(ch for ch in str(value or "").lower() if ch.isalnum())
 
 
-class RideController:
-    """Subscribe to one phone tracker and publish ride state. Inert until a tracker is set."""
+class RiderController:
+    """One person, one matcher. Inert until that rider is configured."""
 
-    def __init__(self, hass: HomeAssistant, coordinator) -> None:
+    def __init__(self, hass: HomeAssistant, coordinator, manager, spec: dict) -> None:
         self.hass = hass
         self.coordinator = coordinator
+        self.manager = manager
         self.entry = coordinator.entry
         self.matcher = RideMatcher()
+        self.key = spec["key"]
+        self.slug = spec["slug"]
+        self.person = spec.get("person")
+        self.is_primary = bool(spec.get("primary"))
+        self._tracker_hint = spec.get("tracker") or ""
         self._unsubs: list = []
         self._watched: set[str] = set()
         self._fast_unsub = None
         self._subscribed = ""
-        self._configured = ""
-        self._resolved = ""
+        self._configured = spec["configured"]
+        self._resolved = self._tracker_hint if str(self._tracker_hint).startswith("device_tracker.") else ""
         self._zone_state = ""
         self._request_updates = False
         self._warned = False
@@ -84,9 +94,12 @@ class RideController:
         self._remaining_source = ""
         self._rr_train = ""
         self._rr_ts = 0.0
-        self._read_options()
+        self.apply_tuning()
 
     def signal(self) -> str:
+        return f"{DOMAIN}_ride_{self.entry.entry_id}_{self.slug}"
+
+    def legacy_signal(self) -> str:
         return f"{DOMAIN}_ride_{self.entry.entry_id}"
 
     def _activity_automotive(self) -> bool:
@@ -108,8 +121,7 @@ class RideController:
             return options[key]
         return self.entry.data.get(key, default)
 
-    def _read_options(self) -> None:
-        self._configured = str(self._pick(CONF_RIDE_TRACKER, "") or "").strip()
+    def apply_tuning(self) -> None:
         self._request_updates = bool(self._pick(CONF_RIDE_REQUEST, False))
         self.matcher.radius_m = float(self._pick(CONF_RIDE_RADIUS, DEFAULT_RIDE_RADIUS) or DEFAULT_RIDE_RADIUS)
         mph = float(self._pick(CONF_RIDE_MIN_SPEED, DEFAULT_RIDE_MIN_SPEED) or DEFAULT_RIDE_MIN_SPEED)
@@ -120,13 +132,23 @@ class RideController:
         )
         self.matcher.preferred_line = self._preferred_line()
 
+    def _read_options(self) -> None:
+        self.apply_tuning()
+
     def attributes(self) -> dict:
         payload = self.matcher.payload()
         payload["remaining_stops"] = list(self._remaining) if self.matcher.riding else []
         payload["remaining_source"] = self._remaining_source if self.matcher.riding else None
-        payload["tracker"] = self._resolved or self._configured or None
+        payload["tracker"] = self._resolved or self._tracker_hint or self._configured or None
         payload["last_fix"] = _iso(self.matcher.last_fix.ts) if self.matcher.last_fix else None
         payload["boarded_time"] = _iso(self.matcher.boarded_ts) if self.matcher.boarded_ts else None
+        payload["rider"] = self.slug
+        payload["person"] = self.person
+        person_state = self.hass.states.get(self.person) if self.person else None
+        payload["friendly_name_rider"] = getattr(person_state, "name", None) or self.slug
+        payload["entity_picture"] = None
+        if person_state is not None:
+            payload["entity_picture"] = person_state.attributes.get("entity_picture")
         return payload
 
     async def async_start(self) -> None:
@@ -163,23 +185,10 @@ class RideController:
         self._subscribed = ""
 
     async def async_reconfigure(self) -> None:
-        """Apply option changes without reloading the config entry."""
-        previous = self._subscribed
-        self._read_options()
-        if self._configured == previous:
-            self._push()
-            self._sync_fast()
-            return
-        self.async_stop()
-        self.matcher = RideMatcher()
-        self._remaining = []
-        self._remaining_source = ""
-        self._rr_train = ""
-        self._rr_ts = 0.0
-        self._warned = False
-        self._resolved = ""
-        self._read_options()
-        await self.async_start()
+        """Retune this rider without dropping a ride that is already in progress."""
+        self.apply_tuning()
+        self._push()
+        self._sync_fast()
 
     def _watch(self, entity_id: str) -> None:
         if not entity_id or entity_id in self._watched:
@@ -289,24 +298,37 @@ class RideController:
 
     async def _trains_for(self, fix: Fix) -> tuple[list, float]:
         now = time.time()
-        cached_ts = float(self.coordinator.trainview_ts or 0)
         accepted = _fix_accepted(fix, self.matcher)
-        if accepted and now - cached_ts >= 15 and now - self._last_extra >= 15:
-            if await self._fetch_trainview():
-                self._last_extra = now
-        rows = self.coordinator.trainview_rows or []
-        ts = float(self.coordinator.trainview_ts or now)
+
+        async def _fetch():
+            try:
+                raw = await self.coordinator._get(TRAINVIEW_URL, {})
+            except Exception:  # noqa: BLE001
+                _LOGGER.debug("SEPTA ride TrainView fetch failed")
+                return self.manager.train_cache.rows
+            return raw if isinstance(raw, list) else []
+
+        if accepted:
+            rows, ts = await self.manager.train_cache.get(now, _fetch)
+        else:
+            rows, ts = self.manager.train_cache.rows, self.manager.train_cache.ts or now
+        self.coordinator.trainview_rows = rows
+        self.coordinator.trainview_ts = ts
         return parse_trainview(rows), ts
 
     async def _fetch_trainview(self) -> bool:
+        rows, ts = await self.manager.train_cache.get(time.time(), self._pull_trainview)
+        self.coordinator.trainview_rows = rows
+        self.coordinator.trainview_ts = ts
+        return True
+
+    async def _pull_trainview(self):
         try:
             raw = await self.coordinator._get(TRAINVIEW_URL, {})
         except Exception:  # noqa: BLE001
             _LOGGER.debug("SEPTA ride TrainView fetch failed")
-            return False
-        self.coordinator.trainview_rows = raw if isinstance(raw, list) else []
-        self.coordinator.trainview_ts = time.time()
-        return True
+            return self.manager.train_cache.rows
+        return raw if isinstance(raw, list) else []
 
     async def _refresh_remaining(self, force: bool = False) -> None:
         train = self.matcher.riding_train
@@ -383,7 +405,9 @@ class RideController:
                 data["boarded_time"] = _iso(data["boarded_time"])
             data["remaining_stops"] = list(self._remaining)
             data["remaining_source"] = self._remaining_source or None
-            data["tracker"] = self._resolved or self._configured or None
+            data["tracker"] = self._resolved or self._tracker_hint or self._configured or None
+            data["rider"] = self.slug
+            data["person"] = self.person
             data["last_fix"] = _iso(self.matcher.last_fix.ts) if self.matcher.last_fix else None
             data["entry_id"] = self.entry.entry_id
             if event.kind == "exited":
@@ -395,7 +419,14 @@ class RideController:
         self._sync_fast()
 
     def _push(self) -> None:
-        async_dispatcher_send(self.hass, self.signal(), self.attributes())
+        attrs = self.attributes()
+        async_dispatcher_send(self.hass, self.signal(), attrs)
+        if self.is_primary:
+            async_dispatcher_send(self.hass, self.legacy_signal(), attrs)
+        self.manager.push_summary()
+
+    def _sync_fast(self) -> None:
+        self.manager.sync_fast()
 
     def _armed(self) -> bool:
         if self.matcher.riding or self.matcher.candidate:
@@ -427,19 +458,6 @@ class RideController:
                 return True
         return False
 
-    def _sync_fast(self) -> None:
-        armed = bool(self._subscribed) and self._armed()
-        if armed and self._fast_unsub is None:
-            self._fast_unsub = async_track_time_interval(
-                self.hass, self._on_fast, timedelta(seconds=RIDE_FAST_SCAN)
-            )
-        elif not armed and self._fast_unsub is not None:
-            try:
-                self._fast_unsub()
-            except Exception:  # noqa: BLE001
-                pass
-            self._fast_unsub = None
-
     async def _maybe_ping(self) -> None:
         if not self._request_updates or self.matcher.riding:
             return
@@ -462,6 +480,120 @@ class RideController:
             )
         except Exception:  # noqa: BLE001
             _LOGGER.debug("SEPTA ride location request was not sent")
+
+
+class RideController:
+    """One matcher per rider. TrainView is fetched once for all of them."""
+
+    def __init__(self, hass: HomeAssistant, coordinator) -> None:
+        self.hass = hass
+        self.coordinator = coordinator
+        self.entry = coordinator.entry
+        self.riders: dict[str, RiderController] = {}
+        self.train_cache = TrainCache(15)
+        self._fast_unsub = None
+
+    @property
+    def primary(self) -> RiderController | None:
+        for rider in self.riders.values():
+            if rider.is_primary:
+                return rider
+        return next(iter(self.riders.values()), None)
+
+    @property
+    def matcher(self) -> RideMatcher:
+        primary = self.primary
+        return primary.matcher if primary is not None else RideMatcher()
+
+    def signal(self) -> str:
+        return f"{DOMAIN}_ride_{self.entry.entry_id}"
+
+    def summary_signal(self) -> str:
+        return f"{DOMAIN}_riders_{self.entry.entry_id}"
+
+    def attributes(self) -> dict:
+        primary = self.primary
+        return primary.attributes() if primary is not None else {}
+
+    def summary(self) -> dict:
+        return riders_summary([rider.attributes() for rider in self.riders.values()])
+
+    def push_summary(self) -> None:
+        async_dispatcher_send(self.hass, self.summary_signal(), self.summary())
+
+    def specs(self) -> list[dict]:
+        raw = configured_riders(self.entry.options, self.entry.data)
+        links: dict[str, str] = {}
+        try:
+            people = self.hass.states.async_all("person")
+        except Exception:  # noqa: BLE001
+            people = []
+        for state in people or []:
+            source = state.attributes.get("source")
+            if isinstance(source, str) and source.startswith("device_tracker."):
+                links[state.entity_id] = source
+        return dedupe_riders(raw, links)
+
+    def rider_for(self, name: str | None) -> RiderController | None:
+        want = str(name or "").strip()
+        if not want:
+            return self.primary
+        for rider in self.riders.values():
+            if want in (rider.slug, rider.person, rider._configured, rider._resolved, rider.key):
+                return rider
+        return self.primary
+
+    async def async_start(self) -> None:
+        await self.async_reconfigure()
+
+    def async_stop(self) -> None:
+        if self._fast_unsub is not None:
+            try:
+                self._fast_unsub()
+            except Exception:  # noqa: BLE001
+                pass
+            self._fast_unsub = None
+        for rider in list(self.riders.values()):
+            rider.async_stop()
+        self.riders.clear()
+
+    async def async_reconfigure(self) -> None:
+        specs = self.specs()
+        wanted = {spec["key"] for spec in specs}
+        for key, rider in list(self.riders.items()):
+            if key not in wanted:
+                rider.async_stop()
+                self.riders.pop(key, None)
+        for spec in specs:
+            rider = self.riders.get(spec["key"])
+            if rider is None:
+                rider = RiderController(self.hass, self.coordinator, self, spec)
+                self.riders[spec["key"]] = rider
+                await rider.async_start()
+            else:
+                rider.is_primary = bool(spec.get("primary"))
+                if spec.get("person"):
+                    rider.person = spec["person"]
+                await rider.async_reconfigure()
+        self.push_summary()
+        self.sync_fast()
+
+    def sync_fast(self) -> None:
+        armed = any(rider._subscribed and rider._armed() for rider in self.riders.values())
+        if armed and self._fast_unsub is None:
+            self._fast_unsub = async_track_time_interval(
+                self.hass, self._on_fast, timedelta(seconds=RIDE_FAST_SCAN)
+            )
+        elif not armed and self._fast_unsub is not None:
+            try:
+                self._fast_unsub()
+            except Exception:  # noqa: BLE001
+                pass
+            self._fast_unsub = None
+
+    async def _on_fast(self, now) -> None:
+        for rider in list(self.riders.values()):
+            await rider._on_fast(now)
 
 
 def _iso(ts: float) -> str:
