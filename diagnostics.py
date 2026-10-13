@@ -27,7 +27,12 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
     coordinator = (hass.data.get(DOMAIN) or {}).get(entry.entry_id)
     ride = getattr(coordinator, "ride", None) if coordinator is not None else None
     if ride is None:
-        return {"ride": None}
+        trips = coordinator.configured_trips() if coordinator is not None and hasattr(coordinator, "configured_trips") else []
+        return {
+            "ride": None,
+            "trips": trips,
+            "trip_response_lengths": dict(getattr(coordinator, "trip_raw_lengths", {}) or {}),
+        }
     riders = []
     for rider in getattr(ride, "riders", {}).values():
         matcher = rider.matcher
@@ -49,9 +54,12 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
             }
         )
     primary = ride.matcher
+    trips = coordinator.configured_trips() if coordinator is not None and hasattr(coordinator, "configured_trips") else []
     return {
         "ride": _redact(ride.attributes()),
         "riders": riders,
+        "trips": trips,
+        "trip_response_lengths": dict(getattr(coordinator, "trip_raw_lengths", {}) or {}),
         "settings": {
             "radius_m": primary.radius_m,
             "min_speed_mph": round(primary.min_speed_mps / 0.44704, 1),

@@ -444,6 +444,11 @@
           : selectOpts(placeList, w.home, "Same as above", null);
         return '<div class="commute-row"><div class="who">' + esc(title) + '</div><label class="field">Line<select data-watch-line="' + esc(w.id) + '">' + selectOpts(lineList, w.line, "Any line", lineLabel) + '</select></label><label class="field">Home<select data-watch-home="' + esc(w.id) + '">' + homeChoices + '</select></label><span class="swap">↔</span><label class="field">Commute to<select data-watch-dest="' + esc(w.id) + '">' + selectOpts(placeList, w.dest, "Any destination", null) + "</select></label></div>";
       }).join("");
+      const trips = Array.isArray(draft.trips) ? draft.trips : [];
+      const tripRows = trips.map((t) => {
+        const counts = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => '<option value="' + n + '"' + (Number(t.count || 4) === n ? " selected" : "") + ">" + n + "</option>").join("");
+        return '<div class="commute-row"><div class="who">Trip</div><label class="field">From<select data-trip-origin="' + esc(t.id) + '">' + stationSelect(t.origin) + '</select></label><span class="swap">→</span><label class="field">To<select data-trip-dest="' + esc(t.id) + '">' + stationSelect(t.destination) + '</select></label><label class="field">Next<select data-trip-count="' + esc(t.id) + '">' + counts + '</select></label><label class="field">Label<input data-trip-label="' + esc(t.id) + '" value="' + esc(t.label || "") + '"/></label><button type="button" data-trip-minus="' + esc(t.id) + '">−</button></div>';
+      }).join("");
       const serviceCard = (title, state) => {
         const summary = state && state.attributes && state.attributes.summary ? String(state.attributes.summary) : "";
         const count = state && !blank(state) ? state.state : "—";
@@ -499,8 +504,11 @@
         (showMetro ? '<div class="commute-row"><div class="who">Metro</div><label class="field">Line<select data-metro-line>' + selectOpts(metroLines, draft.metro_line, "Any line", (item) => item.name) + '</select></label><label class="field">Home<select data-metro-home>' + selectOpts(metroStops, draft.metro_home, "All Metro", null) + '</select></label><span class="swap">↔</span><label class="field">Commute to<select data-metro-dest>' + selectOpts(metroStops, draft.metro_dest, "Any destination", null) + "</select></label></div>" : "") +
         (showTrolley ? '<div class="commute-row"><div class="who">Trolley</div><label class="field">Line<select data-trolley-line>' + selectOpts(trolleyLines, draft.trolley_line, "Any line", (item) => item.name) + '</select></label><label class="field">Home<select data-trolley-home>' + selectOpts(trolleyStops, draft.trolley_home, "All trolleys", null) + '</select></label><span class="swap">↔</span><label class="field">Commute to<select data-trolley-dest>' + selectOpts(trolleyStops, draft.trolley_dest, "Any destination", null) + "</select></label></div>" : "") +
         watchRows +
+        '<p class="label">Trips</p>' +
+        tripRows +
+        '<button type="button" data-trip-plus>Add trip</button>' +
         '<button class="save" type="button" data-save ' + (this._busy ? "disabled" : "") + ">Save</button>" +
-        '<p class="note">Plus adds another line. Minus removes the last one and, after Save, deletes its sensors.' +
+        '<p class="note">A trip is the next trains from one station to another, including a ride that starts in Center City. Add trip, then Save. Plus still adds a line watch.' +
         (nearest.length ? " Home lists the closest stations to your Home Assistant home." : "") + "</p>" +
         (this._msg ? '<div class="note">' + esc(this._msg) + "</div>" : "") +
         '<section class="board"><div class="board-head"><p class="label" style="margin:0">Board</p><span class="sub">' + esc(entry ? entry.station : "") + '</span></div><div class="modes" style="padding:0 12px"><button type="button" data-tab="all" class="' + (this._tab === "all" ? "on" : "") + '">All</button>' + (showRail ? '<button type="button" data-tab="rail" class="' + (this._tab === "rail" ? "on" : "") + '">Regional Rail</button>' : "") + (showBus ? '<button type="button" data-tab="bus" class="' + (this._tab === "bus" ? "on" : "") + '">Buses</button>' : "") + (showMetro ? '<button type="button" data-tab="metro" class="' + (this._tab === "metro" ? "on" : "") + '">Metro</button>' : "") + (showTrolley ? '<button type="button" data-tab="trolley" class="' + (this._tab === "trolley" ? "on" : "") + '">Trolley</button>' : "") + '</div><div class="bubbles">' + bubbles + busBubble + metroBubble + trolleyBubble + lineBubbles + "</div></section>" +
@@ -545,6 +553,18 @@
             line: line ? line.value : w.line,
             home: wh ? wh.value : w.home,
             dest: wd ? wd.value : w.dest,
+          });
+        });
+        this._draft.trips = (this._draft.trips || []).map((t) => {
+          const origin = root.querySelector('[data-trip-origin="' + t.id + '"]');
+          const dest = root.querySelector('[data-trip-dest="' + t.id + '"]');
+          const count = root.querySelector('[data-trip-count="' + t.id + '"]');
+          const label = root.querySelector('[data-trip-label="' + t.id + '"]');
+          return Object.assign({}, t, {
+            origin: origin ? origin.value : t.origin,
+            destination: dest ? dest.value : t.destination,
+            count: count ? Number(count.value) : (t.count || 4),
+            label: label ? label.value : (t.label || ""),
           });
         });
       };
@@ -605,6 +625,25 @@
         }
         this._paint();
       }));
+      root.querySelector("[data-trip-plus]") && root.querySelector("[data-trip-plus]").addEventListener("click", () => {
+        grab();
+        const list = this._draft.trips || [];
+        if (list.length >= 8) return;
+        this._draft.trips = list.concat([{
+          id: Math.random().toString(36).slice(2, 10),
+          origin: this._draft.station || "",
+          destination: this._draft.destination || "",
+          count: 4,
+          label: "",
+        }]);
+        this._paint();
+      });
+      root.querySelectorAll("[data-trip-minus]").forEach((btn) => btn.addEventListener("click", () => {
+        grab();
+        const id = btn.getAttribute("data-trip-minus");
+        this._draft.trips = (this._draft.trips || []).filter((t) => t.id !== id);
+        this._paint();
+      }));
       root.querySelector("[data-save]") && root.querySelector("[data-save]").addEventListener("click", async () => {
         grab();
         const entry = this._entry();
@@ -634,6 +673,7 @@
             trolley_home: this._draft.trolley_home || "",
             trolley_dest: this._draft.trolley_dest || "",
             watches: this._draft.watches || [],
+            trips: this._draft.trips || [],
           });
           this._msg = "Saved.";
           this._busy = false;

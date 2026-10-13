@@ -18,6 +18,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .ids import pick_leave
+from .trips import clean_trips, nta_station, parse_next_to_arrive, timetable_trips
 from .const import (
     ALERTS_URL,
     ARRIVALS_URL,
@@ -41,6 +42,7 @@ from .const import (
     CONF_TROLLEY_STATION,
     CONF_WALK,
     CONF_WATCHES,
+    CONF_TRIPS,
     DEFAULT_DESTINATION,
     DEFAULT_SCAN,
     DEFAULT_SHOW_BUS,
@@ -385,6 +387,11 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.ride = None
         self.device_station = entry.data.get(CONF_STATION)
         self.sidebar_on = True
+        self.trip_results: dict[str, dict[str, Any]] = {}
+        self.trip_raw_lengths: dict[str, int] = {}
+        self._trip_fail: dict[str, int] = {}
+        self._trip_hold: dict[str, float] = {}
+        self._trip_warned: set[str] = set()
 
     async def async_board_for_station(self, station: str) -> dict[str, Any]:
         """Live + timetable board for any Regional Rail station."""
@@ -996,6 +1003,84 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 }
             )
         return out
+
+    def configured_trips(self) -> list[dict]:
+        raw = self.entry.options.get(CONF_TRIPS, self.entry.data.get(CONF_TRIPS, []))
+        return clean_trips(raw)
+
+    def start_trip_poller(self):
+        from homeassistant.helpers.event import async_track_time_interval
+
+        self.hass.async_create_task(self.async_refresh_trips(force=True))
+        return async_track_time_interval(self.hass, self._trip_tick, timedelta(seconds=60))
+
+    async def _trip_tick(self, _now) -> None:
+        await self.async_refresh_trips(force=False)
+
+    async def async_refresh_trips(self, force: bool = False, trip_id: str | None = None) -> None:
+        trips = self.configured_trips()
+        if not trips:
+            return
+        want = {item["id"] for item in trips}
+        self.trip_results = {key: value for key, value in self.trip_results.items() if key in want}
+        now = datetime.now(NY)
+        stamp = time.time()
+        sent = 0
+        for trip in trips:
+            if trip_id and trip["id"] != trip_id:
+                continue
+            hold = self._trip_hold.get(trip["id"], 0)
+            if not force and hold and stamp < hold:
+                continue
+            if sent:
+                await asyncio.sleep(0.35)
+            sent += 1
+            await self._refresh_one_trip(trip, now, stamp)
+        try:
+            self.async_update_listeners()
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("SEPTA trip listener update skipped")
+
+    async def _refresh_one_trip(self, trip: dict, now: datetime, stamp: float) -> None:
+        origin = trip["origin"]
+        dest = trip["destination"]
+        count = int(trip["count"])
+        label = trip.get("label") or ""
+        req1 = nta_station(origin)
+        req2 = nta_station(dest)
+        rows: list[dict] = []
+        error = None
+        source = "nexttoarrive"
+        try:
+            raw = await self._get(NTA_URL, {"req1": req1, "req2": req2, "req3": count})
+            self.trip_raw_lengths[trip["id"]] = len(raw) if isinstance(raw, list) else 0
+            parsed, error = parse_next_to_arrive(raw, now, count)
+            if error:
+                raise RuntimeError(error)
+            rows = parsed
+            self._trip_fail[trip["id"]] = 0
+            self._trip_hold.pop(trip["id"], None)
+        except Exception as err:  # noqa: BLE001
+            fails = self._trip_fail.get(trip["id"], 0) + 1
+            self._trip_fail[trip["id"]] = fails
+            if fails >= 3:
+                self._trip_hold[trip["id"]] = stamp + 300
+            error = str(err) or err.__class__.__name__
+            warn = f"{origin}|{dest}"
+            if warn not in self._trip_warned:
+                self._trip_warned.add(warn)
+                _LOGGER.warning("SEPTA NextToArrive rejected %s to %s: %s", origin, dest, error)
+            rows = timetable_trips(cached_schedule(), origin, dest, now, count, _LINE_NAMES)
+            source = "timetable"
+        self.trip_results[trip["id"]] = {
+            "origin": origin,
+            "destination": dest,
+            "label": label,
+            "updated": now.isoformat(),
+            "source": source,
+            "trips": rows,
+            "error": error if source == "timetable" else None,
+        }
 
     @property
     def walk(self) -> int:

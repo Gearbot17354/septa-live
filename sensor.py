@@ -18,6 +18,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import CONF_RIDE_TRACKER, DOMAIN
 from .ids import object_key, stable_unique_id
+from .trips import trip_ids
 from .coordinator import NY, SeptaCoordinator, slug
 from .ride import configured_riders, dedupe_riders, write_state_on_loop
 
@@ -110,6 +111,8 @@ def _wanted_entities(coordinator: SeptaCoordinator) -> list[SensorEntity]:
             entities.append(SeptaLineSensor(coordinator, watch, "north"))
         else:
             entities.append(SeptaLineSensor(coordinator, watch))
+    for trip in coordinator.configured_trips():
+        entities.append(SeptaTripSensor(coordinator, trip))
     entities.append(SeptaMapSensor(coordinator))
     specs = _rider_specs(coordinator)
     if specs:
@@ -429,6 +432,64 @@ def _device_model(coordinator: SeptaCoordinator) -> str:
     if extra:
         parts.append(f"{extra} extra line" + ("s" if extra != 1 else ""))
     return " + ".join(parts) or "SEPTA"
+
+
+class SeptaTripSensor(CoordinatorEntity[SeptaCoordinator], SensorEntity):
+    """Next departures for one origin-to-destination trip."""
+
+    _attr_device_class = SensorDeviceClass.DURATION
+    _attr_native_unit_of_measurement = UnitOfTime.MINUTES
+    _attr_icon = "mdi:transit-connection-variant"
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator: SeptaCoordinator, trip: dict) -> None:
+        super().__init__(coordinator)
+        self._trip_id = trip["id"]
+        unique, entity = trip_ids(coordinator.entry.entry_id, trip["id"])
+        self._attr_unique_id = unique
+        self.entity_id = entity
+        label = trip.get("label") or f"{trip['origin']} to {trip['destination']}"
+        self._attr_name = label
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, coordinator.entry.entry_id)},
+            name=f"SEPTA {coordinator.station}",
+            manufacturer="SEPTA",
+            model=_device_model(coordinator),
+        )
+
+    @property
+    def suggested_object_id(self) -> str:
+        return self.entity_id.split(".", 1)[1]
+
+    def _pack(self) -> dict[str, Any]:
+        found = (getattr(self.coordinator, "trip_results", {}) or {}).get(self._trip_id) or {}
+        return found if isinstance(found, dict) else {}
+
+    @property
+    def native_value(self) -> int | None:
+        rows = self._pack().get("trips") or []
+        if not rows or not isinstance(rows, list):
+            return None
+        minutes = rows[0].get("minutes")
+        if minutes is None or isinstance(minutes, bool):
+            return None
+        try:
+            return max(0, int(minutes))
+        except (TypeError, ValueError):
+            return None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        pack = self._pack()
+        return {
+            "origin": pack.get("origin"),
+            "destination": pack.get("destination"),
+            "label": pack.get("label"),
+            "updated": pack.get("updated"),
+            "source": pack.get("source"),
+            "trips": pack.get("trips") or [],
+            "error": pack.get("error"),
+        }
 
 
 class SeptaLineSensor(_Base):

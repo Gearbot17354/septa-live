@@ -62,6 +62,8 @@ def canonical_entity_id(domain: str, station: str, key: str) -> str | None:
         if key.startswith("riding_"):
             return f"binary_sensor.septa_riding_{key[len('riding_'):]}"
         return None
+    if key.startswith("trip_"):
+        return f"sensor.septa_{key}"
     if key == "riders_count":
         return "sensor.septa_riders_count"
     if key.startswith("my_train_") and key != "my_train":
@@ -76,6 +78,9 @@ def legacy_key(unique_id: str) -> str | None:
     uid = str(unique_id or "")
     if not uid:
         return None
+    trip = uid.find("_trip_")
+    if trip != -1:
+        return "trip_" + uid[trip + len("_trip_") :]
     for marker in ("_my_train_", "_riding_"):
         idx = uid.rfind(marker)
         if idx != -1:

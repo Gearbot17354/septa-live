@@ -21,3 +21,17 @@ simulate_ride:
       description: Person, tracker, or slug. Blank uses the primary rider. Does not change live state.
       selector:
         text:
+
+refresh_trips:
+  name: Refresh trips
+  description: Fetch NextToArrive again for configured origin-to-destination trips.
+  fields:
+    entry_id:
+      name: Config entry
+      selector:
+        text:
+    trip_id:
+      name: Trip
+      description: One trip id. Blank refreshes every configured trip.
+      selector:
+        text:

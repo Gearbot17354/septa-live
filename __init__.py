@@ -39,6 +39,7 @@ from .const import (
     CONF_TROLLEY_STATION,
     CONF_WALK,
     CONF_WATCHES,
+    CONF_TRIPS,
     DOMAIN,
     METRO_STATIONS,
     PLATFORMS,
@@ -53,7 +54,7 @@ _FRONTEND = f"{DOMAIN}_frontend_registered"
 _CARD_JS = "septa-live-card.js"
 _PANEL_JS = "septa-live-panel.js"
 _PANEL_PATH = "septa-live"
-_CARD_VERSION = "1.11.5"
+_CARD_VERSION = "1.11.6"
 _PANEL_SIG: tuple | None = None
 _RELOADING: set[str] = set()
 
@@ -154,6 +155,29 @@ def _register_simulate(hass: HomeAssistant) -> None:
         register_kwargs["supports_response"] = support
     hass.services.async_register(DOMAIN, "simulate_ride", _simulate, **register_kwargs)
 
+    async def _refresh_trips(call):
+        data = hass.data.get(DOMAIN) or {}
+        wanted = str(call.data.get("entry_id") or "").strip()
+        trip_id = str(call.data.get("trip_id") or "").strip() or None
+        for entry_id, coordinator in data.items():
+            if wanted and entry_id != wanted:
+                continue
+            if not hasattr(coordinator, "async_refresh_trips"):
+                continue
+            await coordinator.async_refresh_trips(force=True, trip_id=trip_id)
+
+    hass.services.async_register(
+        DOMAIN,
+        "refresh_trips",
+        _refresh_trips,
+        schema=vol.Schema(
+            {
+                vol.Optional("entry_id"): str,
+                vol.Optional("trip_id"): str,
+            }
+        ),
+    )
+
 
 async def _async_migrate_entity_ids(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Point old unique ids at the config entry and put _2 names back."""
@@ -200,6 +224,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinator.async_config_entry_first_refresh()
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     coordinator.sidebar_on = _sidebar_enabled(entry)
+    entry.async_on_unload(coordinator.start_trip_poller())
     try:
         await coordinator.ride.async_start()
     except Exception:  # noqa: BLE001
@@ -349,6 +374,7 @@ async def websocket_panel(
                 "trolley_home": coordinator.trolley_home,
                 "trolley_dest": coordinator.trolley_dest,
                 "watches": coordinator.watches(),
+                "trips": coordinator.configured_trips(),
                 "entities": _entity_map(hass, entry_id, coordinator.station, coordinator.destination),
                 "live": _live_board(coordinator),
             }
@@ -410,6 +436,12 @@ def _clean_watches(raw: object) -> list[dict[str, str]]:
     return out
 
 
+def _clean_trips(raw: object) -> list[dict]:
+    from .trips import clean_trips
+
+    return clean_trips(raw)
+
+
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "septa_live/bus_picker",
@@ -459,6 +491,7 @@ async def websocket_bus_picker(
         vol.Optional("trolley_home"): str,
         vol.Optional("trolley_dest"): str,
         vol.Optional("watches"): list,
+        vol.Optional("trips"): list,
         vol.Optional("ride_tracker"): str,
         vol.Optional("ride_radius_m"): int,
         vol.Optional("ride_min_speed_mph"): int,
@@ -508,6 +541,8 @@ async def websocket_options(
             options[dest] = msg[src]
         if "watches" in msg:
             options[CONF_WATCHES] = _clean_watches(msg.get("watches"))
+        if "trips" in msg:
+            options[CONF_TRIPS] = _clean_trips(msg.get("trips"))
         if "ride_tracker" in msg:
             tracker = str(msg.get("ride_tracker") or "").strip()
             if tracker:
@@ -694,6 +729,10 @@ async def _apply_saved_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
     if show != bool(coordinator.sidebar_on):
         coordinator.sidebar_on = show
         await _async_sync_panel(hass)
+    try:
+        await coordinator.async_refresh_trips(force=True)
+    except Exception:  # noqa: BLE001
+        _LOGGER.exception("SEPTA trip refresh after save failed")
     try:
         await coordinator.async_request_refresh()
     except Exception:  # noqa: BLE001
