@@ -406,3 +406,39 @@ def test_one_trainview_fetch_for_three_riders():
     asyncio.run(main())
     assert cache.fetches == 1
 
+
+def test_riders_count_starts_at_zero():
+    idle = [
+        {"rider": "alex", "riding": False, "person": "person.alex", "friendly_name_rider": "Alex", "entity_picture": None, "train": None, "line": None, "next_stop": None},
+        {"rider": "sam", "riding": False, "person": "person.sam", "friendly_name_rider": "Sam", "entity_picture": None, "train": None, "line": None, "next_stop": None},
+        {"rider": "jordan", "riding": False, "person": "person.jordan", "friendly_name_rider": "Jordan", "entity_picture": None, "train": None, "line": None, "next_stop": None},
+    ]
+    quiet = R.riders_summary(idle)
+    assert quiet["count"] == 0
+    assert quiet["riding"] == []
+    assert quiet["riders"] == ["alex", "sam", "jordan"]
+    idle[1]["riding"] = True
+    idle[1]["train"] = "4302"
+    idle[1]["line"] = "Lansdale/Doylestown"
+    idle[1]["next_stop"] = "Penllyn"
+    idle[1]["entity_picture"] = "/api/image/sam"
+    boarded = R.riders_summary(idle)
+    assert boarded["count"] == 1
+    assert boarded["riding"] == [
+        {
+            "rider": "sam",
+            "person": "person.sam",
+            "friendly_name": "Sam",
+            "entity_picture": "/api/image/sam",
+            "train": "4302",
+            "line": "Lansdale/Doylestown",
+            "next_stop": "Penllyn",
+        }
+    ]
+    assert boarded["trains"] == {"4302": ["sam"]}
+    sensor = (ROOT / "sensor.py").read_text()
+    assert "class SeptaRidersCountSensor" in sensor
+    assert "def _on_ride" in sensor.split("class SeptaRidersCountSensor", 1)[1]
+    assert "rider.signal()" in sensor
+    assert 'self.entity_id = "sensor.septa_riders_count"' in sensor
+

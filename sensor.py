@@ -135,7 +135,16 @@ async def async_sync_sensors(coordinator: SeptaCoordinator) -> None:
         current.pop(uid, None)
         if getattr(entity, "hass", None) is not None:
             await entity.async_remove()
-    fresh = [entity for entity in wanted if entity.unique_id and entity.unique_id not in current]
+    fresh = []
+    for entity in wanted:
+        uid = entity.unique_id
+        if not uid:
+            continue
+        existing = current.get(uid)
+        if existing is not None and getattr(existing, "hass", None) is not None:
+            continue
+        current.pop(uid, None)
+        fresh.append(entity)
     if fresh:
         coordinator.add_sensors(fresh)
         for entity in fresh:
@@ -624,24 +633,40 @@ class SeptaRidersCountSensor(_Base):
 
     _attr_name = "Riders on a train"
     _attr_icon = "mdi:account-group"
+    _attr_should_poll = False
 
     def __init__(self, coordinator: SeptaCoordinator) -> None:
         super().__init__(coordinator, "riders_count")
         self.entity_id = "sensor.septa_riders_count"
+        self._listener_unsubs: list = []
+        self._listener_key: tuple[str, ...] | None = None
 
     @property
     def suggested_object_id(self) -> str:
         return "septa_riders_count"
 
+    @property
+    def available(self) -> bool:
+        return True
+
     def _summary(self) -> dict[str, Any]:
         ride = getattr(self.coordinator, "ride", None)
         if ride is None:
             return {"count": 0, "riding": [], "riders": [], "trains": {}}
-        return ride.summary()
+        try:
+            data = ride.summary()
+        except Exception:  # noqa: BLE001
+            return {"count": 0, "riding": [], "riders": [], "trains": {}}
+        if not isinstance(data, dict):
+            return {"count": 0, "riding": [], "riders": [], "trains": {}}
+        return data
 
     @property
     def native_value(self) -> int:
-        return int(self._summary().get("count") or 0)
+        try:
+            return int(self._summary().get("count") or 0)
+        except (TypeError, ValueError):
+            return 0
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -654,7 +679,34 @@ class SeptaRidersCountSensor(_Base):
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
+        self._listen()
+        self.async_on_remove(self._close_listeners)
+        write_state_on_loop(self.hass, self.async_write_ha_state)
+
+    @callback
+    def _on_ride(self, _payload=None) -> None:
+        self._listen()
+        write_state_on_loop(self.hass, self.async_write_ha_state)
+
+    @callback
+    def _listen(self) -> None:
         ride = getattr(self.coordinator, "ride", None)
-        if ride is None:
+        if ride is None or self.hass is None:
             return
-        self.async_on_remove(async_dispatcher_connect(self.hass, ride.summary_signal(), self._on_ride))
+        signals = tuple(sorted(rider.signal() for rider in ride.riders.values()))
+        if signals == self._listener_key and self._listener_unsubs:
+            return
+        self._close_listeners()
+        self._listener_key = signals
+        watched = (ride.summary_signal(), *signals)
+        for signal in watched:
+            self._listener_unsubs.append(async_dispatcher_connect(self.hass, signal, self._on_ride))
+
+    def _close_listeners(self) -> None:
+        for unsub in self._listener_unsubs:
+            try:
+                unsub()
+            except Exception:  # noqa: BLE001
+                continue
+        self._listener_unsubs = []
+        self._listener_key = None
