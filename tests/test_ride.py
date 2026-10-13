@@ -560,3 +560,107 @@ def test_riders_count_starts_at_zero():
     assert "rider.signal()" in sensor
     assert 'self.entity_id = "sensor.septa_riders_count"' in sensor
 
+
+def _frozen_3544():
+    row = train(
+        "3544",
+        39.9538889,
+        -75.1677778,
+        120,
+        dest="Doylestown",
+        line="Lansdale/Doylestown",
+        current="Temple University",
+        nxt="Fort Washington",
+    )
+    row.service = "EXP TO FT WASH"
+    row.late = 9
+    row.consist = []
+    return row
+
+
+def test_frozen_trainview_uses_estimated_position():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    when = datetime(2026, 10, 13, 16, 48, tzinfo=ZoneInfo("America/New_York"))
+    ts = when.timestamp()
+    speed = 58 * 0.44704
+    phone = (40.0329, -75.1415)
+    samples = []
+    for index in range(2):
+        samples.append(
+            {
+                "fix": fix(phone[0], phone[1], ts + index * 5, speed=speed, course=0),
+                "trains": [_frozen_3544()],
+                "trains_ts": ts,
+            }
+        )
+    result = R.replay_fixes(samples, need_matches=2, radius_m=300, min_speed_mps=5)
+    assert result["riding"] is True
+    assert result["steps"][-1]["train"] == "3544"
+    assert result["position_source"] == "estimated"
+    assert result["steps"][-1]["position_source"] == "estimated"
+
+
+def test_fresh_gps_still_beats_a_stale_train():
+    fresh = train("111", 40.0329, -75.1415, 0, dest="Doylestown", line="Lansdale/Doylestown", current="Wayne Junction", nxt="Fern Rock T C")
+    stale = _frozen_3544()
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    when = datetime(2026, 10, 13, 16, 48, tzinfo=ZoneInfo("America/New_York"))
+    ts = when.timestamp()
+    speed = 58 * 0.44704
+    samples = [
+        {
+            "fix": fix(40.0329, -75.1415, ts + index * 20, speed=speed, course=0),
+            "trains": [stale, fresh],
+            "trains_ts": ts,
+        }
+        for index in range(2)
+    ]
+    result = R.replay_fixes(samples, need_matches=2, radius_m=300, min_speed_mps=5)
+    assert result["riding"] is True
+    assert result["steps"][-1]["train"] == "111"
+    assert result["position_source"] == "gps"
+
+
+def test_parked_phone_does_not_board():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    when = datetime(2026, 10, 13, 16, 48, tzinfo=ZoneInfo("America/New_York"))
+    ts = when.timestamp()
+    result = R.replay_fixes(
+        [
+            {
+                "fix": fix(39.95389, -75.16778, ts, speed=0, course=0),
+                "trains": [_frozen_3544()],
+                "trains_ts": ts,
+            }
+        ],
+        need_matches=1,
+        radius_m=300,
+        min_speed_mps=5,
+    )
+    assert result["riding"] is False
+
+
+def test_fast_phone_far_from_the_corridor_does_not_board():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    when = datetime(2026, 10, 13, 16, 48, tzinfo=ZoneInfo("America/New_York"))
+    ts = when.timestamp()
+    speed = 58 * 0.44704
+    samples = [
+        {
+            "fix": fix(41.2, -74.2, ts + index * 30, speed=speed, course=0),
+            "trains": [_frozen_3544()],
+            "trains_ts": ts,
+        }
+        for index in range(2)
+    ]
+    result = R.replay_fixes(samples, need_matches=2, radius_m=300, min_speed_mps=5)
+    assert result["riding"] is False
+

@@ -2,18 +2,28 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import re
 import threading
 import traceback
 from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
 _LOGGER = logging.getLogger(__name__)
 _OFF_LOOP_LOGGED = False
 
 EARTH_M = 6_371_000.0
 METERS_PER_DEG_LAT = 111_320.0
+NY = ZoneInfo("America/New_York")
+CORRIDOR_M = 300.0
+CORRIDOR_REACH_M = 3500.0
+FAST_MPH = 15.0
+STALE_POLLS = 3
+_CENTER = ("suburban", "jefferson", "30th", "gray 30th", "temple university")
 
 
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -105,9 +115,10 @@ def replay_fixes(samples: list[dict], **kwargs) -> dict:
                 "speed_source": matcher.speed_source,
                 "phone_speed_mph": matcher.phone_speed_mph,
                 "match_count": matcher.match_count,
+                "position_source": matcher.position_source,
             }
         )
-    return {"events": events, "steps": steps, "riding": matcher.riding}
+    return {"events": events, "steps": steps, "riding": matcher.riding, "position_source": matcher.position_source}
 
 
 def _float(value: object) -> float | None:
@@ -346,6 +357,195 @@ def project_position(
     return lat + dlat, lon + dlon
 
 
+_GEO = None
+_TIMES = None
+
+
+def _load_geo() -> dict:
+    global _GEO
+    if _GEO is None:
+        path = Path(__file__).with_name("rail-geo.json")
+        raw = json.loads(path.read_text()) if path.is_file() else {"stops": {}, "lines": {}}
+        by_key = {}
+        by_coord = {}
+        for name, pair in (raw.get("stops") or {}).items():
+            if not isinstance(pair, list) or len(pair) < 2:
+                continue
+            by_key[_stop_key(name)] = (str(name), float(pair[0]), float(pair[1]))
+            by_coord.setdefault((round(float(pair[0]), 4), round(float(pair[1]), 4)), str(name))
+        lines = {}
+        for code, stops in (raw.get("lines") or {}).items():
+            if isinstance(stops, list):
+                lines[str(code)] = [item for item in stops if isinstance(item, dict)]
+        _GEO = {"by_key": by_key, "by_coord": by_coord, "lines": lines}
+    return _GEO
+
+
+def _load_times() -> dict:
+    global _TIMES
+    if _TIMES is None:
+        path = Path(__file__).with_name("rail-schedule.json")
+        index: dict[str, list[tuple[str, int, int]]] = {}
+        if path.is_file():
+            raw = json.loads(path.read_text())
+            for name, pack in (raw.get("stations") or {}).items():
+                if not isinstance(pack, dict):
+                    continue
+                key = _stop_key(name)
+                for rows in pack.values():
+                    if not isinstance(rows, list):
+                        continue
+                    for row in rows:
+                        if not isinstance(row, dict):
+                            continue
+                        train = str(row.get("n") or "").strip()
+                        clock = str(row.get("t") or "")
+                        if not train or ":" not in clock:
+                            continue
+                        hour, minute = clock.split(":", 1)
+                        try:
+                            minutes = int(hour) * 60 + int(minute)
+                            days = int(row.get("days") or 0)
+                        except ValueError:
+                            continue
+                        index.setdefault(train, []).append((key, minutes, days))
+        _TIMES = index
+    return _TIMES
+
+
+def _same_stop(left: object, right: object) -> bool:
+    a, b = _stop_key(left), _stop_key(right)
+    if not a or not b:
+        return False
+    return a == b or a in b or b in a
+
+
+def _coord_station(lat: float, lon: float) -> str | None:
+    return _load_geo()["by_coord"].get((round(lat, 4), round(lon, 4)))
+
+
+def _center_or_terminal(name: str) -> bool:
+    text = str(name or "").lower()
+    return any(part in text for part in _CENTER)
+
+
+def position_is_stale(train: Train, trace: list[tuple] | None = None) -> bool:
+    """True when TrainView's lat/lon should not be trusted."""
+    station = _coord_station(train.lat, train.lon)
+    current = str(train.currentstop or "").strip()
+    if station and current and not _same_stop(station, current):
+        return True
+    if not train.consist and station and current and not _same_stop(station, current) and _center_or_terminal(station):
+        return True
+    rows = list(trace or [])[-STALE_POLLS:]
+    if len(rows) >= STALE_POLLS and len({row[0] for row in rows}) == 1:
+        if len({(row[1], row[2], row[3]) for row in rows}) > 1:
+            return True
+    return False
+
+
+def _line_stops(line: str) -> list[dict]:
+    code = _line_code(line) or ""
+    return list(_load_geo()["lines"].get(code) or [])
+
+
+def _span(line: str, current: str, nxt: str) -> list[dict] | None:
+    stops = _line_stops(line)
+    if len(stops) < 2:
+        return None
+    keys = [_stop_key(item.get("n")) for item in stops]
+    cur, end = _stop_key(current), _stop_key(nxt)
+    if cur not in keys or end not in keys:
+        return None
+    start_at = keys.index(cur)
+    stop_at = keys.index(end)
+    if start_at == stop_at:
+        return None
+    if start_at < stop_at:
+        return stops[start_at : stop_at + 1]
+    return list(reversed(stops[stop_at : start_at + 1]))
+
+
+def _point_along(stops: list[dict], fraction: float) -> tuple[float, float, float] | None:
+    if len(stops) < 2:
+        return None
+    fraction = max(0.0, min(1.0, fraction))
+    lengths = [0.0]
+    for left, right in zip(stops, stops[1:]):
+        lengths.append(lengths[-1] + haversine_m(left["lat"], left["lon"], right["lat"], right["lon"]))
+    total = lengths[-1]
+    if total < 1:
+        return None
+    target = fraction * total
+    for index in range(len(stops) - 1):
+        if lengths[index] <= target <= lengths[index + 1]:
+            span = lengths[index + 1] - lengths[index]
+            mix = 0 if span < 1 else (target - lengths[index]) / span
+            left, right = stops[index], stops[index + 1]
+            lat = left["lat"] + mix * (right["lat"] - left["lat"])
+            lon = left["lon"] + mix * (right["lon"] - left["lon"])
+            return lat, lon, bearing_deg(left["lat"], left["lon"], right["lat"], right["lon"])
+    return None
+
+
+def _schedule_fraction(train: Train, when: datetime) -> float | None:
+    rows = _load_times().get(str(train.trainno)) or []
+    if not rows:
+        return None
+    bit = weekday_bit(when.weekday())
+    cur, nxt = _stop_key(train.currentstop), _stop_key(train.nextstop)
+    starts = [minutes for key, minutes, days in rows if key == cur and (not days or days & bit)]
+    ends = [minutes for key, minutes, days in rows if key == nxt and (not days or days & bit)]
+    if not starts or not ends:
+        return None
+    now_m = when.hour * 60 + when.minute + when.second / 60
+    pair = None
+    for start in starts:
+        for end in ends:
+            if 0 < end - start <= 180:
+                if pair is None or abs(((start + end) / 2) - now_m) < abs(((pair[0] + pair[1]) / 2) - now_m):
+                    pair = (start, end)
+    if pair is None:
+        return None
+    start = pair[0] + int(train.late or 0)
+    end = pair[1] + int(train.late or 0)
+    if end <= start:
+        return None
+    return max(0.0, min(1.0, (now_m - start) / (end - start)))
+
+
+def estimate_position(train: Train, when: datetime) -> tuple[float, float, float] | None:
+    span = _span(train.line, train.currentstop, train.nextstop)
+    if not span:
+        return None
+    fraction = _schedule_fraction(train, when)
+    if fraction is None:
+        return None
+    return _point_along(span, fraction)
+
+
+def _corridor_gap(lat: float, lon: float, line: str) -> tuple[float, float] | None:
+    stops = _line_stops(line)
+    points = [(float(item["lat"]), float(item["lon"])) for item in stops if "lat" in item and "lon" in item]
+    if len(points) < 2:
+        return None
+    best = None
+    for left, right in zip(points, points[1:]):
+        scale = METERS_PER_DEG_LAT * max(0.2, math.cos(math.radians(left[0])))
+        bx = (right[1] - left[1]) * scale
+        by = (right[0] - left[0]) * METERS_PER_DEG_LAT
+        seg = math.hypot(bx, by)
+        if seg < 1:
+            continue
+        px = (lon - left[1]) * scale
+        py = (lat - left[0]) * METERS_PER_DEG_LAT
+        mix = max(0.0, min(1.0, (px * bx + py * by) / (seg * seg)))
+        cross = math.hypot(px - bx * mix, py - by * mix)
+        if best is None or cross < best[0]:
+            best = (cross, bearing_deg(left[0], left[1], right[0], right[1]))
+    return best
+
+
 class RideMatcher:
     """Stateful matcher. All ride memory lives here so it can be unit tested."""
 
@@ -392,6 +592,11 @@ class RideMatcher:
         self.expected: dict | None = None
         self.leg = 1
         self._service_hint = False
+        self.position_source = "gps"
+        self.stale_gps = False
+        self._match_via = ""
+        self._fast_count = 0
+        self._trace: dict[str, list[tuple]] = {}
         self.leg = 1
         self._service_hint = False
         self.reason_log: list[str] = []
@@ -429,6 +634,11 @@ class RideMatcher:
                     self._speed[train.trainno] = dist / dt
             self._history[train.trainno] = (trains_ts, train.lat, train.lon)
             self._last_seen[train.trainno] = trains_ts
+            spot = (round(train.lat, 4), round(train.lon, 4))
+            row = (spot, _stop_key(train.currentstop), _stop_key(train.nextstop), int(train.late or 0))
+            trace = self._trace.setdefault(train.trainno, [])
+            trace.append(row)
+            del trace[:-STALE_POLLS]
 
     def _projected(self, train: Train, trains_ts: float, fix_ts: float, phone_speed: float) -> tuple[float, float] | None:
         if train.trainno in self._glitch:
@@ -525,26 +735,58 @@ class RideMatcher:
         pref = self.preferred_line.lower()
         return -100 if pref in blob else 0
 
+    def _view(self, train: Train, when: datetime) -> tuple[float, float, float | None, bool, str]:
+        stale = position_is_stale(train, self._trace.get(train.trainno))
+        if not stale:
+            return train.lat, train.lon, None, False, "gps"
+        estimated = estimate_position(train, when)
+        if estimated is None:
+            return train.lat, train.lon, None, True, "gps"
+        return estimated[0], estimated[1], estimated[2], True, "estimated"
+
+    def _prefer(self, train: Train, stale: bool, via: str) -> int:
+        prefer = 0
+        if self.riding_train and train.trainno == self.riding_train.trainno:
+            prefer = -10000
+        elif self.candidate and train.trainno == self.candidate:
+            prefer = -5000
+        hint = self.active_expected()
+        if hint and train.trainno == hint:
+            prefer -= 3000
+        if stale or via == "corridor":
+            prefer += 4000
+        return prefer + self._line_bonus(train)
+
     def _pick(self, fix: Fix, trains: list[Train], trains_ts: float, speed: float | None, course: float | None) -> tuple[Train | None, float | None, str]:
         phone_speed = speed or 0.0
         gap = abs(fix.ts - trains_ts)
         tol = 75.0 if self.speed_source == "derived" else 60.0
+        when = datetime.fromtimestamp(fix.ts, NY)
+        views = {train.trainno: self._view(train, when) for train in trains}
         scored: list[dict] = []
         best: Train | None = None
         best_dist: float | None = None
         best_key: tuple | None = None
+        best_via = ""
         heading_blocked = False
         for train in trains:
-            pos = self._projected(train, trains_ts, fix.ts, phone_speed)
+            lat, lon, route_heading, stale, source = views[train.trainno]
+            if stale and source == "estimated":
+                pos = (lat, lon)
+            else:
+                pos = self._projected(train, trains_ts, fix.ts, phone_speed)
             if pos is None:
                 continue
             euclid = haversine_m(fix.lat, fix.lon, pos[0], pos[1])
-            along = self._line_gap(fix.lat, fix.lon, pos[0], pos[1])
+            along = None if stale else self._line_gap(fix.lat, fix.lon, pos[0], pos[1])
             dist = min(euclid, along) if along is not None else euclid
             pace = max(phone_speed, self._speed.get(train.trainno) or 0.0)
             limit = self.radius_m + min(1500.0, gap * pace * 0.5) + (fix.acc_m or 0.0)
-            travel = self._travel_bearing(train)
-            heading = travel if travel is not None else train.heading
+            if stale and route_heading is not None:
+                heading = route_heading
+            else:
+                travel = self._travel_bearing(train)
+                heading = travel if travel is not None else train.heading
             hdiff = None if course is None or heading is None else angle_diff(course, heading)
             reject = dist > limit
             if not reject and hdiff is not None and hdiff > tol:
@@ -557,39 +799,101 @@ class RideMatcher:
                     "dist_m": round(dist),
                     "limit_m": round(limit),
                     "heading_diff": None if hdiff is None else round(hdiff),
+                    "stale_gps": stale,
+                    "position_source": source if stale else "gps",
                     "_train": train,
                     "_dist": dist,
                     "_limit": limit,
                     "_reject": reject,
+                    "_via": "radius",
                 }
             )
             if reject:
                 continue
-            prefer = 0
-            if self.riding_train and train.trainno == self.riding_train.trainno:
-                prefer = -10000
-            elif self.candidate and train.trainno == self.candidate:
-                prefer = -5000
-            hint = self.active_expected()
-            if hint and train.trainno == hint:
-                prefer -= 3000
-            prefer += self._line_bonus(train)
+            prefer = self._prefer(train, stale, "radius")
             key = (prefer, dist)
             if best_key is None or key < best_key:
                 best = train
                 best_dist = dist
                 best_key = key
+                best_via = "radius" if source == "gps" else "estimated"
+        if best is None and self._fast_count >= 2 and (speed or 0) >= FAST_MPH * 0.44704:
+            for train in trains:
+                lat, lon, _route_heading, stale, source = views[train.trainno]
+                corridor = _corridor_gap(fix.lat, fix.lon, train.line)
+                if corridor is None or corridor[0] > CORRIDOR_M:
+                    continue
+                if course is not None and angle_diff(course, corridor[1]) > 75:
+                    continue
+                reach_at = (lat, lon) if source == "estimated" else (train.lat, train.lon)
+                reach = haversine_m(fix.lat, fix.lon, reach_at[0], reach_at[1])
+                if reach > CORRIDOR_REACH_M:
+                    continue
+                prefer = self._prefer(train, True, "corridor")
+                key = (prefer, reach)
+                if best_key is None or key < best_key:
+                    best = train
+                    best_dist = reach
+                    best_key = key
+                    best_via = "corridor"
+                    stale = True
+                    source = "estimated" if source == "estimated" or stale else "gps"
+                for row in scored:
+                    if row["train"] == train.trainno:
+                        row["dist_m"] = round(reach)
+                        row["limit_m"] = round(CORRIDOR_REACH_M)
+                        row["stale_gps"] = stale or row["stale_gps"]
+                        row["position_source"] = "estimated" if row["stale_gps"] else "gps"
+                        row["_dist"] = reach
+                        row["_reject"] = False
+                        row["_via"] = "corridor"
+                        break
+                else:
+                    scored.append(
+                        {
+                            "train": train.trainno,
+                            "line": train.line,
+                            "dist_m": round(reach),
+                            "limit_m": round(CORRIDOR_REACH_M),
+                            "heading_diff": None if course is None else round(angle_diff(course, corridor[1])),
+                            "stale_gps": True,
+                            "position_source": "estimated",
+                            "_train": train,
+                            "_dist": reach,
+                            "_limit": CORRIDOR_REACH_M,
+                            "_reject": False,
+                            "_via": "corridor",
+                        }
+                    )
         scored.sort(key=lambda row: row["_dist"])
         self.candidates = [
-            {key: row[key] for key in ("train", "line", "dist_m", "limit_m", "heading_diff")}
+            {
+                key: row[key]
+                for key in ("train", "line", "dist_m", "limit_m", "heading_diff", "stale_gps", "position_source")
+            }
             for row in scored[:3]
         ]
         self._scored = scored
         if best is not None:
+            chosen = views.get(best.trainno, (0, 0, None, False, "gps"))
+            self.stale_gps = bool(chosen[3]) or best_via == "corridor"
+            self.position_source = "estimated" if self.stale_gps else "gps"
+            self._match_via = "corridor" if best_via == "corridor" else "radius"
+            _LOGGER.debug(
+                "SEPTA ride accept train=%s source=%s stale=%s via=%s dist_m=%s",
+                best.trainno,
+                self.position_source,
+                self.stale_gps,
+                self._match_via,
+                None if best_dist is None else round(best_dist),
+            )
             return best, best_dist, ""
-        if heading_blocked and any(row["_dist"] <= row["_limit"] for row in scored):
-            return None, None, "heading_mismatch"
-        return None, None, "no_train_in_radius"
+        self._match_via = ""
+        self.position_source = "gps"
+        self.stale_gps = False
+        reason = "heading_mismatch" if heading_blocked and any(row["_dist"] <= row["_limit"] for row in scored) else "no_train_in_radius"
+        _LOGGER.debug("SEPTA ride reject reason=%s trains=%s", reason, len(trains))
+        return None, None, reason
 
     def _candidate_held(self) -> bool:
         if not self.candidate:
@@ -732,6 +1036,8 @@ class RideMatcher:
             "next_stop_platform": None,
             "connection_track": None,
             "connection_platform": None,
+            "position_source": self.position_source if riding or self.candidate else None,
+            "stale_gps": bool(self.stale_gps) if riding else False,
         }
 
     def _event(self, kind: str, extra: dict | None = None) -> RideEvent:
@@ -749,7 +1055,7 @@ class RideMatcher:
         self.switch_count = 0
         self.distance_m = dist
         self.gps_gap = False
-        self.confidence = "riding"
+        self.confidence = "estimated" if self._match_via == "corridor" else "riding"
         if self.boarded_ts is None:
             where = self._nearest_stop(fix.lat, fix.lon) or train.currentstop or None
             self.boarded_at = where
@@ -810,6 +1116,10 @@ class RideMatcher:
         if not moving and self.activity_moving and self.speed_source == "none":
             moving = True
         creeping = speed is None or speed < 2.0
+        if speed is not None and speed >= FAST_MPH * 0.44704:
+            self._fast_count += 1
+        else:
+            self._fast_count = 0
         best, dist, reject = self._pick(fix, trains, trains_ts, speed, course)
         if not moving:
             if not self.riding:
@@ -861,7 +1171,7 @@ class RideMatcher:
             self.riding_train = best
             self.switch_count = 0
             self.switch_train = None
-            self.confidence = "riding"
+            self.confidence = "estimated" if self._match_via == "corridor" else "riding"
             self._maybe_handover()
             self._note("riding")
             return None
@@ -890,7 +1200,10 @@ class RideMatcher:
             self.match_count += 1
         else:
             self.candidate = best.trainno
-            self.match_count = 1
+            if self._match_via == "corridor":
+                self.match_count = min(self.need_matches, max(1, self._fast_count))
+            else:
+                self.match_count = 1
         self.confidence = "candidate"
         if self.match_count >= self.need_matches:
             self._note("boarded")

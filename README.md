@@ -12,7 +12,7 @@ This is a **custom repository** — the same way most community plugins are inst
 2. Open the three-dot menu → **Custom repositories**.
 3. Paste `https://github.com/Gearbot17354/septa-live`.
 4. Category: **Integration**.
-5. **Add**, then find **SEPTA Transit** and **Download** **1.12.0**. Restart Home Assistant after the update so the new ride code is the code that is running.
+5. **Add**, then find **SEPTA Transit** and **Download** **1.12.1**. Restart Home Assistant after the update so the new ride code is the code that is running.
 6. **Restart Home Assistant**.
 7. **Settings → Devices & Services → Add Integration → SEPTA Transit**.
 8. Pick a station (for example Lansdale) and a destination (Jefferson Station) used for the leave-now countdown.
@@ -26,7 +26,7 @@ Repo: [github.com/Gearbot17354/septa-live](https://github.com/Gearbot17354/septa
 If Add card still does not list SEPTA Transit, enable Advanced Mode in your profile, then **Settings → Dashboards → ⋮ → Resources → Add**:
 
 ```
-/local/septa-live-card.js?v=1.12.0
+/local/septa-live-card.js?v=1.12.1
 type: module
 ```
 
@@ -67,6 +67,10 @@ Track and platform are copied from Arrivals only when SEPTA sends them. Empty me
 | `trips` | The next departures. For a transfer, arrival is the final station |
 | `day` | Today's full list, only when Full day is on |
 | `connection` | Transfer station, connecting train, wait, and `at_risk` |
+
+## What's new in 1.12.1
+
+Ride matching no longer trusts a TrainView dot that is stuck on a station while the train's current stop is somewhere else. It estimates the train between that stop and the next one, and can match you from the rail line when you are moving. A train with fresh GPS nearby still wins. The riding sensor shows `position_source` as `gps` or `estimated`.
 
 ## What's new in 1.12.0
 
