@@ -488,6 +488,8 @@ class SeptaTripSensor(CoordinatorEntity[SeptaCoordinator], SensorEntity):
             "updated": pack.get("updated"),
             "source": pack.get("source"),
             "trips": pack.get("trips") or [],
+            "day": pack.get("day"),
+            "transfer_min": pack.get("transfer_min"),
             "error": pack.get("error"),
         }
 

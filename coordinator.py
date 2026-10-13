@@ -18,7 +18,21 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .ids import pick_leave
-from .trips import clean_trips, nta_station, parse_next_to_arrive, timetable_trips
+from .trips import (
+    apply_places,
+    clean_trips,
+    delay_deltas,
+    merge_day,
+    nta_station,
+    parse_next_to_arrive,
+    places_from_arrivals,
+    risk_edges,
+    station_in_schedule,
+    station_key,
+    timetable_day,
+    timetable_trips,
+    track_deltas,
+)
 from .const import (
     ALERTS_URL,
     ARRIVALS_URL,
@@ -392,6 +406,10 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._trip_fail: dict[str, int] = {}
         self._trip_hold: dict[str, float] = {}
         self._trip_warned: set[str] = set()
+        self._place_cache: dict[str, tuple[float, dict]] = {}
+        self._delay_seen: dict[str, dict] = {}
+        self._risk_seen: dict[str, dict] = {}
+        self._day_cache: dict[tuple, list] = {}
 
     async def async_board_for_station(self, station: str) -> dict[str, Any]:
         """Live + timetable board for any Regional Rail station."""
@@ -1041,23 +1059,50 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except Exception:  # noqa: BLE001
             _LOGGER.debug("SEPTA trip listener update skipped")
 
+    async def _places(self, station: str) -> dict:
+        key = station_key(station)
+        now = time.time()
+        cached = self._place_cache.get(key)
+        if cached and now - cached[0] < 60:
+            return cached[1]
+        previous = cached[1] if cached else {}
+        try:
+            raw = await self._get(ARRIVALS_URL, {"station": nta_station(station), "results": 10})
+            places = places_from_arrivals(raw)
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("SEPTA arrivals for %s failed", station)
+            places = previous
+        if places is not previous:
+            for event in track_deltas(previous, places, station):
+                self._fire("septa_live_track_changed", event)
+        self._place_cache[key] = (now, places)
+        return places
+
+    def _fire(self, name: str, data: dict) -> None:
+        try:
+            self.hass.bus.async_fire(name, data)
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("SEPTA event %s skipped", name)
+
     async def _refresh_one_trip(self, trip: dict, now: datetime, stamp: float) -> None:
         origin = trip["origin"]
         dest = trip["destination"]
         count = int(trip["count"])
+        transfer = int(trip.get("transfer_min") or 3)
         label = trip.get("label") or ""
+        want_day = bool(trip.get("day"))
+        limit = 50 if want_day else count
         req1 = nta_station(origin)
         req2 = nta_station(dest)
-        rows: list[dict] = []
+        parsed: list[dict] = []
         error = None
         source = "nexttoarrive"
         try:
-            raw = await self._get(NTA_URL, {"req1": req1, "req2": req2, "req3": count})
+            raw = await self._get(NTA_URL, {"req1": req1, "req2": req2, "req3": limit})
             self.trip_raw_lengths[trip["id"]] = len(raw) if isinstance(raw, list) else 0
-            parsed, error = parse_next_to_arrive(raw, now, count)
+            parsed, error = parse_next_to_arrive(raw, now, limit, transfer)
             if error:
                 raise RuntimeError(error)
-            rows = parsed
             self._trip_fail[trip["id"]] = 0
             self._trip_hold.pop(trip["id"], None)
         except Exception as err:  # noqa: BLE001
@@ -1070,8 +1115,57 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if warn not in self._trip_warned:
                 self._trip_warned.add(warn)
                 _LOGGER.warning("SEPTA NextToArrive rejected %s to %s: %s", origin, dest, error)
-            rows = timetable_trips(cached_schedule(), origin, dest, now, count, _LINE_NAMES)
+            parsed = timetable_trips(cached_schedule(), origin, dest, now, count, _LINE_NAMES)
             source = "timetable"
+        rows = list(parsed[:count])
+        day_rows = None
+        if want_day:
+            schedule = cached_schedule()
+            if station_in_schedule(schedule, origin) and station_in_schedule(schedule, dest):
+                key = (now.date().isoformat(), station_key(origin), station_key(dest), transfer)
+                if key not in self._day_cache:
+                    self._day_cache[key] = await self.hass.async_add_executor_job(
+                        timetable_day, schedule, origin, dest, now.date(), transfer, None, _LINE_NAMES
+                    )
+                day_rows = merge_day(self._day_cache[key], parsed, now)
+            else:
+                day_rows = []
+                for item in parsed:
+                    copy = dict(item)
+                    copy["source"] = "live" if source == "nexttoarrive" else "timetable"
+                    copy["departed"] = False
+                    if source == "timetable":
+                        copy["connection"] = None
+                    day_rows.append(copy)
+        origin_places = await self._places(origin)
+        connection_places: dict[str, dict] = {}
+        pool = list(day_rows or rows)
+        for item in pool[:3]:
+            connection = item.get("connection") if isinstance(item.get("connection"), dict) else None
+            station = None if not connection else connection.get("station")
+            if station and station_key(station) not in connection_places:
+                connection_places[station_key(station)] = await self._places(str(station))
+        apply_places(rows, origin_places, connection_places)
+        if day_rows is not None:
+            apply_places(day_rows, origin_places, connection_places)
+        current_delay = {
+            str(item.get("train")): item.get("delay_min")
+            for item in rows[:3]
+            if item.get("delay_min") is not None
+        }
+        for event in delay_deltas(self._delay_seen.get(trip["id"], {}), current_delay):
+            event["trip_id"] = trip["id"]
+            event["rider"] = None
+            self._fire("septa_live_delay_changed", event)
+        self._delay_seen[trip["id"]] = current_delay
+        current_risk = {
+            str(item.get("train")): bool(isinstance(item.get("connection"), dict) and item["connection"].get("at_risk"))
+            for item in rows[:3]
+        }
+        for event in risk_edges(self._risk_seen.get(trip["id"], {}), rows[:3]):
+            event["trip_id"] = trip["id"]
+            self._fire("septa_live_connection_at_risk", event)
+        self._risk_seen[trip["id"]] = current_risk
         self.trip_results[trip["id"]] = {
             "origin": origin,
             "destination": dest,
@@ -1079,6 +1173,8 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "updated": now.isoformat(),
             "source": source,
             "trips": rows,
+            "day": day_rows,
+            "transfer_min": transfer,
             "error": error if source == "timetable" else None,
         }
 

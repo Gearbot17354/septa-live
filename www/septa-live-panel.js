@@ -447,7 +447,7 @@
       const trips = Array.isArray(draft.trips) ? draft.trips : [];
       const tripRows = trips.map((t) => {
         const counts = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => '<option value="' + n + '"' + (Number(t.count || 4) === n ? " selected" : "") + ">" + n + "</option>").join("");
-        return '<div class="commute-row"><div class="who">Trip</div><label class="field">From<select data-trip-origin="' + esc(t.id) + '">' + stationSelect(t.origin) + '</select></label><span class="swap">→</span><label class="field">To<select data-trip-dest="' + esc(t.id) + '">' + stationSelect(t.destination) + '</select></label><label class="field">Next<select data-trip-count="' + esc(t.id) + '">' + counts + '</select></label><label class="field">Label<input data-trip-label="' + esc(t.id) + '" value="' + esc(t.label || "") + '"/></label><button type="button" data-trip-minus="' + esc(t.id) + '">−</button></div>';
+        return '<div class="commute-row"><div class="who">Trip</div><label class="field">From<select data-trip-origin="' + esc(t.id) + '">' + stationSelect(t.origin) + '</select></label><span class="swap">→</span><label class="field">To<select data-trip-dest="' + esc(t.id) + '">' + stationSelect(t.destination) + '</select></label><label class="field">Next<select data-trip-count="' + esc(t.id) + '">' + counts + '</select></label><label class="field">Label<input data-trip-label="' + esc(t.id) + '" value="' + esc(t.label || "") + '"/></label><label class="field"><input type="checkbox" data-trip-day="' + esc(t.id) + '"' + (t.day ? " checked" : "") + '/> Full day</label><button type="button" data-trip-minus="' + esc(t.id) + '">−</button></div>';
       }).join("");
       const serviceCard = (title, state) => {
         const summary = state && state.attributes && state.attributes.summary ? String(state.attributes.summary) : "";
@@ -565,6 +565,7 @@
             destination: dest ? dest.value : t.destination,
             count: count ? Number(count.value) : (t.count || 4),
             label: label ? label.value : (t.label || ""),
+            day: root.querySelector('[data-trip-day="' + t.id + '"]') ? root.querySelector('[data-trip-day="' + t.id + '"]').checked : !!t.day,
           });
         });
       };

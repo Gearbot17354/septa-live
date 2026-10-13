@@ -54,7 +54,7 @@ _FRONTEND = f"{DOMAIN}_frontend_registered"
 _CARD_JS = "septa-live-card.js"
 _PANEL_JS = "septa-live-panel.js"
 _PANEL_PATH = "septa-live"
-_CARD_VERSION = "1.11.6"
+_CARD_VERSION = "1.12.0"
 _PANEL_SIG: tuple | None = None
 _RELOADING: set[str] = set()
 
@@ -95,6 +95,8 @@ def _register_simulate(hass: HomeAssistant) -> None:
                 "max_accuracy_m": matcher.max_accuracy_m,
                 "preferred_line": matcher.preferred_line,
             }
+            if call.data.get("expected_train"):
+                kwargs["expected_train"] = call.data.get("expected_train")
             before = (matcher.riding, matcher.match_count, matcher.last_reason, id(matcher))
         trains = []
         for item in call.data.get("trainview") or []:
@@ -148,6 +150,7 @@ def _register_simulate(hass: HomeAssistant) -> None:
                 vol.Required("fixes"): [dict],
                 vol.Optional("trainview"): [dict],
                 vol.Optional("rider"): str,
+                vol.Optional("expected_train"): str,
             }
         )
     }
@@ -174,6 +177,47 @@ def _register_simulate(hass: HomeAssistant) -> None:
             {
                 vol.Optional("entry_id"): str,
                 vol.Optional("trip_id"): str,
+            }
+        ),
+    )
+
+    async def _set_expected(call):
+        data = hass.data.get(DOMAIN) or {}
+        wanted = str(call.data.get("entry_id") or "").strip()
+        hint = {
+            "train": call.data.get("train"),
+            "origin": call.data.get("origin"),
+            "destination": call.data.get("destination"),
+            "connection_train": call.data.get("connection_train"),
+            "connection_station": call.data.get("connection_station"),
+            "valid_until": call.data.get("valid_until"),
+        }
+        for entry_id, coordinator in data.items():
+            if wanted and entry_id != wanted:
+                continue
+            ride = getattr(coordinator, "ride", None)
+            if ride is None or not hasattr(ride, "rider_for"):
+                continue
+            rider = ride.rider_for(call.data.get("rider"))
+            if rider is None:
+                continue
+            rider.apply_service_hint(hint)
+            rider._push()
+
+    hass.services.async_register(
+        DOMAIN,
+        "set_expected_train",
+        _set_expected,
+        schema=vol.Schema(
+            {
+                vol.Optional("entry_id"): str,
+                vol.Optional("rider"): str,
+                vol.Optional("train"): str,
+                vol.Optional("origin"): str,
+                vol.Optional("destination"): str,
+                vol.Optional("connection_train"): str,
+                vol.Optional("connection_station"): str,
+                vol.Optional("valid_until"): str,
             }
         ),
     )

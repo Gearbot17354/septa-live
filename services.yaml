@@ -21,6 +21,11 @@ simulate_ride:
       description: Person, tracker, or slug. Blank uses the primary rider. Does not change live state.
       selector:
         text:
+    expected_train:
+      name: Expected train
+      description: Train number the replay should prefer. Does not change live state.
+      selector:
+        text:
 
 refresh_trips:
   name: Refresh trips
@@ -33,5 +38,45 @@ refresh_trips:
     trip_id:
       name: Trip
       description: One trip id. Blank refreshes every configured trip.
+      selector:
+        text:
+
+set_expected_train:
+  name: Set expected train
+  description: Prefer this train when matching a ride. A blank train clears the hint. The service wins over an expected-train entity.
+  fields:
+    entry_id:
+      name: Config entry
+      selector:
+        text:
+    rider:
+      name: Rider
+      description: Person, tracker, or slug. Blank uses the primary rider.
+      selector:
+        text:
+    train:
+      name: Train
+      description: Train number. Blank clears the hint.
+      selector:
+        text:
+    origin:
+      name: Origin
+      selector:
+        text:
+    destination:
+      name: Destination
+      selector:
+        text:
+    connection_train:
+      name: Connection train
+      selector:
+        text:
+    connection_station:
+      name: Connection station
+      selector:
+        text:
+    valid_until:
+      name: Valid until
+      description: ISO time. Blank uses three hours, or the scheduled arrival plus an hour when the card sends one.
       selector:
         text:

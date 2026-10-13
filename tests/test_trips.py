@@ -97,7 +97,133 @@ def test_timetable_fallback_direct_trains():
     assert all(row["train"] != "999" for row in rows)
 
 
-def test_entity_id_stays_when_stations_change():
+def test_connection_uses_term_arrival_and_delay():
+    now = datetime(2026, 10, 13, 15, 0, tzinfo=NY)
+    raw = [
+        {
+            "orig_train": "6541",
+            "orig_line": "Lansdale/Doylestown",
+            "orig_departure_time": "3:14PM",
+            "orig_arrival_time": "4:12PM",
+            "orig_delay": "On time",
+            "term_train": "449",
+            "term_line": "Airport",
+            "term_depart_time": "4:25PM",
+            "term_arrival_time": "4:32PM",
+            "Connection": "Suburban Station",
+            "term_delay": "On time",
+            "isdirect": "false",
+        }
+    ]
+    rows, error = T.parse_next_to_arrive(raw, now, 4, 3)
+    assert error is None
+    row = rows[0]
+    assert row["direct"] is False
+    assert row["delay_min"] == 0
+    assert row["depart_sched"].startswith("2026-10-13T15:14:00")
+    assert row["arrive_sched"].startswith("2026-10-13T16:32:00")
+    assert row["arrive_est"].startswith("2026-10-13T16:32:00")
+    link = row["connection"]
+    assert link["station"] == "Suburban Station"
+    assert link["train"] == "449"
+    assert link["arrive_sched"].startswith("2026-10-13T16:12:00")
+    assert link["depart_sched"].startswith("2026-10-13T16:25:00")
+    assert link["arrive_final_sched"].startswith("2026-10-13T16:32:00")
+    assert link["delay_min"] == 0
+    assert link["wait_min"] == 13
+    assert link["at_risk"] is False
+
+
+def test_day_merge_and_transfer_window():
+    schedule = {
+        "stations": {
+            "Origin": {
+                "N": [
+                    {"t": "09:00", "n": "10", "line": "LAN", "days": 127, "d": "Dest"},
+                    {"t": "08:00", "n": "11", "line": "LAN", "days": 127, "d": "Mid"},
+                ]
+            },
+            "Mid": {
+                "S": [
+                    {"t": "08:20", "n": "11", "line": "LAN", "days": 127, "d": "Mid"},
+                    {"t": "08:22", "n": "20", "line": "AIR", "days": 127, "d": "Dest"},
+                    {"t": "08:24", "n": "21", "line": "AIR", "days": 127, "d": "Dest"},
+                ]
+            },
+            "Dest": {
+                "S": [
+                    {"t": "09:40", "n": "10", "line": "LAN", "days": 127, "d": "Dest"},
+                    {"t": "08:40", "n": "20", "line": "AIR", "days": 127, "d": "Dest"},
+                    {"t": "08:50", "n": "21", "line": "AIR", "days": 127, "d": "Dest"},
+                ]
+            },
+        }
+    }
+    day = datetime(2026, 10, 13, 7, 0, tzinfo=NY).date()
+    skeleton = T.timetable_day(schedule, "Origin", "Dest", day, 3)
+    by_train = {row["train"]: row for row in skeleton}
+    assert by_train["10"]["direct"] is True
+    assert by_train["10"]["source"] == "timetable"
+    assert by_train["11"]["direct"] is False
+    assert by_train["11"]["connection"]["train"] == "21"
+    assert by_train["11"]["connection"]["wait_min"] == 4
+    live, _error = T.parse_next_to_arrive(
+        [
+            {
+                "orig_train": "10",
+                "orig_line": "Lansdale/Doylestown",
+                "orig_departure_time": "9:00AM",
+                "orig_arrival_time": "9:45AM",
+                "orig_delay": "5 mins",
+                "isdirect": "true",
+            },
+            {
+                "orig_train": "77",
+                "orig_line": "Airport",
+                "orig_departure_time": "10:00AM",
+                "orig_arrival_time": "10:30AM",
+                "orig_delay": "On time",
+                "isdirect": "true",
+            },
+        ],
+        datetime(2026, 10, 13, 7, 0, tzinfo=NY),
+        10,
+    )
+    merged = T.merge_day(skeleton, live, datetime(2026, 10, 13, 7, 0, tzinfo=NY))
+    found = {row["train"]: row for row in merged}
+    assert found["10"]["delay_min"] == 5
+    assert found["10"]["source"] == "live"
+    assert found["10"]["depart_sched"].startswith("2026-10-13T09:00:00")
+    assert "77" in found and found["77"]["source"] == "live"
+    assert [row["train"] for row in merged] == sorted(found, key=lambda number: found[number]["depart_sched"])
+
+
+def test_track_blank_is_null_and_delay_does_not_repeat():
+    places = T.places_from_arrivals(
+        [
+            {"train_id": "10", "track": "", "platform": "", "track_change": None, "platform_change": None},
+            {"train_id": "11", "track": "2", "platform": "A", "track_change": "2", "platform_change": None},
+        ]
+    )
+    assert places["10"]["track"] is None
+    assert places["10"]["platform"] is None
+    assert places["10"]["track_changed"] is False
+    assert places["11"]["track"] == "2"
+    assert places["11"]["platform"] == "A"
+    assert places["11"]["track_changed"] is True
+    first = T.track_deltas({}, places, "Origin")
+    assert any(item["train"] == "11" for item in first)
+    second = T.track_deltas(places, places, "Origin")
+    assert second == []
+    assert T.delay_deltas({"10": 5}, {"10": 5}) == []
+    assert T.delay_deltas({"10": 5}, {"10": 8}) == [{"train": "10", "old_delay": 5, "new_delay": 8}]
+
+
+def test_service_hint_beats_the_entity():
+    assert T.resolve_hint({"train": "6541"}, "999")["train"] == "6541"
+    assert T.resolve_hint({"train": ""}, '{"train":"999"}') is None
+    assert T.resolve_hint(None, '{"train":"449","connection_train":"12"}')["connection_train"] == "12"
+    assert T.resolve_hint(None, "321")["train"] == "321"
     first = T.trip_ids("abc", "homebound")
     second = T.trip_ids("abc", "homebound")
     assert first == second == ("abc_trip_homebound", "sensor.septa_trip_homebound")

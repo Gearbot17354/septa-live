@@ -42,7 +42,33 @@ def fix(lat, lon, ts, speed=20, course=0, acc=8):
     return R.Fix(lat, lon, acc, speed, course, ts)
 
 
-def test_haversine_and_bearing():
+def test_hint_does_not_override_radius_or_heading():
+    matcher = R.RideMatcher(need_matches=1, min_speed_mps=5, radius_m=100)
+    matcher.set_expected({"train": "999"})
+    far = train("999", 41.0, -76.0, 0)
+    near = train("111", 40.0, -75.0, 0)
+    matcher.update(fix(40.0, -75.0, 0, speed=20, course=0), [far, near], 0)
+    assert matcher.riding_train.trainno == "111"
+
+
+def test_hint_is_preferred_inside_the_radius():
+    matcher = R.RideMatcher(need_matches=1, min_speed_mps=5, radius_m=300)
+    matcher.set_expected({"train": "222", "connection_train": "333", "connection_station": "Suburban Station"})
+    other = train("111", 40.0, -75.0, 0)
+    hinted = train("222", 40.0, -75.0, 0)
+    matcher.update(fix(40.0, -75.0, 0, speed=20, course=0), [other, hinted], 0)
+    assert matcher.riding_train.trainno == "222"
+    boarded = matcher.boarded_ts
+    arrived = train("222", 40.0, -75.0, 0, current="Suburban Station")
+    matcher.update(fix(40.0, -75.0, 20, speed=20, course=0), [arrived], 20)
+    assert matcher.leg == 2
+    assert matcher.boarded_ts == boarded
+    second = train("333", 40.0, -75.0, 0)
+    matcher.update(fix(40.0, -75.0, 40, speed=20, course=0), [second], 40)
+    assert matcher.riding_train.trainno == "333"
+    assert matcher.boarded_ts == boarded
+    assert matcher.payload()["leg"] == 2
+    assert matcher.payload()["expected_train"] == "333"
     assert R.haversine_m(40.0, -75.0, 40.0, -75.0) == 0
     north = R.haversine_m(40.0, -75.0, 41.0, -75.0)
     assert 110_000 < north < 112_000

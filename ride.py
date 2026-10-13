@@ -77,7 +77,10 @@ def write_state_on_loop(hass, write) -> None:
 
 def replay_fixes(samples: list[dict], **kwargs) -> dict:
     """Replay fixes on a new matcher. Does not touch any live matcher."""
+    hint = kwargs.pop("expected_train", None)
     matcher = RideMatcher(**kwargs)
+    if hint:
+        matcher.set_expected(hint if isinstance(hint, dict) else {"train": str(hint)})
     steps = []
     events = []
     for sample in samples:
@@ -235,7 +238,12 @@ def align_remaining(rows: list[dict], nextstop: str | None) -> list[dict]:
     return rows
 
 
-def remaining_stops(rows: object, currentstop: str | None = None, nextstop: str | None = None) -> list[dict]:
+def remaining_stops(
+    rows: object,
+    currentstop: str | None = None,
+    nextstop: str | None = None,
+    until: str | None = None,
+) -> list[dict]:
     """Stops after the train's current position, in schedule order.
 
     A blank act_tm does not mean the train has not been there. SEPTA leaves
@@ -247,7 +255,23 @@ def remaining_stops(rows: object, currentstop: str | None = None, nextstop: str 
     cut = _cut_index(clean, currentstop)
     start = 0 if cut is None else cut + 1
     pending = [_pack_stop(row) for row in clean[start:]]
-    return align_remaining(pending, nextstop)
+    pending = align_remaining(pending, nextstop)
+    if until and _stop_key(until):
+        want = _stop_key(until)
+        for index, row in enumerate(pending):
+            if _stop_key(row.get("station")) == want:
+                return pending[: index + 1]
+    return pending
+
+
+def approaching_connection(remaining: list[dict], station: str | None) -> bool:
+    want = _stop_key(station)
+    if not want:
+        return False
+    for row in list(remaining or [])[:2]:
+        if _stop_key(row.get("station")) == want:
+            return True
+    return False
 
 
 def weekday_bit(weekday: int) -> int:
@@ -365,6 +389,11 @@ class RideMatcher:
         self.fix_gap_s = None
         self.trainview_age_s = None
         self.candidates: list[dict] = []
+        self.expected: dict | None = None
+        self.leg = 1
+        self._service_hint = False
+        self.leg = 1
+        self._service_hint = False
         self.reason_log: list[str] = []
         self.activity_moving = False
         self.stops: list[dict] = []
@@ -541,6 +570,9 @@ class RideMatcher:
                 prefer = -10000
             elif self.candidate and train.trainno == self.candidate:
                 prefer = -5000
+            hint = self.active_expected()
+            if hint and train.trainno == hint:
+                prefer -= 3000
             prefer += self._line_bonus(train)
             key = (prefer, dist)
             if best_key is None or key < best_key:
@@ -566,6 +598,100 @@ class RideMatcher:
             if row["train"] == self.candidate and row["_dist"] <= 2 * row["_limit"]:
                 return True
         return False
+
+    def active_expected(self) -> str | None:
+        if not self.expected:
+            return None
+        if self.leg == 2 and self.expected.get("connection_train"):
+            return str(self.expected["connection_train"])
+        return str(self.expected.get("train") or "") or None
+
+    def planned_trip(self) -> dict | None:
+        exp = self.expected
+        if not exp:
+            return None
+        connection = None
+        if exp.get("connection_train") or exp.get("connection_station"):
+            connection = {
+                "station": exp.get("connection_station"),
+                "train": exp.get("connection_train"),
+                "line": exp.get("connection_line"),
+                "depart_est": exp.get("connection_depart_est"),
+                "arrive_est": exp.get("connection_arrive_est"),
+                "wait_min": exp.get("wait_min"),
+                "at_risk": exp.get("at_risk"),
+            }
+        return {
+            "origin": exp.get("origin"),
+            "destination": exp.get("destination"),
+            "train": exp.get("first_train") or exp.get("train"),
+            "connection": connection,
+        }
+
+    def set_expected(self, hint: dict | None, now: float | None = None) -> None:
+        if not hint or not str(hint.get("train") or "").strip():
+            self.expected = None
+            self.leg = 1
+            return
+        train = str(hint.get("train") or "").strip()
+        valid = hint.get("valid_until")
+        if valid is None and now is not None:
+            valid = float(now) + 3 * 3600
+        self.expected = {
+            "train": train,
+            "first_train": train,
+            "origin": hint.get("origin") or None,
+            "destination": hint.get("destination") or None,
+            "connection_train": str(hint.get("connection_train") or "").strip() or None,
+            "connection_station": hint.get("connection_station") or None,
+            "connection_line": hint.get("connection_line") or None,
+            "connection_depart_est": hint.get("connection_depart_est"),
+            "connection_arrive_est": hint.get("connection_arrive_est"),
+            "wait_min": hint.get("wait_min"),
+            "at_risk": hint.get("at_risk"),
+            "valid_until": valid,
+        }
+        self.leg = 1
+
+    def clear_expected(self, reason: str) -> RideEvent:
+        train = self.active_expected()
+        self.expected = None
+        self.leg = 1
+        event = RideEvent("expected_cleared", {"reason": reason, "train": train, "expected_train": train})
+        self.events.append(event)
+        return event
+
+    def note_train_status(self, trainno: str, cancelled: bool = False, late: int | None = None) -> RideEvent | None:
+        if self.active_expected() != str(trainno):
+            return None
+        if cancelled:
+            return self.clear_expected("cancelled")
+        if late is not None and int(late) > 60:
+            return self.clear_expected("delay")
+        return None
+
+    def _expire_expected(self, now: float) -> None:
+        valid = None if not self.expected else self.expected.get("valid_until")
+        if valid is not None and now > float(valid):
+            self.clear_expected("expired")
+
+    def _maybe_handover(self) -> None:
+        exp = self.expected
+        if not exp or self.leg != 1 or self.riding_train is None:
+            return
+        if self.riding_train.trainno != str(exp.get("train") or ""):
+            return
+        station = exp.get("connection_station")
+        if not station or not exp.get("connection_train"):
+            return
+        if _stop_key(self.riding_train.currentstop) == _stop_key(station):
+            self.leg = 2
+
+    def _same_trip(self, trainno: str) -> bool:
+        exp = self.expected
+        if not exp or not exp.get("connection_train"):
+            return False
+        return str(trainno) == str(exp.get("connection_train")) and (self.leg == 2 or _stop_key(getattr(self.riding_train, "currentstop", "")) == _stop_key(exp.get("connection_station")))
 
     def payload(self) -> dict:
         train = self.riding_train
@@ -597,6 +723,15 @@ class RideMatcher:
             "fix_gap_s": None if self.fix_gap_s is None else round(self.fix_gap_s, 1),
             "trainview_age_s": None if self.trainview_age_s is None else round(self.trainview_age_s, 1),
             "candidates": list(self.candidates),
+            "expected_train": self.active_expected(),
+            "planned_trip": self.planned_trip(),
+            "transfer_next": False,
+            "leg": self.leg if self.expected else 1,
+            "final_destination": None if not self.expected else self.expected.get("destination"),
+            "next_stop_track": None,
+            "next_stop_platform": None,
+            "connection_track": None,
+            "connection_platform": None,
         }
 
     def _event(self, kind: str, extra: dict | None = None) -> RideEvent:
@@ -651,6 +786,7 @@ class RideMatcher:
     def update(self, fix: Fix, trains: list[Train], trains_ts: float, now: float | None = None) -> RideEvent | None:
         self.events = []
         self._now = now if now is not None else fix.ts
+        self._expire_expected(self._now)
         self._remember(trains, trains_ts)
         self.trainview_age_s = abs(fix.ts - trains_ts)
         self.fix_gap_s = None if self.last_fix is None else fix.ts - self.last_fix.ts
@@ -726,6 +862,7 @@ class RideMatcher:
             self.switch_count = 0
             self.switch_train = None
             self.confidence = "riding"
+            self._maybe_handover()
             self._note("riding")
             return None
         if self.riding and best.trainno != self.riding_train.trainno:
@@ -735,6 +872,15 @@ class RideMatcher:
                 self.switch_train = best.trainno
                 self.switch_count = 1
             if self.switch_count >= self.need_matches:
+                if self._same_trip(best.trainno):
+                    self.leg = 2
+                    self.riding_train = None
+                    self.candidate = None
+                    self.match_count = 0
+                    self.switch_count = 0
+                    self.switch_train = None
+                    self._note("boarded")
+                    return self._board(best, fix, dist)
                 self._exit(fix.ts, "transfer")
                 self._note("boarded")
                 return self._board(best, fix, dist)
@@ -763,10 +909,19 @@ class RideMatcher:
         if seen is not None:
             self.riding_train = seen
             self._last_seen[number] = trains_ts
+            self._maybe_handover()
+            if seen.late and int(seen.late) > 60 and self.active_expected() == number:
+                return self.clear_expected("delay")
         else:
             last = self._last_seen.get(number)
             if last is not None and now - last > 300:
                 return self._exit(now, "train_gone")
+        hinted = self.active_expected()
+        if hinted:
+            seen_hint = self._last_seen.get(hinted)
+            if seen_hint is not None and now - seen_hint > 3600:
+                return self.clear_expected("stale")
+        self._expire_expected(now)
         if self.last_good_fix_ts is None or now - self.last_good_fix_ts > 20 * 60:
             if self.last_good_fix_ts is not None and now - self.last_good_fix_ts > 20 * 60:
                 return self._exit(now, "no_fix")

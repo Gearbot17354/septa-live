@@ -12,7 +12,7 @@ This is a **custom repository** — the same way most community plugins are inst
 2. Open the three-dot menu → **Custom repositories**.
 3. Paste `https://github.com/Gearbot17354/septa-live`.
 4. Category: **Integration**.
-5. **Add**, then find **SEPTA Transit** and **Download** **1.11.6**. Restart Home Assistant after the update so the new ride code is the code that is running.
+5. **Add**, then find **SEPTA Transit** and **Download** **1.12.0**. Restart Home Assistant after the update so the new ride code is the code that is running.
 6. **Restart Home Assistant**.
 7. **Settings → Devices & Services → Add Integration → SEPTA Transit**.
 8. Pick a station (for example Lansdale) and a destination (Jefferson Station) used for the leave-now countdown.
@@ -26,7 +26,7 @@ Repo: [github.com/Gearbot17354/septa-live](https://github.com/Gearbot17354/septa
 If Add card still does not list SEPTA Transit, enable Advanced Mode in your profile, then **Settings → Dashboards → ⋮ → Resources → Add**:
 
 ```
-/local/septa-live-card.js?v=1.11.6
+/local/septa-live-card.js?v=1.12.0
 type: module
 ```
 
@@ -53,19 +53,24 @@ trips:
     label: Home
 ```
 
-The sensor state is minutes until the next departure, including delay. Attributes:
+The sensor state is minutes until the next departure, including delay. Turn on **Full day** for that trip to also fill a `day` attribute with every departure today, including ones that already left. Live NextToArrive rows replace the timetable delay and the connection. A connection shorter than `transfer_min` (default 3 minutes) is marked `at_risk`.
+
+`septa_live.set_expected_train` tells ride matching which train you plan to take. It is preferred over other trains in range, but it never overrides the radius or heading checks. When that train reaches `connection_station`, the same ride continues on `connection_train` as leg 2. An optional `ride_expected` entity (a train number, or JSON) is the same hint; a service call wins.
+
+Track and platform are copied from Arrivals only when SEPTA sends them. Empty means null. The integration fires `septa_live_track_changed`, `septa_live_delay_changed`, `septa_live_connection_at_risk`, and `septa_live_expected_train_cleared`.
 
 | Attribute | Meaning |
 | --- | --- |
 | `origin`, `destination`, `label` | The trip you saved |
 | `updated` | When it was fetched |
 | `source` | `nexttoarrive`, or `timetable` if SEPTA did not answer |
-| `error` | Set when NextToArrive rejects the station names |
-| `trips` | The next departures |
+| `trips` | The next departures. For a transfer, arrival is the final station |
+| `day` | Today's full list, only when Full day is on |
+| `connection` | Transfer station, connecting train, wait, and `at_risk` |
 
-Each item in `trips` has `train`, `line`, `depart_sched`, `depart_est`, `arrive_sched`, `arrive_est`, `delay_min`, `minutes`, `direct`, and `connection`. Times are ISO times in America/New_York. `depart_est` is the scheduled departure plus the delay. `connection` is `{station, train, line, depart}` when the ride is not direct, otherwise null. On the timetable fallback, `delay_min` is null.
+## What's new in 1.12.0
 
-`Gray 30th Street` is sent to NextToArrive as `30th Street Station`. Call `septa_live.refresh_trips` to fetch again. Pass `trip_id` to refresh one trip.
+Trips can list the whole service day, including a transfer when no direct train links the two stations. A non-direct NextToArrive row now uses the connecting train's arrival, not the arrival at the transfer. Ride matching can prefer an expected train and keep one boarded time across the transfer. Track, platform, and delay changes are events.
 
 ## What's new in 1.11.6
 

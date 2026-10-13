@@ -26,7 +26,8 @@
           "ride_matches": "Fixes in a row before boarding",
           "ride_max_accuracy_m": "Ignore fixes worse than (meters)",
           "ride_request_updates": "Ask the phone for a fresh location near a station",
-          "ride_activity_sensor": "Phone activity sensor (optional)"
+          "ride_activity_sensor": "Phone activity sensor (optional)",
+          "ride_expected": "Expected train entity (optional)"
         }
       }
     },
@@ -60,9 +61,24 @@
           "ride_matches": "Fixes in a row before boarding",
           "ride_max_accuracy_m": "Ignore fixes worse than (meters)",
           "ride_request_updates": "Ask the phone for a fresh location near a station",
-          "ride_activity_sensor": "Phone activity sensor (optional)"
+          "ride_activity_sensor": "Phone activity sensor (optional)",
+          "ride_expected": "Expected train entity (optional)"
         }
       }
+    }
+  },
+  "services": {
+    "refresh_trips": {
+      "name": "Refresh trips",
+      "description": "Fetch NextToArrive again for configured trips."
+    },
+    "set_expected_train": {
+      "name": "Set expected train",
+      "description": "Prefer this train while matching a ride. A blank train clears the hint."
+    },
+    "simulate_ride": {
+      "name": "Simulate a ride",
+      "description": "Replay phone fixes without changing the live riding sensor."
     }
   }
 }

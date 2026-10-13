@@ -37,6 +37,7 @@ from .ride import (
     Fix,
     RideMatcher,
     TrainCache,
+    approaching_connection,
     configured_riders,
     dedupe_riders,
     haversine_m,
@@ -132,6 +133,40 @@ class RiderController:
             self._pick(CONF_RIDE_MAX_ACCURACY, DEFAULT_RIDE_MAX_ACCURACY) or DEFAULT_RIDE_MAX_ACCURACY
         )
         self.matcher.preferred_line = self._preferred_line()
+        self._apply_entity_hint()
+
+    def _expected_entity(self) -> str:
+        raw = self._pick("ride_expected", "")
+        if isinstance(raw, dict):
+            return str(raw.get(self.slug) or (raw.get("") if self.is_primary else "") or "").strip()
+        text = str(raw or "").strip()
+        return text if self.is_primary else ""
+
+    def _apply_entity_hint(self) -> None:
+        if self.matcher._service_hint:
+            return
+        entity = self._expected_entity()
+        if not entity:
+            return
+        state = self.hass.states.get(entity)
+        from .trips import parse_expected_state
+
+        self.matcher.set_expected(parse_expected_state(None if state is None else state.state))
+
+    def apply_service_hint(self, hint: dict | None, now: float | None = None) -> None:
+        train = "" if not hint else str(hint.get("train") or "").strip()
+        self.matcher._service_hint = bool(train)
+        cleaned = dict(hint or {})
+        valid = cleaned.get("valid_until")
+        if isinstance(valid, str) and valid.strip():
+            try:
+                from datetime import datetime
+
+                parsed = datetime.fromisoformat(valid.strip())
+                cleaned["valid_until"] = parsed.timestamp()
+            except ValueError:
+                cleaned["valid_until"] = None
+        self.matcher.set_expected(cleaned if train else None, now=now)
 
     def _read_options(self) -> None:
         self.apply_tuning()
@@ -142,6 +177,8 @@ class RiderController:
         payload["remaining_stops"] = remaining
         if self.matcher.riding and remaining:
             payload["next_stop"] = remaining[0].get("station") or payload.get("next_stop")
+        station = None if not self.matcher.expected else self.matcher.expected.get("connection_station")
+        payload["transfer_next"] = approaching_connection(remaining, station)
         payload["remaining_source"] = self._remaining_source if self.matcher.riding else None
         payload["tracker"] = self._resolved or self._tracker_hint or self._configured or None
         payload["last_fix"] = _iso(self.matcher.last_fix.ts) if self.matcher.last_fix else None
@@ -372,7 +409,11 @@ class RiderController:
                 self._rr_train = train.trainno
                 self._rr_ts = 0.0
         if self._rr_raw:
-            self._remaining = remaining_stops(self._rr_raw, train.currentstop, train.nextstop)
+            until = None
+            expected = self.matcher.expected
+            if self.matcher.leg == 1 and expected and expected.get("connection_station"):
+                until = expected.get("connection_station")
+            self._remaining = remaining_stops(self._rr_raw, train.currentstop, train.nextstop, until)
             self._remaining_source = "rrschedules"
             return
         now_ny = datetime.now(NY)
@@ -400,6 +441,17 @@ class RiderController:
         snap = copy.deepcopy(self.matcher)
         try:
             self.matcher.tick(now.timestamp(), trains, ts)
+            for event in list(self.matcher.events):
+                if event.kind == "expected_cleared":
+                    self.hass.bus.async_fire(
+                        "septa_live_expected_train_cleared",
+                        {
+                            "train": event.payload.get("train"),
+                            "reason": event.payload.get("reason"),
+                            "rider": self.slug,
+                            "entry_id": self.entry.entry_id,
+                        },
+                    )
         except Exception:  # noqa: BLE001
             self.matcher = snap
             _LOGGER.exception("SEPTA ride scan failed")
