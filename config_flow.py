@@ -108,17 +108,18 @@ class SeptaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Set up a station tracker."""
 
     VERSION = 1
-    MINOR_VERSION = 2
+    MINOR_VERSION = 3
 
     async def async_migrate_entry(self, hass, config_entry) -> bool:
         """Seed home and city stations without touching saved trips."""
         if config_entry.version > 1:
             return False
-        if config_entry.version == 1 and getattr(config_entry, "minor_version", 1) >= 2:
+        minor = int(getattr(config_entry, "minor_version", 1) or 1)
+        if config_entry.version == 1 and minor >= 3:
             return True
         options = migrate_options(dict(config_entry.data), dict(config_entry.options))
         try:
-            hass.config_entries.async_update_entry(config_entry, options=options, minor_version=2, version=1)
+            hass.config_entries.async_update_entry(config_entry, options=options, minor_version=3, version=1)
         except TypeError:
             hass.config_entries.async_update_entry(config_entry, options=options)
         return True

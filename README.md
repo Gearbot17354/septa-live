@@ -162,7 +162,7 @@ The My Train card shows a picture for each person who is on a train. People shar
 
 More than one person can be on a train at the same time. In the integration options, **People and phones on the train** takes whoever you pick, for example `person.alex` and `person.sam`, or their phone trackers. A person and that person's phone count as one rider.
 
-The first person stays on the sensors you already have: `binary_sensor.septa_<station>_riding` and `sensor.septa_<station>_my_train`. Those keep their history. Each other person gets `binary_sensor.septa_riding_<name>` and `sensor.septa_my_train_<name>`. `sensor.septa_riders_count` is how many of them are aboard, and its `trains` attribute shows when two people are on the same train.
+The first person and every other person use the same pattern: `binary_sensor.septa_riding_<name>` and `sensor.septa_my_train_<name>`. An update renames the old station ids (`binary_sensor.septa_<station>_riding` and `sensor.septa_<station>_my_train`) when you have not renamed them and the new id is free. `sensor.septa_riders_count` is how many of them are aboard, and its `trains` attribute shows when two people are on the same train.
 
 Each person has a separate matcher. Train positions are fetched once and shared. If you only had a phone tracker set, it is treated as the first rider until you open options.
 
@@ -187,7 +187,7 @@ The bundled timetable file ends October 17, 2026. After that date the integratio
 
 ## What's new in 1.10.0
 
-- **Which train am I on.** Pick your phone's `device_tracker` (or a `person`) under Configure. After two moving fixes near a TrainView train, `binary_sensor.septa_<station>_riding` turns on and `sensor.septa_<station>_my_train` shows the train number.
+- **Which train am I on.** Pick your phone's `device_tracker` (or a `person`) under Configure. After two moving fixes near a TrainView train, `binary_sensor.septa_riding_<name>` turns on and `sensor.septa_my_train_<name>` shows the train number. A train whose GPS is stuck on the last station can still match when you are moving with it.
 - The new **SEPTA Transit My Train** card hides until you are actually on board. It shows the train, line, destination, delay, next stop, and the next remaining stops.
 - Boarded and exited events: `septa_live_train_boarded` and `septa_live_train_exited`.
 - Saving options still does not reload the integration, and the options form no longer wipes sidebar watches or line picks.
@@ -372,9 +372,9 @@ Each station creates a device with:
 | Trolley | number of T / G / D vehicles reporting |
 | Map | number of GPS vehicles; `vehicles` lists lat/lon for the live map card |
 | My train | train number while you are riding, otherwise empty. Attributes: line, destination, next stop, late minutes, consist, remaining stops |
-| Riding | on while the phone is matched to that train (`binary_sensor.septa_<station>_riding`) |
+| Riding | on while the phone is matched to that train (`binary_sensor.septa_riding_<name>`) |
 
-Object ids stay `sensor.septa_<station>_my_train` and `binary_sensor.septa_<station>_riding`. If Home Assistant prefixes an area, the card still finds `sensor.<area>_septa_<station>_my_train`.
+Object ids for a rider are `sensor.septa_my_train_<name>` and `binary_sensor.septa_riding_<name>`. If Home Assistant prefixes an area, the card still finds the entity.
 
 ## Which train am I on
 

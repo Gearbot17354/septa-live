@@ -33,6 +33,11 @@ try:
         REBOARD_COOLDOWN_S,
         SLOW_MPH,
         SLOW_SECONDS,
+        SPEED_CONFIRM_FIXES,
+        SPEED_CONFIRM_MPH,
+        SPEED_MATCH_M,
+        ESTIMATE_SLACK_M,
+        FRESH_TRAINVIEW_S,
         TERMINAL_GRACE_S,
     )
 except ImportError:
@@ -44,6 +49,11 @@ except ImportError:
     MAX_RIDE_SECONDS = 3 * 3600
     REBOARD_COOLDOWN_S = 600
     TERMINAL_GRACE_S = 120
+    FRESH_TRAINVIEW_S = 60
+    SPEED_CONFIRM_MPH = 20
+    SPEED_CONFIRM_FIXES = 2
+    SPEED_MATCH_M = 1500
+    ESTIMATE_SLACK_M = 500
 
 
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -136,9 +146,20 @@ def replay_fixes(samples: list[dict], **kwargs) -> dict:
                 "phone_speed_mph": matcher.phone_speed_mph,
                 "match_count": matcher.match_count,
                 "position_source": matcher.position_source,
+                "confidence": matcher.confidence,
             }
         )
-    return {"events": events, "steps": steps, "riding": matcher.riding, "position_source": matcher.position_source}
+    return {
+        "events": events,
+        "steps": steps,
+        "riding": matcher.riding,
+        "train": matcher.riding_train.trainno if matcher.riding_train else None,
+        "position_source": matcher.position_source,
+        "confidence": matcher.confidence,
+        "candidates": list(matcher.candidates),
+        "accepted_fix_count": matcher.accepted_fix_count,
+        "skipped_fix_count": matcher.skipped_fix_count,
+    }
 
 
 def _float(value: object) -> float | None:
@@ -471,19 +492,43 @@ def _center_or_terminal(name: str) -> bool:
     return any(part in text for part in _CENTER)
 
 
-def position_is_stale(train: Train, trace: list[tuple] | None = None) -> bool:
-    """True when TrainView's lat/lon should not be trusted."""
+def _fix_fingerprint(fix: Fix) -> tuple:
+    def num(value: float | None) -> float | None:
+        return None if value is None else round(float(value), 3)
+
+    return (round(fix.lat, 6), round(fix.lon, 6), num(fix.speed_mps), num(fix.acc_m))
+
+
+def classify_fix(fix: Fix, last: Fix | None, now: float) -> tuple[str, Fix]:
+    """Accept a fix whose timestamp repeated but whose position or speed changed.
+
+    A truly identical sample is ``duplicate_ts``. A repeated timestamp that
+    moved uses ``max(last.ts + 1, now)`` so a derived speed is not infinite.
+    """
+    if last is None or fix.ts > last.ts:
+        return "ok", fix
+    if _fix_fingerprint(fix) == _fix_fingerprint(last):
+        return "duplicate_ts", fix
+    bumped = max(float(last.ts) + 1.0, float(now))
+    return "ok", Fix(fix.lat, fix.lon, fix.acc_m, fix.speed_mps, fix.course, bumped)
+
+
+def stale_reason(train: Train, trace: list[tuple] | None = None) -> str | None:
+    """Why TrainView's lat/lon should not be trusted, or None."""
     station = _coord_station(train.lat, train.lon)
     current = str(train.currentstop or "").strip()
     if station and current and not _same_stop(station, current):
-        return True
-    if not train.consist and station and current and not _same_stop(station, current) and _center_or_terminal(station):
-        return True
+        return "station_mismatch"
     rows = list(trace or [])[-STALE_POLLS:]
     if len(rows) >= STALE_POLLS and len({row[0] for row in rows}) == 1:
         if len({(row[1], row[2], row[3]) for row in rows}) > 1:
-            return True
-    return False
+            return "frozen_trace"
+    return None
+
+
+def position_is_stale(train: Train, trace: list[tuple] | None = None) -> bool:
+    """True when TrainView's lat/lon should not be trusted."""
+    return stale_reason(train, trace) is not None
 
 
 def _line_stops(line: str) -> list[dict]:
@@ -652,6 +697,9 @@ class RideMatcher:
         self.stale_gps = False
         self._match_via = ""
         self._fast_count = 0
+        self.accepted_fix_count = 0
+        self.skipped_fix_count = 0
+        self.last_fix_ts = None
         self._trace: dict[str, list[tuple]] = {}
         self.leg = 1
         self._service_hint = False
@@ -824,6 +872,68 @@ class RideMatcher:
             prefer += 4000
         return prefer + self._line_bonus(train)
 
+    def _on_preferred(self, train: Train) -> bool:
+        hint = self.active_expected()
+        if hint and train.trainno == hint:
+            return True
+        if not self.preferred_line:
+            return False
+        blob = f"{train.line} {train.dest}".lower()
+        return self.preferred_line.lower() in blob
+
+    def _speed_confirm(self, fix: Fix, scored: list[dict], views: dict, speed: float | None, tol: float):
+        """Board a stale estimated train when the phone is clearly moving with it.
+
+        Needs a fresh TrainView, two fast fixes, a heading inside tolerance, and
+        a distance inside 1500 m plus accuracy plus extra slack for an estimate.
+        """
+        age = self.trainview_age_s
+        if age is None or age >= FRESH_TRAINVIEW_S:
+            return None
+        if self._fast_count < SPEED_CONFIRM_FIXES:
+            return None
+        if (speed or 0) < SPEED_CONFIRM_MPH * 0.44704:
+            return None
+        pool = []
+        for row in scored:
+            train = row.get("_train")
+            if train is None:
+                continue
+            view = views.get(train.trainno)
+            if not view:
+                continue
+            stale, source = view[3], view[4]
+            if not stale and source != "estimated":
+                continue
+            hdiff = row.get("heading_diff")
+            if hdiff is not None and hdiff > tol:
+                row["last_reject_reason"] = "heading"
+                row["_reject"] = True
+                continue
+            slack = ESTIMATE_SLACK_M if stale or source == "estimated" else 0.0
+            limit = SPEED_MATCH_M + (fix.acc_m or 0.0) + slack
+            if row["_dist"] > limit:
+                row["last_reject_reason"] = "stale" if stale else "distance"
+                row["_reject"] = True
+                continue
+            pool.append(row)
+        if not pool:
+            return None
+        preferred = [row for row in pool if self._on_preferred(row["_train"])]
+        if preferred:
+            chosen = min(preferred, key=lambda row: row["_dist"])
+        elif len({row["_train"].line for row in pool}) == 1:
+            chosen = min(pool, key=lambda row: row["_dist"])
+        else:
+            for row in pool:
+                row["last_reject_reason"] = "line"
+            return None
+        chosen["_reject"] = False
+        chosen["last_reject_reason"] = None
+        chosen["_via"] = "estimated"
+        chosen["limit_m"] = round(SPEED_MATCH_M + (fix.acc_m or 0.0) + ESTIMATE_SLACK_M)
+        return chosen["_train"], chosen["_dist"], "estimated"
+
     def _pick(self, fix: Fix, trains: list[Train], trains_ts: float, speed: float | None, course: float | None) -> tuple[Train | None, float | None, str]:
         phone_speed = speed or 0.0
         gap = abs(fix.ts - trains_ts)
@@ -838,6 +948,24 @@ class RideMatcher:
         heading_blocked = False
         for train in trains:
             if self._ignore_board(train, fix.ts):
+                scored.append(
+                    {
+                        "train": train.trainno,
+                        "line": train.line,
+                        "dist_m": None,
+                        "limit_m": round(self.radius_m),
+                        "heading_diff": None,
+                        "stale_gps": False,
+                        "position_source": "gps",
+                        "stale_reason": None,
+                        "last_reject_reason": "cooldown",
+                        "_train": train,
+                        "_dist": 1e12,
+                        "_limit": self.radius_m,
+                        "_reject": True,
+                        "_via": "cooldown",
+                    }
+                )
                 continue
             lat, lon, route_heading, stale, source = views[train.trainno]
             if stale and source == "estimated":
@@ -857,10 +985,16 @@ class RideMatcher:
                 travel = self._travel_bearing(train)
                 heading = travel if travel is not None else train.heading
             hdiff = None if course is None or heading is None else angle_diff(course, heading)
-            reject = dist > limit
-            if not reject and hdiff is not None and hdiff > tol:
+            reject = False
+            reason = None
+            if hdiff is not None and hdiff > tol:
                 reject = True
-                heading_blocked = True
+                reason = "heading"
+                if dist <= limit:
+                    heading_blocked = True
+            elif dist > limit:
+                reject = True
+                reason = "stale" if stale else "distance"
             scored.append(
                 {
                     "train": train.trainno,
@@ -870,6 +1004,8 @@ class RideMatcher:
                     "heading_diff": None if hdiff is None else round(hdiff),
                     "stale_gps": stale,
                     "position_source": source if stale else "gps",
+                    "stale_reason": stale_reason(train, self._trace.get(train.trainno)),
+                    "last_reject_reason": reason,
                     "_train": train,
                     "_dist": dist,
                     "_limit": limit,
@@ -886,7 +1022,11 @@ class RideMatcher:
                 best_dist = dist
                 best_key = key
                 best_via = "radius" if source == "gps" else "estimated"
-        if best is None and self._fast_count >= 2 and (speed or 0) >= FAST_MPH * 0.44704:
+        if best is None:
+            picked = self._speed_confirm(fix, scored, views, speed, tol)
+            if picked is not None:
+                best, best_dist, best_via = picked
+        if best is None and self._fast_count >= SPEED_CONFIRM_FIXES and (speed or 0) >= FAST_MPH * 0.44704:
             for train in trains:
                 if self._ignore_board(train, fix.ts):
                     continue
@@ -917,6 +1057,7 @@ class RideMatcher:
                         row["position_source"] = "estimated" if row["stale_gps"] else "gps"
                         row["_dist"] = reach
                         row["_reject"] = False
+                        row["last_reject_reason"] = None
                         row["_via"] = "corridor"
                         break
                 else:
@@ -929,6 +1070,8 @@ class RideMatcher:
                             "heading_diff": None if course is None else round(angle_diff(course, corridor[1])),
                             "stale_gps": True,
                             "position_source": "estimated",
+                            "stale_reason": stale_reason(train, self._trace.get(train.trainno)),
+                            "last_reject_reason": None,
                             "_train": train,
                             "_dist": reach,
                             "_limit": CORRIDOR_REACH_M,
@@ -939,17 +1082,24 @@ class RideMatcher:
         scored.sort(key=lambda row: row["_dist"])
         self.candidates = [
             {
-                key: row[key]
-                for key in ("train", "line", "dist_m", "limit_m", "heading_diff", "stale_gps", "position_source")
+                "train": row["train"],
+                "line": row["line"],
+                "dist_m": row["dist_m"],
+                "limit_m": row["limit_m"],
+                "heading_diff": row["heading_diff"],
+                "stale_gps": row["stale_gps"],
+                "position_source": row["position_source"],
+                "last_reject_reason": row.get("last_reject_reason"),
+                "stale_reason": row.get("stale_reason"),
             }
             for row in scored[:3]
         ]
         self._scored = scored
         if best is not None:
             chosen = views.get(best.trainno, (0, 0, None, False, "gps"))
-            self.stale_gps = bool(chosen[3]) or best_via == "corridor"
+            self.stale_gps = bool(chosen[3]) or best_via in {"corridor", "estimated"}
             self.position_source = "estimated" if self.stale_gps else "gps"
-            self._match_via = "corridor" if best_via == "corridor" else "radius"
+            self._match_via = best_via if best_via in {"corridor", "estimated"} else "radius"
             _LOGGER.debug(
                 "SEPTA ride accept train=%s source=%s stale=%s via=%s dist_m=%s",
                 best.trainno,
@@ -1087,7 +1237,15 @@ class RideMatcher:
             "distance_m": None if self.distance_m is None else round(self.distance_m),
             "heading": train.heading if train else None,
             "match_count": self.match_count if not riding else self.need_matches,
-            "confidence": "gps_gap" if self.gps_gap and riding else ("riding" if riding else ("candidate" if self.candidate else "")),
+            "confidence": (
+                "gps_gap"
+                if self.gps_gap and riding
+                else (
+                    "estimated"
+                    if riding and self.position_source == "estimated"
+                    else ("riding" if riding else ("candidate" if self.candidate else ""))
+                )
+            ),
             "boarded_at": self.boarded_at,
             "boarded_time": self.boarded_ts,
             "gps_gap": bool(self.gps_gap and riding),
@@ -1097,6 +1255,9 @@ class RideMatcher:
             "speed_source": self.speed_source,
             "fix_gap_s": None if self.fix_gap_s is None else round(self.fix_gap_s, 1),
             "trainview_age_s": None if self.trainview_age_s is None else round(self.trainview_age_s, 1),
+            "accepted_fix_count": self.accepted_fix_count,
+            "skipped_fix_count": self.skipped_fix_count,
+            "last_fix_ts": self.last_fix_ts,
             "candidates": list(self.candidates),
             "expected_train": self.active_expected(),
             "planned_trip": self.planned_trip(),
@@ -1128,7 +1289,7 @@ class RideMatcher:
         self.switch_count = 0
         self.distance_m = dist
         self.gps_gap = False
-        self.confidence = "estimated" if self._match_via == "corridor" else "riding"
+        self.confidence = "estimated" if self._match_via in {"corridor", "estimated"} else "riding"
         gap = _corridor_gap(fix.lat, fix.lon, train.line)
         if gap is not None and gap[0] <= CORRIDOR_M:
             self._on_corridor = True
@@ -1353,17 +1514,23 @@ class RideMatcher:
         self._now = now if now is not None else fix.ts
         self._expire_expected(self._now)
         self._remember(trains, trains_ts)
+        kind, fix = classify_fix(fix, self.last_fix, self._now)
         self.trainview_age_s = abs(fix.ts - trains_ts)
         self.fix_gap_s = None if self.last_fix is None else fix.ts - self.last_fix.ts
         if fix.acc_m is not None and fix.acc_m > self.max_accuracy_m:
+            self.skipped_fix_count += 1
             self._note("accuracy")
             return None
-        if self.last_fix is not None and fix.ts <= self.last_fix.ts:
-            self._note("duplicate_ts")
+        if kind != "ok":
+            self.skipped_fix_count += 1
+            self._note(kind)
             return None
         if self._now - fix.ts > self.max_fix_age_s:
+            self.skipped_fix_count += 1
             self._note("stale_fix")
             return None
+        self.accepted_fix_count += 1
+        self.last_fix_ts = fix.ts
         speed = self._phone_speed(fix)
         course = self._course(fix, speed)
         self.phone_speed_mph = None if speed is None else round(speed / 0.44704, 1)
@@ -1435,7 +1602,7 @@ class RideMatcher:
             self.riding_train = best
             self.switch_count = 0
             self.switch_train = None
-            self.confidence = "estimated" if self._match_via == "corridor" else "riding"
+            self.confidence = "estimated" if self._match_via in {"corridor", "estimated"} else "riding"
             self._maybe_handover()
             self._note("riding")
             return None
@@ -1464,7 +1631,7 @@ class RideMatcher:
             self.match_count += 1
         else:
             self.candidate = best.trainno
-            if self._match_via == "corridor":
+            if self._match_via in {"corridor", "estimated"}:
                 self.match_count = min(self.need_matches, max(1, self._fast_count))
             else:
                 self.match_count = 1

@@ -38,6 +38,7 @@ from .ride import (
     RideMatcher,
     TrainCache,
     approaching_connection,
+    classify_fix,
     configured_riders,
     dedupe_riders,
     haversine_m,
@@ -707,6 +708,31 @@ def _state_ts(state) -> float:
         return time.time()
 
 
+def _gps_ts(state) -> float | None:
+    """Tracker GPS time when the companion app provides one. Otherwise None."""
+    attrs = getattr(state, "attributes", None) or {}
+    for key in ("gps_timestamp", "timestamp", "last_seen", "last_seen_at"):
+        raw = attrs.get(key)
+        if raw in (None, ""):
+            continue
+        if hasattr(raw, "timestamp"):
+            try:
+                return float(raw.timestamp())
+            except Exception:  # noqa: BLE001
+                continue
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            text = str(raw).strip()
+            if not text:
+                continue
+            try:
+                return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                continue
+    return None
+
+
 def _fix_from_state(state) -> Fix | None:
     lat = _num(state.attributes.get("latitude"))
     lon = _num(state.attributes.get("longitude"))
@@ -726,15 +752,16 @@ def _fix_from_state(state) -> Fix | None:
         acc_m=_num(state.attributes.get("gps_accuracy")),
         speed_mps=speed,
         course=course,
-        ts=_state_ts(state),
+        ts=_gps_ts(state) or _state_ts(state),
     )
 
 
 def _fix_accepted(fix: Fix, matcher: RideMatcher) -> bool:
     if fix.acc_m is not None and fix.acc_m > matcher.max_accuracy_m:
         return False
-    if matcher.last_fix is not None and fix.ts <= matcher.last_fix.ts:
+    kind, prepared = classify_fix(fix, matcher.last_fix, time.time())
+    if kind != "ok":
         return False
-    if time.time() - fix.ts > matcher.max_fix_age_s:
+    if time.time() - prepared.ts > matcher.max_fix_age_s:
         return False
     return True

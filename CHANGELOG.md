@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.13.2
+
+### Fixed
+
+- A tracker update is no longer dropped just because `last_updated` did not move. The same timestamp is used when the location, speed, or accuracy changed. An identical sample is still `duplicate_ts`.
+- A real ride on a train whose TrainView dot is sitting on the last station can match. After two fixes at about 20 mph, a fresh TrainView, and a heading that agrees, the nearest estimated train within 1500 m is accepted. A train facing the wrong way, such as 100° off, is still rejected.
+- Each candidate now includes `last_reject_reason` and `stale_reason`. The rider includes `accepted_fix_count`, `skipped_fix_count`, and `last_fix_ts`.
+
+### Changed
+
+- Riding and My Train are named for the rider, including the first one: `binary_sensor.septa_riding_<rider>` and `sensor.septa_my_train_<rider>`. The unique id stays the same, so history is kept. On startup the old `binary_sensor.septa_<station>_riding` and `sensor.septa_<station>_my_train` ids are renamed when you have not renamed them yourself and the new id is free. Update automations or dashboards that still use the station name if the automatic rename did not run.
+- Riding sensors show `integration_version`.
+
 ## 1.13.1
 
 ### Fixed

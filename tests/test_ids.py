@@ -120,6 +120,67 @@ def test_adding_a_rider_does_not_change_existing_ids():
     assert changed_dest == stable_unique_id("abc", "leave_in")
 
 
+def test_primary_station_ids_rename_to_the_rider_and_custom_ids_stay():
+    items = [
+        {
+            "unique_id": "abc_riding",
+            "entity_id": "binary_sensor.septa_lansdale_riding",
+            "domain": "binary_sensor",
+        },
+        {
+            "unique_id": "abc_my_train",
+            "entity_id": "sensor.septa_lansdale_my_train",
+            "domain": "sensor",
+        },
+        {
+            "unique_id": "abc_status",
+            "entity_id": "sensor.my_custom_status",
+            "domain": "sensor",
+        },
+    ]
+    actions = plan_registry_migration("abc", "Lansdale", items, primary_slug="ryan")
+    renamed = {item["entity_id"]: item["new_entity_id"] for item in actions if item["op"] == "rename"}
+    assert renamed["binary_sensor.septa_lansdale_riding"] == "binary_sensor.septa_riding_ryan"
+    assert renamed["sensor.septa_lansdale_my_train"] == "sensor.septa_my_train_ryan"
+    assert "sensor.my_custom_status" not in renamed
+    assert not [item for item in actions if item["op"] == "unique_id" and item["entity_id"] in renamed]
+    custom = [
+        {
+            "unique_id": "abc_riding",
+            "entity_id": "binary_sensor.my_custom_riding",
+            "domain": "binary_sensor",
+        },
+        {
+            "unique_id": "abc_my_train",
+            "entity_id": "sensor.septa_lansdale_my_train",
+            "domain": "sensor",
+        },
+        {
+            "unique_id": "other_my_train_ryan",
+            "entity_id": "sensor.septa_my_train_ryan",
+            "domain": "sensor",
+        },
+    ]
+    held = plan_registry_migration("abc", "Lansdale", custom, primary_slug="ryan")
+    renamed = {item["entity_id"]: item["new_entity_id"] for item in held if item["op"] == "rename"}
+    assert "binary_sensor.my_custom_riding" not in renamed
+    assert "sensor.septa_lansdale_my_train" not in renamed
+    skipped = [item for item in held if item["op"] == "skip"]
+    assert skipped and skipped[0]["new_entity_id"] == "sensor.septa_my_train_ryan"
+    targets = [item["new_entity_id"] for item in held if item["op"] == "rename"]
+    assert len(targets) == len(set(targets))
+
+
+def test_integration_version_matches_manifest():
+    import json
+
+    spec = importlib.util.spec_from_file_location("septa_const_ver", ROOT / "const.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    manifest = json.loads((ROOT / "manifest.json").read_text())
+    assert module.integration_version() == manifest["version"] == "1.13.2"
+
+
 def test_leave_in_is_never_negative():
     now = datetime(2026, 10, 12, 8, 0)
     gone = {"depart_dt": now - timedelta(minutes=5), "train_id": "1"}

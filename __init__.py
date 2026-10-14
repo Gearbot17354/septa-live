@@ -54,7 +54,7 @@ _FRONTEND = f"{DOMAIN}_frontend_registered"
 _CARD_JS = "septa-live-card.js"
 _PANEL_JS = "septa-live-panel.js"
 _PANEL_PATH = "septa-live"
-_CARD_VERSION = "1.13.1"
+_CARD_VERSION = "1.13.2"
 _PANEL_SIG: tuple | None = None
 _RELOADING: set[str] = set()
 
@@ -275,7 +275,16 @@ async def _async_migrate_entity_ids(hass: HomeAssistant, entry: ConfigEntry) -> 
     except ImportError:
         return
     registry = er.async_get(hass)
-    station = str(entry.data.get(CONF_STATION) or "Lansdale")
+    station = str(entry.data.get(CONF_STATION) or "")
+    primary_slug = None
+    try:
+        from .ride import configured_riders, dedupe_riders
+
+        riders = dedupe_riders(configured_riders(entry.options, entry.data), {})
+        primary = next((item for item in riders if item.get("primary")), None)
+        primary_slug = None if primary is None else primary.get("slug")
+    except Exception:  # noqa: BLE001
+        primary_slug = None
     try:
         current = er.async_entries_for_config_entry(registry, entry.entry_id)
     except Exception:  # noqa: BLE001
@@ -284,7 +293,7 @@ async def _async_migrate_entity_ids(hass: HomeAssistant, entry: ConfigEntry) -> 
         {"unique_id": item.unique_id, "entity_id": item.entity_id, "domain": item.domain}
         for item in current
     ]
-    for action in plan_registry_migration(entry.entry_id, station, items):
+    for action in plan_registry_migration(entry.entry_id, station, items, primary_slug):
         try:
             if action["op"] == "remove":
                 registry.async_remove(action["entity_id"])
@@ -292,6 +301,12 @@ async def _async_migrate_entity_ids(hass: HomeAssistant, entry: ConfigEntry) -> 
                 registry.async_update_entity(action["entity_id"], new_unique_id=action["unique_id"])
             elif action["op"] == "rename" and registry.async_get(action["new_entity_id"]) is None:
                 registry.async_update_entity(action["entity_id"], new_entity_id=action["new_entity_id"])
+            elif action["op"] == "skip":
+                _LOGGER.warning(
+                    "SEPTA left %s unchanged because %s is already in use",
+                    action.get("entity_id"),
+                    action.get("new_entity_id"),
+                )
         except Exception:  # noqa: BLE001
             _LOGGER.exception("SEPTA entity id migration skipped for %s", action.get("entity_id"))
 

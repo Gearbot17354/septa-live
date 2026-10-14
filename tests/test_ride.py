@@ -867,3 +867,104 @@ def test_fast_phone_far_from_the_corridor_does_not_board():
     result = R.replay_fixes(samples, need_matches=2, radius_m=300, min_speed_mps=5)
     assert result["riding"] is False
 
+
+def test_same_timestamp_accepts_a_move_and_drops_an_identical_fix():
+    matcher = R.RideMatcher(need_matches=2, radius_m=300, min_speed_mps=1)
+    first = R.Fix(40.0, -75.0, 8, 22.8, 0, 1_000.0)
+    matcher.update(first, [], 1_000.0, now=1_000.0)
+    assert matcher.last_reason != "duplicate_ts"
+    moved = R.Fix(40.01, -75.0, 8, 22.8, 0, 1_000.0)
+    matcher.update(moved, [], 1_000.0, now=1_000.0)
+    assert matcher.last_reason != "duplicate_ts"
+    assert matcher.accepted_fix_count == 2
+    assert matcher.last_fix.ts == 1_001.0
+    again = R.Fix(
+        matcher.last_fix.lat,
+        matcher.last_fix.lon,
+        matcher.last_fix.acc_m,
+        matcher.last_fix.speed_mps,
+        matcher.last_fix.course,
+        matcher.last_fix.ts,
+    )
+    matcher.update(again, [], 1_001.0, now=1_001.0)
+    assert matcher.last_reason == "duplicate_ts"
+    assert matcher.skipped_fix_count == 1
+    assert matcher.accepted_fix_count == 2
+
+
+def test_speed_confirms_stale_estimated_train_and_rejects_the_wrong_heading():
+    phone_lat = 39.0 - (842 / 111_320)
+    phone_lon = -75.0
+    original = R.estimate_position
+
+    def estimate(train, when):
+        if train.trainno == "6581":
+            return (39.0, -75.0, 0.0)
+        if train.trainno == "6583":
+            return (39.0 + (8689 / 111_320), -75.0, 0.0)
+        return original(train, when)
+
+    R.estimate_position = estimate
+    try:
+        here = train(
+            "6581",
+            40.24278,
+            -75.285,
+            0,
+            line="Lansdale/Doylestown",
+            current="North Wales",
+            nxt="Pennbrook",
+        )
+        other = train(
+            "6583",
+            40.24278,
+            -75.285,
+            0,
+            line="Lansdale/Doylestown",
+            current="North Wales",
+            nxt="Pennbrook",
+        )
+        wrong = train(
+            "7284",
+            phone_lat,
+            phone_lon - 0.12,
+            108,
+            dest="Norristown",
+            line="Manayunk/Norristown",
+            current="",
+            nxt="",
+        )
+        samples = []
+        for index in (0, 1):
+            ts = 1_000.0 + index * 30
+            samples.append(
+                {
+                    "fix": R.Fix(phone_lat, phone_lon, 16, 51 * 0.44704, 0, ts),
+                    "trains": [here, other, wrong],
+                    "trains_ts": ts - 0.7,
+                    "now": ts,
+                }
+            )
+        result = R.replay_fixes(
+            samples,
+            need_matches=2,
+            radius_m=300,
+            min_speed_mps=5,
+            preferred_line="Lansdale/Doylestown",
+        )
+    finally:
+        R.estimate_position = original
+    assert result["riding"] is True
+    assert result["train"] == "6581"
+    assert result["position_source"] == "estimated"
+    assert result["confidence"] == "estimated"
+    assert result["steps"][0]["riding"] is False
+    assert all(step["train"] != "7284" for step in result["steps"] if step["riding"])
+    row = next(item for item in result["candidates"] if item["train"] == "6581")
+    assert row["stale_gps"] is True
+    assert row["position_source"] == "estimated"
+    assert row["stale_reason"] == "station_mismatch"
+    blocked = next(item for item in result["candidates"] if item["train"] == "7284")
+    assert blocked["heading_diff"] == 108
+    assert blocked["last_reject_reason"] == "heading"
+

@@ -121,12 +121,12 @@ def _wanted_entities(coordinator: SeptaCoordinator) -> list[SensorEntity]:
     entities.append(SeptaMapSensor(coordinator))
     specs = _rider_specs(coordinator)
     if specs:
-        entities.append(SeptaMyTrainSensor(coordinator))
         entities.append(SeptaRidersCountSensor(coordinator))
         for spec in specs:
             if spec.get("primary"):
-                continue
-            entities.append(SeptaRiderTrainSensor(coordinator, spec))
+                entities.append(SeptaMyTrainSensor(coordinator, spec))
+            else:
+                entities.append(SeptaRiderTrainSensor(coordinator, spec))
     return entities
 
 
@@ -759,8 +759,16 @@ class SeptaMyTrainSensor(_Base):
     _attr_icon = "mdi:train"
     _unrecorded_attributes = UNRECORDED_TRAIN_ATTRS
 
-    def __init__(self, coordinator: SeptaCoordinator) -> None:
-        super().__init__(coordinator, "my_train")
+    def __init__(self, coordinator: SeptaCoordinator, spec: dict | None = None) -> None:
+        spec = spec or {}
+        slug_name = str(spec.get("slug") or "").strip()
+        primary = bool(spec.get("primary", True))
+        key = "my_train" if primary or not slug_name else f"my_train_{slug_name}"
+        super().__init__(coordinator, key)
+        self._spec = spec
+        if slug_name:
+            self.entity_id = f"sensor.septa_my_train_{slug_name}"
+            self._attr_name = f"My train {slug_name.replace('_', ' ').title()}"
 
     def _ride(self) -> dict[str, Any]:
         ride = getattr(self.coordinator, "ride", None)
@@ -793,13 +801,12 @@ class SeptaMyTrainSensor(_Base):
 
 
 class SeptaRiderTrainSensor(SeptaMyTrainSensor):
-    """My Train for a rider who is not the primary. Primary keeps sensor.septa_<station>_my_train."""
+    """My Train for a rider who is not the primary."""
 
     def __init__(self, coordinator: SeptaCoordinator, spec: dict) -> None:
-        _Base.__init__(self, coordinator, f"my_train_{spec['slug']}")
-        self._spec = spec
-        self.entity_id = f"sensor.septa_my_train_{spec['slug']}"
-        self._attr_name = f"My train {spec['slug'].replace('_', ' ').title()}"
+        spec = dict(spec)
+        spec["primary"] = False
+        super().__init__(coordinator, spec)
 
     @property
     def suggested_object_id(self) -> str:

@@ -13,8 +13,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity_registry import async_entries_for_config_entry
 from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
 
-from .const import DOMAIN, UNRECORDED_TRAIN_ATTRS
-from .coordinator import SeptaCoordinator, slug
+from .const import DOMAIN, UNRECORDED_TRAIN_ATTRS, integration_version
+from .coordinator import SeptaCoordinator
 from .ids import stable_unique_id
 from .sensor import _device_model, _rider_specs
 from .ride import write_state_on_loop
@@ -24,11 +24,12 @@ def _wanted(coordinator: SeptaCoordinator) -> list[BinarySensorEntity]:
     specs = _rider_specs(coordinator)
     if not specs:
         return []
-    entities: list[BinarySensorEntity] = [SeptaRidingBinarySensor(coordinator)]
+    entities: list[BinarySensorEntity] = []
     for spec in specs:
         if spec.get("primary"):
-            continue
-        entities.append(SeptaRiderBinarySensor(coordinator, spec))
+            entities.append(SeptaRidingBinarySensor(coordinator, spec))
+        else:
+            entities.append(SeptaRiderBinarySensor(coordinator, spec))
     return entities
 
 
@@ -90,14 +91,22 @@ class SeptaRidingBinarySensor(BinarySensorEntity):
     _attr_should_poll = False
     _unrecorded_attributes = UNRECORDED_TRAIN_ATTRS
 
-    def __init__(self, coordinator: SeptaCoordinator) -> None:
+    def __init__(self, coordinator: SeptaCoordinator, spec: dict | None = None) -> None:
         self.coordinator = coordinator
-        station = coordinator.station
-        self._attr_unique_id = stable_unique_id(coordinator.entry.entry_id, "riding")
-        self.entity_id = f"binary_sensor.septa_{slug(station)}_riding"
+        self._spec = spec or {}
+        slug_name = str(self._spec.get("slug") or "").strip()
+        primary = bool(self._spec.get("primary", True)) if spec else True
+        key = "riding" if primary or not slug_name else f"riding_{slug_name}"
+        self._attr_unique_id = stable_unique_id(coordinator.entry.entry_id, key)
+        if slug_name:
+            self.entity_id = f"binary_sensor.septa_riding_{slug_name}"
+            self._attr_name = f"Riding {slug_name.replace('_', ' ').title()}"
+        else:
+            self.entity_id = "binary_sensor.septa_riding"
+            self._attr_name = "Riding"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, coordinator.entry.entry_id)},
-            name=f"SEPTA {station}",
+            name=f"SEPTA {coordinator.station}",
             manufacturer="SEPTA",
             model=_device_model(coordinator),
         )
@@ -118,7 +127,9 @@ class SeptaRidingBinarySensor(BinarySensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        return self._ride()
+        data = dict(self._ride())
+        data["integration_version"] = integration_version()
+        return data
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -136,11 +147,9 @@ class SeptaRiderBinarySensor(SeptaRidingBinarySensor):
     """Riding sensor for someone other than the primary rider."""
 
     def __init__(self, coordinator: SeptaCoordinator, spec: dict) -> None:
-        super().__init__(coordinator)
-        self._spec = spec
-        self._attr_unique_id = stable_unique_id(coordinator.entry.entry_id, f"riding_{spec['slug']}")
-        self.entity_id = f"binary_sensor.septa_riding_{spec['slug']}"
-        self._attr_name = f"Riding {spec['slug'].replace('_', ' ').title()}"
+        spec = dict(spec)
+        spec["primary"] = False
+        super().__init__(coordinator, spec)
 
     @property
     def suggested_object_id(self) -> str:

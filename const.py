@@ -1,6 +1,25 @@
 """Constants for SEPTA Transit."""
 
+from __future__ import annotations
+
+import json
+from pathlib import Path
 from typing import Final
+
+_VERSION: str | None = None
+
+
+def integration_version() -> str:
+    """Manifest version, read once. Riding sensors expose this."""
+    global _VERSION
+    if _VERSION:
+        return _VERSION
+    path = Path(__file__).with_name("manifest.json")
+    try:
+        _VERSION = str(json.loads(path.read_text()).get("version") or "")
+    except (OSError, ValueError):
+        _VERSION = ""
+    return _VERSION
 
 DOMAIN: Final = "septa_live"
 PLATFORMS: Final = ["sensor", "binary_sensor"]
@@ -73,6 +92,14 @@ APART_FIXES: Final = 2
 MAX_RIDE_SECONDS: Final = 3 * 3600
 REBOARD_COOLDOWN_S: Final = 600
 TERMINAL_GRACE_S: Final = 120
+
+# A fresh TrainView position that is only estimated can still be the train
+# you are on, once two fast fixes agree and the heading does.
+FRESH_TRAINVIEW_S: Final = 60
+SPEED_CONFIRM_MPH: Final = 20
+SPEED_CONFIRM_FIXES: Final = 2
+SPEED_MATCH_M: Final = 1500
+ESTIMATE_SLACK_M: Final = 500
 
 DEFAULT_STATION: Final = "Lansdale"
 DEFAULT_DESTINATION: Final = "Jefferson Station"

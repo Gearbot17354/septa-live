@@ -131,7 +131,33 @@ def _is_generated_alias(entity_id: str, canonical: str) -> bool:
     return False
 
 
-def plan_registry_migration(entry_id: str, station: str, items: list[dict]) -> list[dict]:
+def rider_entity_id(kind: str, rider_slug: str) -> str | None:
+    """Riding and My Train ids. The station name is not part of the id."""
+    safe = slug(rider_slug)
+    if not safe:
+        return None
+    if kind == "riding":
+        return f"binary_sensor.septa_riding_{safe}"
+    if kind == "my_train":
+        return f"sensor.septa_my_train_{safe}"
+    return None
+
+
+def _auto_station_id(domain: str, station: str, key: str) -> str | None:
+    station_slug = slug(station) or "septa"
+    if key == "riding" and domain == "binary_sensor":
+        return f"binary_sensor.septa_{station_slug}_riding"
+    if key == "my_train" and domain == "sensor":
+        return f"sensor.septa_{station_slug}_my_train"
+    return None
+
+
+def plan_registry_migration(
+    entry_id: str,
+    station: str,
+    items: list[dict],
+    primary_slug: str | None = None,
+) -> list[dict]:
     """Rename _2 entities back and point every old unique id at the stable one.
 
     A hand-renamed entity id is left alone. Only collision suffixes and the
@@ -173,7 +199,60 @@ def plan_registry_migration(entry_id: str, station: str, items: list[dict]) -> l
             renames.append({"op": "rename", "entity_id": keep_id, "new_entity_id": canonical})
             occupied.discard(keep_id)
             occupied.add(canonical)
+    _retarget_primary(station, groups, occupied, primary_slug, renames)
     return removes + unique_updates + renames
+
+
+def _retarget_primary(station, groups, occupied, primary_slug, renames) -> None:
+    """Point the primary rider's station id at septa_riding_<slug> when it is safe."""
+    if not primary_slug:
+        return
+    for key in ("riding", "my_train"):
+        group = groups.get(key) or []
+        if not group:
+            continue
+        domain = "binary_sensor" if key == "riding" else "sensor"
+        old = _auto_station_id(domain, station, key)
+        target = rider_entity_id(key, primary_slug)
+        if not old or not target or old == target:
+            continue
+        pending = next(
+            (
+                action
+                for action in renames
+                if action.get("op") == "rename" and action.get("new_entity_id") == old
+            ),
+            None,
+        )
+        if pending is not None:
+            if target in occupied:
+                renames.append(
+                    {
+                        "op": "skip",
+                        "entity_id": pending["entity_id"],
+                        "new_entity_id": target,
+                        "reason": "target_taken",
+                    }
+                )
+                continue
+            occupied.discard(old)
+            pending["new_entity_id"] = target
+            occupied.add(target)
+            continue
+        current = next((item for item in group if str(item.get("entity_id") or "") == old), None)
+        if current is None:
+            continue
+        entity_id = str(current.get("entity_id") or "")
+        if entity_id == target:
+            continue
+        if target in occupied:
+            renames.append(
+                {"op": "skip", "entity_id": entity_id, "new_entity_id": target, "reason": "target_taken"}
+            )
+            continue
+        renames.append({"op": "rename", "entity_id": entity_id, "new_entity_id": target})
+        occupied.discard(entity_id)
+        occupied.add(target)
 
 
 def pick_leave(departures: list, walk: int, now) -> tuple[int | None, dict | None]:
