@@ -19,7 +19,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import CONF_RIDE_TRACKER, DOMAIN, UNRECORDED_TRAIN_ATTRS
-from .ids import dynamic_key, object_key, stable_unique_id
+from .ids import dynamic_ids, dynamic_key, object_key, stable_unique_id
 from .trips import trip_ids
 from .coordinator import NY, SeptaCoordinator, slug
 from .ride import configured_riders, dedupe_riders, write_state_on_loop
@@ -512,11 +512,11 @@ class SeptaDynamicSensor(CoordinatorEntity[SeptaCoordinator], RestoreEntity, Sen
         slug = str(spec.get("slug") or "")
         self._slug = slug
         self._primary = bool(spec.get("primary")) or not slug
-        key = dynamic_key(kind, slug, self._primary)
-        self._attr_unique_id = stable_unique_id(coordinator.entry.entry_id, key)
-        self.entity_id = f"sensor.septa_{key}"
+        unique_id, entity_id = dynamic_ids(coordinator.entry.entry_id, kind, slug, self._primary)
+        self._attr_unique_id = unique_id
+        self.entity_id = entity_id
         title = "Going home" if kind == "going_home" else "Day trains"
-        self._attr_name = title if self._primary else f"{title} {slug}"
+        self._attr_name = f"{title} {slug.replace('_', ' ').title()}" if slug else title
         if kind == "going_home":
             self._attr_device_class = SensorDeviceClass.DURATION
             self._attr_native_unit_of_measurement = UnitOfTime.MINUTES
@@ -567,6 +567,12 @@ class SeptaDynamicSensor(CoordinatorEntity[SeptaCoordinator], RestoreEntity, Sen
             "origin_lon": pack.get("origin_lon"),
             "origin_source": pack.get("origin_source"),
             "origin_distance_m": pack.get("origin_distance_m"),
+            "origin_entity": pack.get("origin_entity"),
+            "origin_fix_lat": pack.get("origin_fix_lat"),
+            "origin_fix_lon": pack.get("origin_fix_lon"),
+            "origin_fix_accuracy": pack.get("origin_fix_accuracy"),
+            "origin_fix_age_s": pack.get("origin_fix_age_s"),
+            "origin_skip_reason": pack.get("origin_skip_reason"),
             "home_station": pack.get("home_station"),
             "destination": pack.get("destination"),
             "destination_source": pack.get("destination_source"),

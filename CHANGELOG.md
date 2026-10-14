@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.13.4
+
+### Changed
+
+- Going Home and Day Trains are named for every rider, including the first: `sensor.septa_going_home_<rider>` and `sensor.septa_day_trains_<rider>`. Existing entities are renamed when the new id is free, and they keep their history. A hand-renamed entity is left alone. Update dashboards that still use the old ids. Services still accept the old ids for this release.
+
+### Fixed
+
+- Going Home uses the rider's current location again. It reads coordinates from the person or the tracker, whichever is newer and actually has a location, and it follows a tracker change. A zone whose name is a station is used directly. `origin_entity`, `origin_fix_lat`, `origin_fix_lon`, `origin_fix_accuracy`, `origin_fix_age_s`, and `origin_skip_reason` explain a fallback to the default station.
+
 ## 1.13.3
 
 ### Fixed

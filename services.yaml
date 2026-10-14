@@ -18,7 +18,7 @@ simulate_ride:
         object:
     rider:
       name: Rider
-      description: Person, tracker, or slug. Blank uses the primary rider. Does not change live state.
+      description: Person, tracker, slug, or a Going Home / Day Trains entity id. The old unsuffixed ids still work. Blank uses the primary rider. Does not change live state.
       selector:
         text:
     expected_train:
@@ -51,7 +51,7 @@ set_expected_train:
         text:
     rider:
       name: Rider
-      description: Person, tracker, or slug. Blank uses the primary rider.
+      description: Person, tracker, slug, or a Going Home / Day Trains entity id. The old unsuffixed ids still work. Blank uses the primary rider.
       selector:
         text:
     train:
@@ -91,7 +91,7 @@ set_origin_station:
         text:
     rider:
       name: Rider
-      description: Person, tracker, or slug. Blank uses the primary rider.
+      description: Person, tracker, slug, or a Going Home / Day Trains entity id. The old unsuffixed ids still work. Blank uses the primary rider.
       selector:
         text:
     station:
@@ -110,7 +110,7 @@ set_destination:
         text:
     rider:
       name: Rider
-      description: Person, tracker, or slug. Blank uses the primary rider.
+      description: Person, tracker, slug, or a Going Home / Day Trains entity id. The old unsuffixed ids still work. Blank uses the primary rider.
       selector:
         text:
     station:

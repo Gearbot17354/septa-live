@@ -171,6 +171,50 @@ def test_primary_station_ids_rename_to_the_rider_and_custom_ids_stay():
     assert len(targets) == len(set(targets))
 
 
+def test_dynamic_sensors_are_named_for_every_rider():
+    items = [
+        {"unique_id": "abc_going_home", "entity_id": "sensor.septa_going_home", "domain": "sensor"},
+        {"unique_id": "abc_day_trains", "entity_id": "sensor.septa_day_trains", "domain": "sensor"},
+        {
+            "unique_id": "abc_riding",
+            "entity_id": "binary_sensor.septa_north_end_riding",
+            "domain": "binary_sensor",
+        },
+    ]
+    actions = plan_registry_migration("abc", "North End", items, primary_slug="alpha")
+    renamed = {item["entity_id"]: item["new_entity_id"] for item in actions if item["op"] == "rename"}
+    assert renamed["sensor.septa_going_home"] == "sensor.septa_going_home_alpha"
+    assert renamed["sensor.septa_day_trains"] == "sensor.septa_day_trains_alpha"
+    assert renamed["binary_sensor.septa_north_end_riding"] == "binary_sensor.septa_riding_alpha"
+    assert not [item for item in actions if item["op"] == "unique_id"]
+    moved = [
+        {"unique_id": "abc_going_home", "entity_id": "sensor.septa_going_home_alpha", "domain": "sensor"},
+        {"unique_id": "abc_day_trains", "entity_id": "sensor.septa_day_trains_alpha", "domain": "sensor"},
+    ]
+    again = plan_registry_migration("abc", "North End", moved, primary_slug="alpha")
+    assert not [item for item in again if item["op"] in {"rename", "remove", "skip"}]
+    taken = [
+        {"unique_id": "abc_going_home", "entity_id": "sensor.septa_going_home", "domain": "sensor"},
+        {"unique_id": "abc_going_home_alpha", "entity_id": "sensor.septa_going_home_alpha", "domain": "sensor"},
+    ]
+    blocked = plan_registry_migration("abc", "North End", taken, primary_slug="alpha")
+    skipped = [item for item in blocked if item["op"] == "skip"]
+    assert skipped and skipped[0]["reason"] == "target_taken"
+    assert skipped[0]["new_entity_id"] == "sensor.septa_going_home_alpha"
+    custom = [
+        {"unique_id": "abc_going_home", "entity_id": "sensor.my_home_trains", "domain": "sensor"},
+        {"unique_id": "abc_day_trains", "entity_id": "sensor.septa_day_trains_alpha", "domain": "sensor"},
+    ]
+    held = plan_registry_migration("abc", "North End", custom, primary_slug="bravo")
+    assert not [item for item in held if item["op"] == "rename"]
+    bare = [
+        {"unique_id": "abc_going_home", "entity_id": "sensor.septa_going_home", "domain": "sensor"},
+        {"unique_id": "abc_going_home_bravo", "entity_id": "sensor.septa_going_home_bravo", "domain": "sensor"},
+    ]
+    changed = plan_registry_migration("abc", "North End", bare, primary_slug="bravo")
+    assert any(item["op"] == "skip" and item["new_entity_id"] == "sensor.septa_going_home_bravo" for item in changed)
+
+
 def test_integration_version_matches_manifest():
     import json
 
@@ -178,7 +222,7 @@ def test_integration_version_matches_manifest():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     manifest = json.loads((ROOT / "manifest.json").read_text())
-    assert module.integration_version() == manifest["version"] == "1.13.3"
+    assert module.integration_version() == manifest["version"] == "1.13.4"
 
 
 def test_leave_in_is_never_negative():

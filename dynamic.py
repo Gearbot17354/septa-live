@@ -251,22 +251,39 @@ def resolve_origin(
     home_station: str | None = None,
     last: str | None = None,
     hysteresis_m: float = HYSTERESIS_M,
+    zone: str | None = None,
+    stale: bool = False,
+    origin_entity: str | None = None,
+    fix_age_s: float | None = None,
 ) -> dict:
-    """manual, then nearest, then the usual city station, then the last origin."""
+    """manual, then home, then a zone or the nearest station, then the city station."""
     stops = stops or []
     source = None
     name = None
     distance = None
+    skip = None
     inaccurate = accuracy is not None and accuracy > max_accuracy
     if str(manual or "").strip():
         source, name = "manual", str(manual).strip()
     elif at_home:
         source, name = "home", home_station or None
-    elif lat is not None and lon is not None and not inaccurate:
+    elif str(zone or "").strip():
+        source, name, distance = "zone", str(zone).strip(), 0
+    elif lat is None or lon is None:
+        skip = "no_coords"
+    elif not stops:
+        skip = "no_stops"
+    elif stale:
+        skip = "stale"
+    elif inaccurate:
+        skip = "inaccurate"
+    else:
         hit = nearest_station(lat, lon, stops, radius_m, current=current, hysteresis_m=hysteresis_m)
         if hit:
             source, name = "nearest", hit["name"]
             distance = hit["distance_m"]
+        else:
+            skip = "out_of_radius"
     if name is None and str(city_station or "").strip():
         source, name = "default", str(city_station).strip()
     if name is None and str(last or "").strip():
@@ -285,7 +302,50 @@ def resolve_origin(
         "origin_lat": olat,
         "origin_lon": olon,
         "reason": reason,
+        "origin_entity": origin_entity,
+        "origin_fix_lat": lat,
+        "origin_fix_lon": lon,
+        "origin_fix_accuracy": accuracy,
+        "origin_fix_age_s": fix_age_s,
+        "origin_skip_reason": skip,
     }
+
+
+_ZONE_SKIP = {"home", "not_home", "unknown", "unavailable", "none"}
+ORIGIN_MAX_AGE_S = 6 * 3600
+
+
+def pick_fix(rows: list[dict]) -> dict:
+    """First usable location. Prefer the freshest row that has coordinates."""
+    usable = [row for row in rows if row.get("lat") is not None and row.get("lon") is not None]
+
+    def rank(row: dict) -> tuple:
+        updated = row.get("updated")
+        stamp = float(updated) if isinstance(updated, (int, float)) else -1.0
+        return (stamp, -rows.index(row))
+
+    if usable:
+        return max(usable, key=rank)
+    return rows[0] if rows else {}
+
+
+def zone_station(state: object, names: list[str]) -> str | None:
+    """A tracker state that is a station name. Home and not_home are not stations."""
+    text = str(state or "").strip()
+    if not text or text.lower() in _ZONE_SKIP:
+        return None
+    return match_station(text, names)
+
+
+def watch_entities(specs: list[dict]) -> list[str]:
+    """Entities whose state should refresh Going Home. Includes the person and its tracker."""
+    entities: list[str] = []
+    for spec in specs:
+        for key in ("configured", "tracker", "person"):
+            entity = str(spec.get(key) or "")
+            if "." in entity:
+                entities.append(entity)
+    return list(dict.fromkeys(entities))
 
 
 def _words(text: object) -> str:

@@ -103,6 +103,7 @@ def test_nearest_radius_hysteresis_home_and_accuracy():
     )
     assert fuzzy["origin_source"] == "default"
     assert fuzzy["origin"] == "Hub"
+    assert fuzzy["origin_skip_reason"] == "inaccurate"
 
 
 def test_destination_priority_and_unknown_location():
@@ -240,6 +241,12 @@ def test_dynamic_entity_ids_stay_stable():
     assert ids.legacy_key("abc123_going_home") == "going_home"
     assert ids.legacy_key("abc123_going_home_alex") == "going_home_alex"
     assert ids.stable_unique_id("abc123", "going_home") == "abc123_going_home"
+    unique, entity = ids.dynamic_ids("abc123", "going_home", "alpha", True)
+    assert unique == "abc123_going_home"
+    assert entity == "sensor.septa_going_home_alpha"
+    unique, entity = ids.dynamic_ids("abc123", "day_trains", "bravo", False)
+    assert unique == "abc123_day_trains_bravo"
+    assert entity == "sensor.septa_day_trains_bravo"
 
 
 def _class_body(text: str, name: str) -> str:
@@ -346,3 +353,58 @@ def test_cap_trains_reports_total_and_suggest_uses_the_full_list():
     assert [row["train"] for row in shown] == ["0", "1"]
     suggested = D.suggest_itinerary(rows, datetime(2026, 10, 12, 14, 0, tzinfo=NY), 0)
     assert suggested["train"] == "4"
+
+
+def test_origin_uses_the_person_when_the_tracker_has_no_coordinates():
+    stops = _stops() + [{"name": "Far", "lat": 40.02, "lon": -75.0}]
+    names = [stop["name"] for stop in stops]
+    chosen = D.pick_fix(
+        [
+            {"entity": "device_tracker.old", "lat": None, "lon": None, "updated": 50, "state": "not_home"},
+            {"entity": "person.alpha", "lat": 40.0006, "lon": -75.0, "updated": 10, "state": "not_home"},
+        ]
+    )
+    assert chosen["entity"] == "person.alpha"
+    nearest = D.resolve_origin(
+        lat=chosen["lat"],
+        lon=chosen["lon"],
+        accuracy=17,
+        stops=stops,
+        current="Far",
+        city_station="Hub",
+        home_station="South End",
+        origin_entity=chosen["entity"],
+    )
+    assert nearest["origin"] == "North End"
+    assert nearest["origin_source"] == "nearest"
+    assert nearest["origin_distance_m"] < 200
+    assert nearest["origin_skip_reason"] is None
+    zone = D.resolve_origin(
+        zone=D.zone_station("North End", names),
+        city_station="Hub",
+        home_station="South End",
+        stops=stops,
+    )
+    assert zone["origin"] == "North End"
+    assert zone["origin_source"] == "zone"
+    assert zone["origin_distance_m"] == 0
+    assert D.zone_station("not_home", names) is None
+    assert D.zone_station("home", names) is None
+    missing = D.resolve_origin(city_station="Hub", home_station="South End", stops=stops)
+    assert missing["origin_source"] == "default"
+    assert missing["origin_skip_reason"] == "no_coords"
+    home = D.resolve_origin(at_home=True, home_station="South End", city_station="Hub", stops=stops)
+    assert home["reason"] == "at_home_station"
+    before = D.watch_entities(
+        [{"slug": "alpha", "tracker": "device_tracker.old", "person": "person.alpha", "configured": "device_tracker.old"}]
+    )
+    after = D.watch_entities(
+        [{"slug": "alpha", "tracker": "device_tracker.new", "person": "person.alpha", "configured": "device_tracker.old"}]
+    )
+    assert before != after
+    assert "device_tracker.new" in after
+    assert "person.alpha" in after
+    text = (ROOT / "dynamic_ha.py").read_text()
+    start = text.index("async def _on_tracker")
+    body = text[start : text.index("\n    def ", start + 10)]
+    assert "self._listen()" in body

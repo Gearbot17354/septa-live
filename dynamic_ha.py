@@ -55,6 +55,7 @@ from .dynamic import (
     merge_nta,
     overlay_live,
     parse_valid_until,
+    pick_fix,
     present_row,
     resolve_destination,
     resolve_origin,
@@ -63,6 +64,9 @@ from .dynamic import (
     station_names,
     suggest_itinerary,
     timetable_allowed,
+    watch_entities,
+    zone_station,
+    ORIGIN_MAX_AGE_S,
     gtfs_tables_to_schedule,
 )
 from .ids import dynamic_key
@@ -82,6 +86,12 @@ def _blank_payload(rider: str, home: str) -> dict:
         "origin_lon": None,
         "origin_source": None,
         "origin_distance_m": None,
+        "origin_skip_reason": None,
+        "origin_entity": None,
+        "origin_fix_lat": None,
+        "origin_fix_lon": None,
+        "origin_fix_accuracy": None,
+        "origin_fix_age_s": None,
         "home_station": home or None,
         "destination": None,
         "destination_source": None,
@@ -325,16 +335,13 @@ class DynamicBoard:
         }
 
     def _listen(self) -> None:
-        entities = []
+        entities = watch_entities(self.specs())
         for spec in self.specs():
-            for key in ("configured", "tracker", "person"):
-                entity = str(spec.get(key) or "")
-                if entity and "." in entity:
-                    entities.append(entity)
             cfg = self._cfg(spec.get("slug") or "", self.options())
             for key in ("destination_entity", "calendar_entity"):
-                if cfg.get(key):
-                    entities.append(cfg[key])
+                entity = str(cfg.get(key) or "")
+                if "." in entity:
+                    entities.append(entity)
         entities = list(dict.fromkeys(entities))
         signature = tuple(entities)
         if signature == getattr(self, "_listened", None):
@@ -356,6 +363,7 @@ class DynamicBoard:
         self._unsubs.append(async_track_state_change_event(self.hass, entities, _changed))
 
     async def _on_tracker(self, event) -> None:
+        self._listen()
         entity = event.data.get("entity_id")
         for spec in self.specs():
             watched = {spec.get("configured"), spec.get("tracker"), spec.get("person")}
@@ -373,49 +381,123 @@ class DynamicBoard:
                 await self.async_refresh(force=False, only_slug=slug)
                 return
 
-    def _tracker(self, spec: dict) -> dict:
-        entity = str(spec.get("tracker") or spec.get("configured") or "")
+    def _state_fix(self, entity: str) -> dict | None:
         state = self.hass.states.get(entity) if entity else None
-        if state is None and spec.get("person"):
-            state = self.hass.states.get(spec["person"])
         if state is None:
-            return {"at_home": False, "lat": None, "lon": None, "accuracy": None}
-        attrs = state.attributes
+            return None
+        attrs = getattr(state, "attributes", None) or {}
+
+        def num(key: str) -> float | None:
+            value = attrs.get(key)
+            if value in (None, ""):
+                return None
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        updated = getattr(state, "last_updated", None)
+        stamp = None
         try:
-            accuracy = float(attrs.get("gps_accuracy")) if attrs.get("gps_accuracy") not in (None, "") else None
-        except (TypeError, ValueError):
-            accuracy = None
-        try:
-            lat = float(attrs.get("latitude")) if attrs.get("latitude") not in (None, "") else None
-        except (TypeError, ValueError):
-            lat = None
-        try:
-            lon = float(attrs.get("longitude")) if attrs.get("longitude") not in (None, "") else None
-        except (TypeError, ValueError):
-            lon = None
+            if updated is not None:
+                stamp = float(updated.timestamp())
+        except (AttributeError, TypeError, ValueError, OSError):
+            stamp = None
+        text = str(getattr(state, "state", "") or "")
         return {
-            "at_home": str(state.state).lower() == "home",
-            "lat": lat,
-            "lon": lon,
-            "accuracy": accuracy,
+            "entity": entity,
+            "state": text,
+            "at_home": text.lower() == "home",
+            "lat": num("latitude"),
+            "lon": num("longitude"),
+            "accuracy": num("gps_accuracy"),
+            "updated": stamp,
+        }
+
+    def _tracker(self, spec: dict) -> dict:
+        rows = []
+        seen: set[str] = set()
+        for key in ("tracker", "person", "configured"):
+            entity = str(spec.get(key) or "")
+            if not entity or entity in seen:
+                continue
+            seen.add(entity)
+            row = self._state_fix(entity)
+            if row:
+                rows.append(row)
+        empty = {
+            "at_home": False,
+            "lat": None,
+            "lon": None,
+            "accuracy": None,
+            "zone": None,
+            "origin_entity": None,
+            "age_s": None,
+        }
+        if not rows:
+            return empty
+        chosen = pick_fix(rows)
+        zone = None
+        for row in rows:
+            hit = zone_station(row.get("state"), self._names)
+            if hit:
+                zone = hit
+                if chosen.get("lat") is None:
+                    chosen = row
+                break
+        if zone is None:
+            for row in rows:
+                text = str(row.get("state") or "")
+                if text.lower() in {"home", "not_home", "unknown", "unavailable"}:
+                    continue
+                for zone_row in self._zones():
+                    zname = str(zone_row.get("name") or "")
+                    if zname and station_key(zname) == station_key(text):
+                        zone = match_station(zname, self._names) or match_station(text, self._names)
+                        if zone and chosen.get("lat") is None:
+                            chosen = row
+                        break
+                if zone:
+                    break
+        age = None
+        if isinstance(chosen.get("updated"), (int, float)):
+            age = max(0.0, time.time() - float(chosen["updated"]))
+        return {
+            "at_home": bool(chosen.get("at_home")) and not zone,
+            "lat": chosen.get("lat"),
+            "lon": chosen.get("lon"),
+            "accuracy": chosen.get("accuracy"),
+            "zone": zone,
+            "origin_entity": chosen.get("entity"),
+            "age_s": age,
         }
 
     def _origin(self, spec: dict, cfg: dict, opt: dict) -> dict:
         slug = spec.get("slug") or ""
         fix = self._tracker(spec)
+        age = fix.get("age_s")
+        stale = age is not None and age > ORIGIN_MAX_AGE_S
+        try:
+            ride_limit = float(opt["max_accuracy"])
+        except (TypeError, ValueError):
+            ride_limit = 100.0
         return resolve_origin(
             manual=self._manual_origin.get(slug),
             at_home=bool(fix["at_home"]),
             lat=fix["lat"],
             lon=fix["lon"],
             accuracy=fix["accuracy"],
-            max_accuracy=opt["max_accuracy"],
+            max_accuracy=max(ride_limit, 500.0),
             stops=self._stops,
             radius_m=opt["near_radius_m"],
             current=self._current.get(slug),
             city_station=cfg["city_station"],
             home_station=cfg["home_station"],
             last=self._last_origin.get(slug),
+            zone=fix.get("zone"),
+            stale=stale,
+            origin_entity=fix.get("origin_entity"),
+            fix_age_s=None if age is None else round(float(age), 1),
         )
 
     def _event(self, entity: str, now: datetime) -> dict | None:
@@ -530,6 +612,12 @@ class DynamicBoard:
                 "origin_lon": origin.get("origin_lon"),
                 "origin_source": origin.get("origin_source"),
                 "origin_distance_m": origin.get("origin_distance_m"),
+                "origin_entity": origin.get("origin_entity"),
+                "origin_fix_lat": origin.get("origin_fix_lat"),
+                "origin_fix_lon": origin.get("origin_fix_lon"),
+                "origin_fix_accuracy": origin.get("origin_fix_accuracy"),
+                "origin_fix_age_s": origin.get("origin_fix_age_s"),
+                "origin_skip_reason": origin.get("origin_skip_reason"),
                 "reason": origin.get("reason"),
                 "updated": now.isoformat(),
                 "destination": home or None,
@@ -679,6 +767,18 @@ class DynamicBoard:
             if rider is not None:
                 return rider.slug if not rider.is_primary else rider.slug
         want = str(name or "").strip()
+        if want in {"sensor.septa_going_home", "sensor.septa_day_trains"}:
+            want = ""
+        else:
+            for prefix in (
+                "sensor.septa_going_home_",
+                "sensor.septa_day_trains_",
+                "sensor.septa_my_train_",
+                "binary_sensor.septa_riding_",
+            ):
+                if want.startswith(prefix):
+                    want = want[len(prefix) :]
+                    break
         specs = self.specs()
         if not want:
             primary = next((spec for spec in specs if spec.get("primary")), specs[0] if specs else {})

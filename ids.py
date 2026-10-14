@@ -132,7 +132,7 @@ def _is_generated_alias(entity_id: str, canonical: str) -> bool:
 
 
 def rider_entity_id(kind: str, rider_slug: str) -> str | None:
-    """Riding and My Train ids. The station name is not part of the id."""
+    """Per-rider entity id. The station name is not part of the id."""
     safe = slug(rider_slug)
     if not safe:
         return None
@@ -140,7 +140,22 @@ def rider_entity_id(kind: str, rider_slug: str) -> str | None:
         return f"binary_sensor.septa_riding_{safe}"
     if kind == "my_train":
         return f"sensor.septa_my_train_{safe}"
+    if kind == "going_home":
+        return f"sensor.septa_going_home_{safe}"
+    if kind == "day_trains":
+        return f"sensor.septa_day_trains_{safe}"
     return None
+
+
+def dynamic_ids(entry_id: str, kind: str, rider_slug: str, primary: bool) -> tuple[str, str]:
+    """Stable unique id, and the entity id new installs should use.
+
+    The primary rider keeps the unsuffixed unique id so history stays put.
+    The entity id is suffixed for every rider.
+    """
+    key = dynamic_key(kind, rider_slug, primary)
+    entity = rider_entity_id(kind, rider_slug) if rider_slug else f"sensor.septa_{kind}"
+    return stable_unique_id(entry_id, key), entity or f"sensor.septa_{kind}"
 
 
 def _auto_station_id(domain: str, station: str, key: str) -> str | None:
@@ -204,15 +219,19 @@ def plan_registry_migration(
 
 
 def _retarget_primary(station, groups, occupied, primary_slug, renames) -> None:
-    """Point the primary rider's station id at septa_riding_<slug> when it is safe."""
+    """Point the primary rider's auto id at the per-rider id when that is safe."""
     if not primary_slug:
         return
-    for key in ("riding", "my_train"):
+    for key in ("riding", "my_train", "going_home", "day_trains"):
         group = groups.get(key) or []
         if not group:
             continue
-        domain = "binary_sensor" if key == "riding" else "sensor"
-        old = _auto_station_id(domain, station, key)
+        if key == "riding":
+            old = _auto_station_id("binary_sensor", station, key)
+        elif key == "my_train":
+            old = _auto_station_id("sensor", station, key)
+        else:
+            old = f"sensor.septa_{key}"
         target = rider_entity_id(key, primary_slug)
         if not old or not target or old == target:
             continue
