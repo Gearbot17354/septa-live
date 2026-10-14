@@ -109,11 +109,11 @@ def test_no_board_when_stationary_or_inaccurate():
 
 
 def test_opposite_heading_rejected():
-    north = train("N", 40.0, -75.0, 0)
-    south = train("S", 40.0, -75.0, 180)
+    north = train("101", 40.0, -75.0, 0)
+    south = train("102", 40.0, -75.0, 180)
     matcher = R.RideMatcher(need_matches=1, min_speed_mps=5)
     event = matcher.update(fix(40.0, -75.0, 50, speed=20, course=0), [north, south], 50)
-    assert event.payload["train"] == "N"
+    assert event.payload["train"] == "101"
 
 
 def test_thirty_second_skew_still_matches():
@@ -185,17 +185,17 @@ def test_home_exits():
 
 def test_switch_requires_n_matches():
     first = train("111", 40.0, -75.0, 0, dest="Doylestown")
-    other_at = R.project_position(40.0, -75.0, 0, 2000, 1)
-    second = train("222", other_at[0], other_at[1], 0, dest="Warminster", line="Warminster")
-    matcher = R.RideMatcher(need_matches=2, min_speed_mps=5, radius_m=200)
+    second = train("222", 40.0, -75.0, 0, dest="Warminster", line="Warminster")
+    matcher = R.RideMatcher(need_matches=2, min_speed_mps=5, radius_m=300)
     matcher.update(fix(40.0, -75.0, 0, speed=20, course=0), [first], 0)
     matcher.update(fix(40.0, -75.0, 15, speed=20, course=0), [first], 15)
     assert matcher.riding_train.trainno == "111"
-    phone = fix(other_at[0], other_at[1], 40, speed=20, course=0)
-    held = matcher.update(phone, [second], 40)
+    matcher._transfer_ready = True
+    matcher._far_count = matcher.need_matches
+    held = matcher.update(fix(40.0, -75.0, 40, speed=20, course=0), [second], 40)
     assert matcher.riding_train.trainno == "111"
     assert held is None or held.kind != "boarded"
-    switched = matcher.update(fix(other_at[0], other_at[1], 55, speed=20, course=0), [second], 55)
+    switched = matcher.update(fix(40.0, -75.0, 55, speed=20, course=0), [second], 55)
     assert switched is not None and switched.kind == "boarded"
     assert matcher.riding_train.trainno == "222"
     kinds = [item.kind for item in matcher.events]
@@ -689,7 +689,7 @@ def test_terminal_ends_on_the_next_fix():
 
 
 def test_max_duration_ends_the_ride():
-    here = train("zz", 40.0, -75.0, 0, current="Penllyn")
+    here = train("99901", 40.0, -75.0, 0, current="Penllyn")
     matcher = R.RideMatcher(need_matches=1, min_speed_mps=5, radius_m=200, max_ride_seconds=100)
     matcher.update(fix(40.0, -75.0, 0, speed=20, course=0), [here], 0)
     event = matcher.tick(101, [here], 101)
@@ -967,4 +967,152 @@ def test_speed_confirms_stale_estimated_train_and_rejects_the_wrong_heading():
     blocked = next(item for item in result["candidates"] if item["train"] == "7284")
     assert blocked["heading_diff"] == 108
     assert blocked["last_reject_reason"] == "heading"
+
+
+def test_shared_trunk_stays_on_the_boarded_train():
+    boarded = train("1001", 40.0, -75.0, 0, line="FOX")
+    other = train("2002", 40.001, -75.0, 0, line="CHE")
+    matcher = R.RideMatcher(need_matches=1, min_speed_mps=5, radius_m=300)
+    matcher.update(fix(40.0, -75.0, 0, speed=20, course=0), [boarded], 0)
+    assert matcher.riding_train.trainno == "1001"
+    for index in (1, 2):
+        event = matcher.update(fix(40.0, -75.0, index * 30, speed=20, course=0), [other], index * 30)
+        assert event is None
+        assert matcher.riding_train.trainno == "1001"
+        assert matcher.switch_blocked_reason == "sticky"
+        assert any(row["train"] == "2002" and row["last_reject_reason"] == "sticky" for row in matcher.candidates)
+        assert any(row["train"] == "1001" for row in matcher.candidates)
+    matcher.update(fix(40.0, -75.0, 90, speed=20, course=0), [boarded, other], 90)
+    assert matcher.riding_train.trainno == "1001"
+    assert matcher.riding_train_missing_polls == 0
+
+
+def test_stopping_at_a_station_allows_a_different_train():
+    saved = R._GEO
+    R._GEO = {
+        "by_key": {"end north": ("North End", 40.0, -75.0)},
+        "by_coord": {},
+        "lines": {},
+    }
+    try:
+        boarded = train("1001", 40.0, -75.0, 0, line="FOX")
+        matcher = R.RideMatcher(need_matches=1, min_speed_mps=5, radius_m=300, slow_seconds=20)
+        matcher.set_stops([{"lat": 40.0, "lon": -75.0, "stopname": "North End"}])
+        matcher.update(fix(40.0, -75.0, 0, speed=20, course=0), [boarded], 0)
+        assert matcher.riding is True
+        matcher.update(fix(40.0, -75.0, 5, speed=0, course=0), [boarded], 5)
+        matcher.update(fix(40.0, -75.0, 40, speed=0, course=0), [boarded], 40)
+        nxt = train("2002", 40.0, -75.0, 0, line="CHE")
+        far = train("1001", 40.2, -75.0, 0, line="FOX")
+        matcher.update(fix(40.0, -75.0, 70, speed=20, course=0), [far, nxt], 70)
+        assert matcher.riding_train is not None
+        assert matcher.riding_train.trainno == "2002"
+    finally:
+        R._GEO = saved
+
+
+def test_implausible_speed_does_not_count_or_switch():
+    boarded = train("1001", 40.0, -75.0, 0, line="FOX")
+    other = train("2002", 40.0, -75.0, 0, line="CHE")
+    matcher = R.RideMatcher(need_matches=1, min_speed_mps=5, radius_m=300)
+    matcher.update(fix(40.0, -75.0, 0, speed=20, course=0), [boarded], 0)
+    event = matcher.update(R.Fix(40.02, -75.0, 19, None, 90, 0), [other], 0, now=0)
+    assert event is None
+    assert matcher.speed_source == "implausible"
+    assert matcher.phone_speed_raw_mph > 90
+    assert matcher._fast_count == 0
+    assert matcher.riding_train.trainno == "1001"
+    fresh = R.RideMatcher(need_matches=1, min_speed_mps=5, radius_m=300)
+    fresh.update(R.Fix(40.0, -75.0, 19, None, 0, 1_000), [boarded], 1_000)
+    fresh.update(R.Fix(40.02, -75.0, 19, None, 90, 1_000), [boarded], 1_000, now=1_000)
+    assert fresh.speed_source == "implausible"
+    assert fresh.riding is False
+
+
+def test_corridor_heading_ignores_geo_file_direction():
+    saved = R._GEO
+    R._GEO = {
+        "by_key": {},
+        "by_coord": {},
+        "lines": {
+            "FOX": [
+                {"n": "South", "lat": 40.10, "lon": -75.0},
+                {"n": "Mid", "lat": 40.05, "lon": -75.0},
+                {"n": "North", "lat": 40.00, "lon": -75.0},
+            ]
+        },
+    }
+    try:
+        assert R._axis_diff(0, 180) == 0
+        assert R._orient_bearing(180, 0) == 0
+        ahead = train("1001", 40.032, -75.0, 0, line="FOX")
+        samples = []
+        for index in (0, 1):
+            ts = 1_000 + index * 30
+            samples.append(
+                {
+                    "fix": fix(40.05, -75.0, ts, speed=25, course=0),
+                    "trains": [ahead],
+                    "trains_ts": ts,
+                    "now": ts,
+                }
+            )
+        result = R.replay_fixes(samples, need_matches=2, radius_m=300, min_speed_mps=5)
+        assert result["riding"] is True
+        assert result["train"] == "1001"
+        opposite = train("2002", 40.05, -75.0, 180, line="FOX")
+        matcher = R.RideMatcher(need_matches=1, min_speed_mps=5, radius_m=400)
+        matcher.update(fix(40.05, -75.0, 0, speed=20, course=0), [opposite], 0)
+        assert matcher.riding is False
+        assert any(row["heading_diff"] == 180 and row["last_reject_reason"] == "heading" for row in matcher.candidates)
+    finally:
+        R._GEO = saved
+
+
+def test_boarding_prefers_the_scheduled_departure():
+    saved_times, saved_geo = R._TIMES, R._GEO
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    when = datetime(2026, 10, 14, 8, 0, tzinfo=ZoneInfo("America/New_York"))
+    now_m = 8 * 60
+    R._GEO = {
+        "by_key": {
+            "end north": ("North End", 40.0, -75.0),
+            "hub": ("Hub", 40.02, -75.0),
+        },
+        "by_coord": {},
+        "lines": {},
+    }
+    R._TIMES = {
+        "111": [(R._stop_key("North End"), now_m, 0), (R._stop_key("Hub"), now_m + 12, 0)],
+        "222": [(R._stop_key("North End"), now_m + 40, 0), (R._stop_key("Hub"), now_m + 52, 0)],
+    }
+    try:
+        due = train("111", 40.0, -75.0, 0, line="FOX")
+        later = train("222", 40.0, -75.0, 0, line="FOX")
+        matcher = R.RideMatcher(need_matches=1, min_speed_mps=5, radius_m=300)
+        matcher.set_stops([{"lat": 40.0, "lon": -75.0, "stopname": "North End"}])
+        matcher.update(fix(40.0, -75.0, when.timestamp(), speed=20, course=0), [later, due], when.timestamp())
+        assert matcher.riding_train.trainno == "111"
+        assert matcher.boarding_match == "schedule"
+        assert matcher.boarded_at
+    finally:
+        R._TIMES = saved_times
+        R._GEO = saved_geo
+
+
+def test_trainview_drops_anything_that_is_not_regional_rail():
+    rows = [
+        {"trainno": "111", "lat": 40, "lon": -75, "line": "Fox Chase", "heading": 0},
+        {"trainno": "bus12", "lat": 40, "lon": -75, "line": "Fox Chase", "heading": 0},
+        {"trainno": "222", "lat": 40, "lon": -75, "line": "Route 12", "heading": 0},
+    ]
+    assert [item.trainno for item in R.parse_trainview(rows)] == ["111"]
+
+
+def test_alert_filter_uses_the_configured_line():
+    assert R.alert_matches("Fox Chase trains delayed", "Temple University", "Fox Chase")
+    assert R.alert_matches("route AIR delay", "Airport", "AIR") is True
+    assert R.alert_matches("Lansdale Doylestown", "Airport", "Airport") is False
 

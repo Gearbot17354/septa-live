@@ -101,6 +101,13 @@ SPEED_CONFIRM_FIXES: Final = 2
 SPEED_MATCH_M: Final = 1500
 ESTIMATE_SLACK_M: Final = 500
 
+# Stay on the boarded train until it is really gone or the rider changes trains.
+RIDE_MISSING_POLLS: Final = 5
+BOARD_WINDOW_MIN: Final = 10
+MAX_PLAUSIBLE_MPH: Final = 90
+MIN_DERIVED_DT_S: Final = 20
+STICKY_LIMIT_M: Final = 2000
+
 DEFAULT_STATION: Final = "Lansdale"
 DEFAULT_DESTINATION: Final = "Jefferson Station"
 DEFAULT_WALK: Final = 8

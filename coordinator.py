@@ -76,7 +76,7 @@ from .const import (
     V2_TRIPS_URL,
 )
 
-from .ride import haversine_m
+from .ride import alert_matches, haversine_m
 
 _LOGGER = logging.getLogger(__name__)
 NY = ZoneInfo("America/New_York")
@@ -1286,7 +1286,7 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if self.rail_line:
                 commute = [row for row in commute if _matches_line(row, self.rail_line)]
             if alerts_raw is not None:
-                alerts = _parse_alerts(alerts_raw, self.station)
+                alerts = _parse_alerts(alerts_raw, self.station, self.rail_line)
 
         buses = await self._load_buses(now) if self.show_bus else []
         if self.bus_line:
@@ -1474,11 +1474,10 @@ def _strip_html(html: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _parse_alerts(raw: Any, station: str) -> list[dict[str, Any]]:
+def _parse_alerts(raw: Any, station: str, line: str = "") -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     if not isinstance(raw, list):
         return out
-    needle = station.lower().split("/")[0]
     for item in raw:
         if not isinstance(item, dict):
             continue
@@ -1488,8 +1487,8 @@ def _parse_alerts(raw: Any, station: str) -> list[dict[str, Any]]:
         advisory = _strip_html(str(item.get("advisory") or ""))
         if not alert and not advisory:
             continue
-        blob = f"{item.get('route')} {item.get('route_name')} {item.get('route_id')}".lower()
-        interesting = "lansdale" in blob or "doylestown" in blob or needle in blob
+        blob = f"{item.get('route')} {item.get('route_name')} {item.get('route_id')}"
+        interesting = alert_matches(blob, station, line)
         flag = lambda k: str(item.get(k) or "").lower() in ("y", "yes", "true")
         if interesting or flag("isalert") or flag("isdelays") or flag("issuspended"):
             out.append(

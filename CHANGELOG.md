@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.13.3
+
+### Fixed
+
+- Ride detection no longer changes to another line's train just because the tracks run together. The train you boarded stays until a real transfer, or until the ride ends the way it already did.
+- Boarding prefers the train scheduled to leave the nearest stop around that time.
+- Corridor heading follows the track in either direction. A train going the other way is still rejected. An estimated position uses the train's direction of travel, not the order of stops in the map file.
+- A phone speed over 90 mph is ignored. It does not count as a fast fix, it does not set a course, and it does not start or change a ride.
+- TrainView rows that are not Regional Rail train numbers are dropped.
+- Service alerts follow the station and line you configured. A line name is no longer built into the filter.
+
+### Added
+
+- `switch_blocked_reason`, `boarding_match`, `heading_source`, `riding_train_missing_polls`, `riding_train_seen`, and `phone_speed_raw_mph`. The train you are on stays in `candidates` even when it is missing from a poll.
+
 ## 1.13.2
 
 ### Fixed
