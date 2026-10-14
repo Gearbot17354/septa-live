@@ -186,6 +186,7 @@ class DynamicBoard:
         self._manual_origin: dict[str, str] = {}
         self._manual_dest: dict[str, str] = {}
         self._last_origin: dict[str, str] = {}
+        self._last_seen_at: dict[str, float] = {}
         self._geo_cache: dict[str, tuple[float, float] | None] = {}
         self._schedule: dict = {"stations": {}}
         self._schedule_source = "bundled"
@@ -498,7 +499,36 @@ class DynamicBoard:
             stale=stale,
             origin_entity=fix.get("origin_entity"),
             fix_age_s=None if age is None else round(float(age), 1),
+            ride_origin=self._ride_origin(slug),
+            last_recent=self._last_is_recent(slug),
         )
+
+    def _last_is_recent(self, slug: str) -> bool:
+        stamp = self._last_seen_at.get(slug)
+        if stamp is None:
+            return False
+        return time.time() - float(stamp) <= 30 * 60
+
+    def _ride_origin(self, slug: str) -> str | None:
+        ride = getattr(self.coordinator, "ride", None)
+        riders = getattr(ride, "riders", None) if ride is not None else None
+        if not riders:
+            return None
+        for rider in riders.values():
+            same = (slug and getattr(rider, "slug", None) == slug) or (not slug and getattr(rider, "is_primary", False))
+            if not same:
+                continue
+            matcher = getattr(rider, "matcher", None)
+            if matcher is None or not getattr(matcher, "riding", False):
+                return None
+            if getattr(matcher, "alight_station", None):
+                return str(matcher.alight_station)
+            if getattr(matcher, "published_next", None):
+                return str(matcher.published_next)
+            train = getattr(matcher, "riding_train", None)
+            if train is not None and getattr(train, "nextstop", None):
+                return str(train.nextstop)
+        return None
 
     def _event(self, entity: str, now: datetime) -> dict | None:
         if not entity:
@@ -589,7 +619,9 @@ class DynamicBoard:
             origin = self._origin(spec, cfg, opt)
             if origin.get("origin") and origin.get("reason") != "at_home_station":
                 self._current[slug] = origin["origin"]
+            if origin.get("origin_source") in {"nearest", "zone"} and origin.get("origin"):
                 self._last_origin[slug] = origin["origin"]
+                self._last_seen_at[slug] = time.time()
             await self._fill(spec, cfg, opt, origin, now, until)
         await self._save_store()
         try:

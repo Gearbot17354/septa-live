@@ -301,6 +301,216 @@ def _passed_act(value: object) -> bool:
     return bool(act) and act not in {"na", "n/a", "null", "none"}
 
 
+def _parse_hhmm(clock: object) -> int | None:
+    text = str(clock or "").strip().lower().replace(".", "")
+    if not text or text in {"na", "n/a", "null", "none"}:
+        return None
+    suffix = ""
+    if text.endswith("am") or text.endswith("pm"):
+        suffix = text[-2:]
+        text = text[:-2].strip()
+    parts = text.split(":")
+    if len(parts) < 2:
+        return None
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+    except ValueError:
+        return None
+    if suffix == "pm" and hour < 12:
+        hour += 12
+    if suffix == "am" and hour == 12:
+        hour = 0
+    return (hour % 24) * 60 + minute
+
+
+def _format_hhmm(total: int, sample: str) -> str:
+    total = int(total) % (24 * 60)
+    hour, minute = divmod(total, 60)
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _clocks_differ(est: object, sched: object) -> bool:
+    left = _parse_hhmm(est)
+    right = _parse_hhmm(sched)
+    if left is None or right is None:
+        return bool(str(est or "").strip()) and str(est or "").strip() != str(sched or "").strip()
+    return left != right
+
+
+def apply_delay(rows: list[dict] | None, late_min: int | None, now: object = None) -> list[dict]:
+    """Add the live delay to each stop. A real RR estimate is left alone."""
+    try:
+        late = int(late_min or 0)
+    except (TypeError, ValueError):
+        late = 0
+    if late < 0:
+        late = 0
+    out: list[dict] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        item = dict(row)
+        sched = str(item.get("sched") or "")
+        est = str(item.get("est") or item.get("est_tm") or "")
+        if est.lower() in {"na", "n/a", "null", "none"}:
+            est = ""
+        sched_m = _parse_hhmm(sched)
+        if _clocks_differ(est, sched):
+            item["est"] = est or sched
+            item["est_source"] = "rr"
+        elif late > 0 and sched_m is not None:
+            item["est"] = _format_hhmm(sched_m + late, sched)
+            item["est_source"] = "delay"
+        else:
+            item["est"] = est or sched
+            item["est_source"] = "sched"
+        item["sched"] = sched
+        out.append(item)
+    return out
+
+
+def _collapse_stops(rows: list[dict]) -> list[dict]:
+    """One row per stop when a through-routed train is listed on two lines."""
+    out: list[dict] = []
+    for row in rows:
+        if out and _stop_key(out[-1].get("station")) == _stop_key(row.get("station")):
+            if not str(out[-1].get("est") or "").strip() and str(row.get("est") or "").strip():
+                out[-1]["est"] = row.get("est")
+            continue
+        out.append(row)
+    return out
+
+
+def _cut_until(rows: list[dict], until: str | None) -> list[dict]:
+    want = _stop_key(until)
+    if not want:
+        return rows
+    for index, row in enumerate(rows):
+        if _stop_key(row.get("station")) == want:
+            return rows[: index + 1]
+    return rows
+
+
+def station_is_ahead(order: list[str], current: str | None, target: str | None) -> bool:
+    """True when target is after current in this train's stop order."""
+    keys = [_stop_key(name) for name in order]
+    want = _stop_key(target)
+    here = _stop_key(current)
+    if not want or want not in keys or not here or here not in keys:
+        return False
+    return keys.index(want) > keys.index(here)
+
+
+def choose_alight(
+    expected: dict | None,
+    leg: int,
+    home: str | None,
+    order: list[str],
+    current: str | None,
+) -> tuple[str | None, str]:
+    """Where this rider gets off: planned stop, connection, or home if it is still ahead."""
+    dest = "" if not expected else str(expected.get("destination") or "").strip()
+    if dest:
+        return dest, "planned"
+    connection = "" if not expected else str(expected.get("connection_station") or "").strip()
+    if leg == 1 and connection:
+        return connection, "connection"
+    if home and station_is_ahead(order, current, home):
+        return str(home).strip(), "home"
+    return None, "none"
+
+
+def _passed_index(lat: float, lon: float, points: list[dict], rows: list[dict]) -> int | None:
+    coords: list[tuple[float, float]] = []
+    for point in points:
+        try:
+            coords.append((float(point["lat"]), float(point["lon"])))
+        except (KeyError, TypeError, ValueError):
+            return None
+    if len(coords) < 2:
+        return None
+    spot = _along_line(lat, lon, coords)
+    if spot is None or spot[1] > 500:
+        return None
+    along = spot[0]
+    walked = 0.0
+    last_name = None
+    for index, point in enumerate(points):
+        if index:
+            walked += haversine_m(coords[index - 1][0], coords[index - 1][1], coords[index][0], coords[index][1])
+        if along + 20 >= walked:
+            last_name = point.get("station") or point.get("n")
+    if not last_name:
+        return None
+    want = _stop_key(last_name)
+    for index, row in enumerate(rows):
+        if _stop_key(row.get("station")) == want:
+            return index
+    return None
+
+
+def trim_passed(
+    rows: list[dict] | None,
+    now_hhmm,
+    currentstop: str | None = None,
+    nextstop: str | None = None,
+    train_lat: float | None = None,
+    train_lon: float | None = None,
+    grace_min: int = 1,
+    line_points: list[dict] | None = None,
+) -> dict:
+    """Drop stops the train has already passed. The train's position wins over the clock."""
+    items = [dict(row) for row in (rows or []) if isinstance(row, dict)]
+    dropped: list[dict] = []
+    source = None
+    if train_lat is not None and train_lon is not None and line_points:
+        index = _passed_index(float(train_lat), float(train_lon), line_points, items)
+        if index is not None and index >= 0:
+            dropped = items[: index + 1]
+            items = items[index + 1 :]
+            source = "train_position"
+    if source != "train_position":
+        if currentstop:
+            for index, row in enumerate(items):
+                if _stop_key(row.get("station")) == _stop_key(currentstop):
+                    dropped.extend(items[: index + 1])
+                    items = items[index + 1 :]
+                    source = source or "trainview"
+                    break
+        anchor = None
+        if nextstop:
+            for index, row in enumerate(items):
+                if _stop_key(row.get("station")) == _stop_key(nextstop):
+                    anchor = index
+                    break
+        if anchor is not None:
+            dropped.extend(items[:anchor])
+            items = items[anchor:]
+            source = "trainview"
+        else:
+            now_m = now_hhmm if isinstance(now_hhmm, (int, float)) else _parse_hhmm(now_hhmm)
+            if now_m is not None:
+                keep = 0
+                for index, row in enumerate(items):
+                    est = _parse_hhmm(row.get("est") or row.get("sched"))
+                    if est is None or (int(now_m) - est) <= int(grace_min):
+                        break
+                    keep = index + 1
+                if keep:
+                    dropped.extend(items[:keep])
+                    items = items[keep:]
+                    source = "estimated_time"
+    current = dropped[-1].get("station") if dropped else (currentstop or None)
+    nxt = items[0].get("station") if items else None
+    return {
+        "remaining": items,
+        "current_stop": current,
+        "next_stop": nxt,
+        "stop_source": source,
+    }
+
+
 def _pack_stop(row: dict) -> dict:
     return {
         "station": str(row.get("station") or ""),
@@ -351,6 +561,7 @@ def remaining_stops(
     cut = _cut_index(clean, currentstop)
     start = 0 if cut is None else cut + 1
     pending = [_pack_stop(row) for row in clean[start:]]
+    pending = _collapse_stops(pending)
     pending = align_remaining(pending, nextstop)
     if until and _stop_key(until):
         want = _stop_key(until)
@@ -382,6 +593,7 @@ def remaining_from_timetable(
     after_minutes: int | None = None,
     currentstop: str | None = None,
     nextstop: str | None = None,
+    until: str | None = None,
 ) -> list[dict]:
     """Stop order for a train number from the bundled timetable."""
     stations = (schedule or {}).get("stations") if isinstance(schedule, dict) else None
@@ -411,6 +623,15 @@ def remaining_from_timetable(
                     continue
                 found.append((mins, str(name), clock))
     found.sort()
+    unique: list[tuple[int, str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for mins, name, clock in found:
+        key = (_stop_key(name), clock)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append((mins, name, clock))
+    found = unique
     matched = False
     if _stop_key(currentstop):
         needle = _stop_key(currentstop)
@@ -422,7 +643,8 @@ def remaining_from_timetable(
     if not matched and after_minutes is not None:
         found = [row for row in found if row[0] >= after_minutes]
     pending = [{"station": name, "sched": clock, "est": clock} for _, name, clock in found]
-    return align_remaining(pending, nextstop)
+    pending = align_remaining(pending, nextstop)
+    return _cut_until(pending, until)
 
 
 def project_position(
@@ -772,6 +994,16 @@ class RideMatcher:
         self.ended_reason: str | None = None
         self.ended_at: float | None = None
         self.remaining_stops: list | None = None
+        self._stop_rows: list | None = None
+        self._line_points: list | None = None
+        self.alight_station = None
+        self.alight_source = "none"
+        self.alight_est = None
+        self.stop_source = None
+        self.delay_min = None
+        self.published_current = None
+        self.published_next = None
+        self.home_station = ""
         self._slow_since: float | None = None
         self._slow_anchor: tuple[float, float] | None = None
         self._apart_count = 0
@@ -1405,8 +1637,8 @@ class RideMatcher:
             "line_code": _line_code(train.line) if train else None,
             "destination": train.dest if train else None,
             "service": train.service if train else None,
-            "current_stop": train.currentstop if train else None,
-            "next_stop": train.nextstop if train else None,
+            "current_stop": self.published_current or (train.currentstop if train else None),
+            "next_stop": self.published_next or (train.nextstop if train else None),
             "late_min": train.late if train else None,
             "consist": consist,
             "cars": len(consist),
@@ -1444,7 +1676,16 @@ class RideMatcher:
             "planned_trip": self.planned_trip(),
             "transfer_next": False,
             "leg": self.leg if self.expected else 1,
-            "final_destination": None if not self.expected else self.expected.get("destination"),
+            "final_destination": (
+                None
+                if not self.expected and not self.alight_station
+                else ((self.expected or {}).get("destination") or self.alight_station)
+            ),
+            "alight_station": self.alight_station,
+            "alight_source": self.alight_source,
+            "alight_est": self.alight_est,
+            "delay_min": self.delay_min,
+            "stop_source": self.stop_source,
             "next_stop_track": None,
             "next_stop_platform": None,
             "connection_track": None,
@@ -1920,6 +2161,23 @@ class RideMatcher:
             self.riding_train = seen
             self._last_seen[number] = trains_ts
             self._maybe_handover()
+            if self._stop_rows:
+                when = datetime.fromtimestamp(now, NY)
+                minutes = when.hour * 60 + when.minute
+                fresh = not position_is_stale(seen, self._trace.get(seen.trainno))
+                trimmed = trim_passed(
+                    self._stop_rows,
+                    minutes,
+                    seen.currentstop,
+                    seen.nextstop,
+                    seen.lat if fresh else None,
+                    seen.lon if fresh else None,
+                    line_points=self._line_points,
+                )
+                self.remaining_stops = trimmed["remaining"]
+                self.stop_source = trimmed["stop_source"]
+                self.published_current = trimmed["current_stop"]
+                self.published_next = trimmed["next_stop"]
             if seen.late and int(seen.late) > 60 and self.active_expected() == number:
                 return self.clear_expected("delay")
         else:
@@ -1938,6 +2196,8 @@ class RideMatcher:
         if self.last_good_fix_ts is not None and now - self.last_good_fix_ts >= 60:
             self.gps_gap = True
             self.confidence = "gps_gap"
+            if seen is not None:
+                self.position_source = "trainview"
         return None
 
     def set_tracker_state(self, state: str, ts: float | None = None) -> RideEvent | None:

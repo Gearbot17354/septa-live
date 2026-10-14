@@ -1116,3 +1116,112 @@ def test_alert_filter_uses_the_configured_line():
     assert R.alert_matches("route AIR delay", "Airport", "AIR") is True
     assert R.alert_matches("Lansdale Doylestown", "Airport", "Airport") is False
 
+
+def test_apply_delay_shifts_the_timetable_and_keeps_a_real_estimate():
+    rows = [
+        {"station": "North End", "sched": "16:50", "est": "16:50"},
+        {"station": "Hub", "sched": "16:55", "est": "16:55"},
+    ]
+    delayed = R.apply_delay(rows, 12)
+    assert [row["est"] for row in delayed] == ["17:02", "17:07"]
+    assert {row["est_source"] for row in delayed} == {"delay"}
+    assert R.apply_delay(rows, 13)[0]["est"] == "17:03"
+    on_time = R.apply_delay(rows, 0)
+    assert on_time[0]["est"] == "16:50" and on_time[0]["est_source"] == "sched"
+    wrapped = R.apply_delay([{"station": "North End", "sched": "23:55", "est": "23:55"}], 10)
+    assert wrapped[0]["est"] == "00:05"
+    real = R.apply_delay([{"station": "Hub", "sched": "16:50", "est": "17:01"}], 12)
+    assert real[0]["est"] == "17:01" and real[0]["est_source"] == "rr"
+    same = R.apply_delay([{"station": "Hub", "sched": "16:50", "est": "16:50"}], 13)
+    assert same[0]["est"] == "17:03" and same[0]["est_source"] == "delay"
+
+
+def test_trim_passed_uses_the_clock_unless_the_train_says_otherwise():
+    rows = R.apply_delay(
+        [
+            {"station": "North End", "sched": "16:50", "est": "16:50"},
+            {"station": "Hub", "sched": "16:55", "est": "16:55"},
+        ],
+        13,
+    )
+    trimmed = R.trim_passed(rows, 17 * 60 + 5)
+    assert [row["station"] for row in trimmed["remaining"]] == ["Hub"]
+    assert trimmed["current_stop"] == "North End"
+    assert trimmed["next_stop"] == "Hub"
+    assert trimmed["stop_source"] == "estimated_time"
+    held = R.trim_passed(rows, 17 * 60 + 5, nextstop="North End")
+    assert held["remaining"][0]["station"] == "North End"
+    assert held["stop_source"] == "trainview"
+    points = [
+        {"station": "North End", "lat": 40.0, "lon": -75.0},
+        {"station": "Hub", "lat": 40.01, "lon": -75.0},
+    ]
+    past = R.trim_passed(rows, 17 * 60 + 5, nextstop="North End", train_lat=40.012, train_lon=-75.0, line_points=points)
+    assert past["remaining"] == []
+    assert past["stop_source"] == "train_position"
+    assert past["current_stop"] == "Hub"
+
+
+def test_stale_phone_stays_aboard_while_the_stop_list_moves():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    base = datetime(2026, 10, 14, 16, 50, tzinfo=ZoneInfo("America/New_York")).timestamp()
+    here = train("1001", 40.0, -75.0, 0, dest="South End", line="FOX")
+    matcher = R.RideMatcher(need_matches=1, min_speed_mps=5, radius_m=300)
+    matcher.update(fix(40.0, -75.0, base, speed=20, course=0), [here], base)
+    assert matcher.riding is True
+    for _ in range(3):
+        event = matcher.update(fix(40.0, -75.0, base, speed=20, course=0), [here], base, now=base)
+        assert event is None
+        assert matcher.last_reason == "duplicate_ts"
+    matcher._stop_rows = [
+        {"station": "North End", "sched": "16:50", "est": "16:50", "est_source": "sched"},
+        {"station": "Hub", "sched": "16:58", "est": "16:58", "est_source": "sched"},
+    ]
+    later = base + 5 * 60
+    for offset in range(5):
+        matcher.tick(later + offset, [here], later)
+    assert matcher.riding is True
+    assert matcher.confidence == "gps_gap"
+    assert matcher.position_source == "trainview"
+    assert matcher.remaining_stops[0]["station"] == "Hub"
+    ended = matcher.tick(base + 21 * 60, [here], base + 21 * 60)
+    assert ended is not None and ended.payload["reason"] == "no_fix"
+
+
+def test_the_stop_list_ends_at_the_riders_stop():
+    order = ["North End", "Hub", "South End"]
+    home, source = R.choose_alight(None, 1, "Hub", order, "North End")
+    assert home == "Hub" and source == "home"
+    planned, source = R.choose_alight({"destination": "South End"}, 1, "Hub", order, "North End")
+    assert planned == "South End" and source == "planned"
+    connection, source = R.choose_alight({"connection_station": "Hub"}, 1, "South End", order, "North End")
+    assert connection == "Hub" and source == "connection"
+    away, source = R.choose_alight(None, 1, "North End", order, "Hub")
+    assert away is None and source == "none"
+    schedule = {
+        "stations": {
+            "North End": {"S": [{"t": "09:00", "n": "100", "days": 0}]},
+            "Hub": {
+                "S": [{"t": "09:10", "n": "100", "days": 0}],
+                "N": [{"t": "09:10", "n": "100", "days": 0}],
+            },
+            "South End": {"S": [{"t": "09:20", "n": "100", "days": 0}]},
+        }
+    }
+    listed = R.remaining_from_timetable(schedule, "100", 2, None, None, None, "Hub")
+    assert [row["station"] for row in listed] == ["North End", "Hub"]
+    full = R.remaining_from_timetable(schedule, "100", 2)
+    assert [row["station"] for row in full] == ["North End", "Hub", "South End"]
+
+
+def test_duplicate_schedule_rows_collapse():
+    rows = [
+        {"station": "Hub", "sched_tm": "10:00", "est_tm": "10:05", "act_tm": "na"},
+        {"station": "Hub", "sched_tm": "10:00", "est_tm": "10:05", "act_tm": "na"},
+        {"station": "South End", "sched_tm": "10:12", "est_tm": "10:12", "act_tm": "na"},
+    ]
+    pending = R.remaining_stops(rows)
+    assert [row["station"] for row in pending] == ["Hub", "South End"]
+

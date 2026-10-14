@@ -65,7 +65,9 @@ DEFAULT_EVENT_BUFFER: Final = 15
 DEFAULT_DAY_WINDOW: Final = "rest_of_day"
 DEFAULT_MAX_TRAINS: Final = 60
 # Recorder skips these. The live state still has them for dashboards.
-UNRECORDED_TRAIN_ATTRS: Final = frozenset({"trains", "trips", "suggested", "candidates", "day"})
+UNRECORDED_TRAIN_ATTRS: Final = frozenset(
+    {"trains", "trips", "suggested", "candidates", "day", "remaining_stops"}
+)
 ORIGIN_HYSTERESIS_M: Final = 200
 LIVE_WINDOW_MIN: Final = 90
 GTFS_RAIL_API: Final = "https://api.github.com/repos/septadev/GTFS/releases/latest"

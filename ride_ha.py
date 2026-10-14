@@ -16,6 +16,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_state_change_event, async_track_time_interval
 
 from .const import (
+    CONF_HOME_STATION,
     CONF_RIDE_ACTIVITY,
     CONF_RIDE_MATCHES,
     CONF_RIDE_MAX_ACCURACY,
@@ -37,16 +38,21 @@ from .ride import (
     Fix,
     RideMatcher,
     TrainCache,
+    apply_delay,
     approaching_connection,
+    choose_alight,
     classify_fix,
     configured_riders,
     dedupe_riders,
     haversine_m,
     parse_trainview,
+    position_is_stale,
     remaining_from_timetable,
     remaining_stops,
     riders_summary,
+    trim_passed,
     _line_code,
+    _stop_key,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -181,6 +187,13 @@ class RiderController:
         station = None if not self.matcher.expected else self.matcher.expected.get("connection_station")
         payload["transfer_next"] = approaching_connection(remaining, station)
         payload["remaining_source"] = self._remaining_source if self.matcher.riding else None
+        payload["delay_min"] = self.matcher.delay_min
+        payload["alight_station"] = self.matcher.alight_station
+        payload["alight_source"] = self.matcher.alight_source
+        payload["alight_est"] = self.matcher.alight_est
+        payload["stop_source"] = self.matcher.stop_source
+        if self.matcher.published_current:
+            payload["current_stop"] = self.matcher.published_current
         payload["tracker"] = self._resolved or self._tracker_hint or self._configured or None
         payload["last_fix"] = _iso(self.matcher.last_fix.ts) if self.matcher.last_fix else None
         payload["boarded_time"] = _iso(self.matcher.boarded_ts) if self.matcher.boarded_ts else None
@@ -372,6 +385,59 @@ class RiderController:
             return self.manager.train_cache.rows
         return raw if isinstance(raw, list) else []
 
+    def _home_station(self) -> str:
+        options = self.entry.options if isinstance(self.entry.options, dict) else {}
+        data = self.entry.data if isinstance(self.entry.data, dict) else {}
+        riders = options.get("riders_cfg") if isinstance(options.get("riders_cfg"), dict) else {}
+        mine = riders.get(self.slug) if isinstance(riders.get(self.slug), dict) else {}
+        home = str(mine.get("home_station") or "").strip()
+        if home:
+            return home
+        return str(options.get(CONF_HOME_STATION) or data.get("station") or "").strip()
+
+    def _publish_stops(self, rows: list[dict], train: Train, source: str, order: list[str]) -> None:
+        late = int(train.late or 0)
+        home = self._home_station()
+        self.matcher.home_station = home
+        self.matcher.delay_min = late
+        alight, alight_source = choose_alight(self.matcher.expected, self.matcher.leg, home, order, train.currentstop)
+        kept = []
+        for row in rows:
+            if alight and _stop_key(row.get("station")) == _stop_key(alight):
+                kept.append(row)
+                break
+            kept.append(row)
+        if not alight:
+            kept = list(rows)
+        delayed = apply_delay(kept, late)
+        self.matcher.alight_station = alight
+        self.matcher.alight_source = alight_source
+        self.matcher._stop_rows = delayed
+        now_ny = datetime.now(NY)
+        fresh = not position_is_stale(train, self.matcher._trace.get(train.trainno))
+        trimmed = trim_passed(
+            delayed,
+            now_ny.hour * 60 + now_ny.minute,
+            train.currentstop,
+            train.nextstop,
+            train.lat if fresh else None,
+            train.lon if fresh else None,
+            line_points=self.matcher._line_points,
+        )
+        self._remaining = trimmed["remaining"]
+        self.matcher.remaining_stops = self._remaining
+        self.matcher.stop_source = trimmed["stop_source"]
+        self.matcher.published_current = trimmed["current_stop"]
+        self.matcher.published_next = trimmed["next_stop"]
+        self.matcher.alight_est = None
+        if alight:
+            for row in delayed:
+                if _stop_key(row.get("station")) == _stop_key(alight):
+                    self.matcher.alight_est = row.get("est")
+                    break
+        self._remaining_source = source
+        self._remaining_late = late
+
     async def _refresh_remaining(self, force: bool = False) -> None:
         train = self.matcher.riding_train
         if train is None:
@@ -411,26 +477,23 @@ class RiderController:
                 self._rr_train = train.trainno
                 self._rr_ts = 0.0
         if self._rr_raw:
-            until = None
-            expected = self.matcher.expected
-            if self.matcher.leg == 1 and expected and expected.get("connection_station"):
-                until = expected.get("connection_station")
-            self._remaining = remaining_stops(self._rr_raw, train.currentstop, train.nextstop, until)
-            self.matcher.remaining_stops = self._remaining
-            self._remaining_source = "rrschedules"
+            order = [str(row.get("station") or "") for row in self._rr_raw]
+            rows = remaining_stops(self._rr_raw, train.currentstop, train.nextstop, None)
+            self._publish_stops(rows, train, "rrschedules", order)
             return
         now_ny = datetime.now(NY)
         minutes = now_ny.hour * 60 + now_ny.minute
-        self._remaining = remaining_from_timetable(
+        full = remaining_from_timetable(cached_schedule(), train.trainno, now_ny.weekday(), None, None, None, None)
+        rows = remaining_from_timetable(
             cached_schedule(),
             train.trainno,
             now_ny.weekday(),
             minutes,
             train.currentstop,
             train.nextstop,
+            None,
         )
-        self.matcher.remaining_stops = self._remaining
-        self._remaining_source = "timetable"
+        self._publish_stops(rows, train, "timetable", [row.get("station") or "" for row in full])
 
     async def _on_fast(self, now) -> None:
         try:
@@ -513,6 +576,9 @@ class RiderController:
                         "entry_id": data.get("entry_id"),
                     },
                 )
+                dynamic = getattr(self.coordinator, "dynamic", None)
+                if dynamic is not None:
+                    self.hass.async_create_task(dynamic.async_refresh(force=False, only_slug=self.slug or None))
         self._push()
         self._sync_fast()
 

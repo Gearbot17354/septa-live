@@ -255,8 +255,10 @@ def resolve_origin(
     stale: bool = False,
     origin_entity: str | None = None,
     fix_age_s: float | None = None,
+    ride_origin: str | None = None,
+    last_recent: bool = False,
 ) -> dict:
-    """manual, then home, then a zone or the nearest station, then the city station."""
+    """manual, then home, then a ride or a zone or the nearest station."""
     stops = stops or []
     source = None
     name = None
@@ -267,8 +269,19 @@ def resolve_origin(
         source, name = "manual", str(manual).strip()
     elif at_home:
         source, name = "home", home_station or None
-    elif str(zone or "").strip():
+    elif stale and str(ride_origin or "").strip():
+        source, name = "ride", str(ride_origin).strip()
+    elif not stale and str(zone or "").strip():
         source, name, distance = "zone", str(zone).strip(), 0
+    elif not stale and lat is not None and lon is not None and not inaccurate and stops:
+        hit = nearest_station(lat, lon, stops, radius_m, current=current, hysteresis_m=hysteresis_m)
+        if hit:
+            source, name = "nearest", hit["name"]
+            distance = hit["distance_m"]
+        else:
+            skip = "out_of_radius"
+    elif stale and str(last or "").strip() and last_recent:
+        source, name = "last", str(last).strip()
     elif lat is None or lon is None:
         skip = "no_coords"
     elif not stops:
@@ -278,14 +291,11 @@ def resolve_origin(
     elif inaccurate:
         skip = "inaccurate"
     else:
-        hit = nearest_station(lat, lon, stops, radius_m, current=current, hysteresis_m=hysteresis_m)
-        if hit:
-            source, name = "nearest", hit["name"]
-            distance = hit["distance_m"]
-        else:
-            skip = "out_of_radius"
+        skip = "out_of_radius"
     if name is None and str(city_station or "").strip():
         source, name = "default", str(city_station).strip()
+        if not skip:
+            skip = "stale" if stale else "no_coords"
     if name is None and str(last or "").strip():
         source, name = "last", str(last).strip()
     reason = None

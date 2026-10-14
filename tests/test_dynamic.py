@@ -258,7 +258,9 @@ def _class_body(text: str, name: str) -> str:
 
 def test_unrecorded_attributes_on_entity_classes():
     const = _load("septa_const_rec", "const.py")
-    assert const.UNRECORDED_TRAIN_ATTRS == frozenset({"trains", "trips", "suggested", "candidates", "day"})
+    assert const.UNRECORDED_TRAIN_ATTRS == frozenset(
+        {"trains", "trips", "suggested", "candidates", "day", "remaining_stops"}
+    )
     sensor = (ROOT / "sensor.py").read_text()
     binary = (ROOT / "binary_sensor.py").read_text()
     for name, src in (
@@ -408,3 +410,44 @@ def test_origin_uses_the_person_when_the_tracker_has_no_coordinates():
     start = text.index("async def _on_tracker")
     body = text[start : text.index("\n    def ", start + 10)]
     assert "self._listen()" in body
+
+
+def test_going_home_origin_while_riding_or_stale():
+    stops = _stops()
+    riding = D.resolve_origin(
+        stale=True,
+        ride_origin="Hub",
+        lat=40.0,
+        lon=-75.0,
+        accuracy=17,
+        city_station="South End",
+        home_station="North End",
+        stops=stops,
+    )
+    assert riding["origin_source"] == "ride"
+    assert riding["origin"] == "Hub"
+    remembered = D.resolve_origin(
+        stale=True,
+        last="Hub",
+        last_recent=True,
+        city_station="South End",
+        home_station="North End",
+        stops=stops,
+    )
+    assert remembered["origin_source"] == "last"
+    assert remembered["origin"] == "Hub"
+    fresh = D.resolve_origin(
+        lat=40.0006,
+        lon=-75.0,
+        accuracy=17,
+        city_station="Hub",
+        home_station="South End",
+        stops=stops,
+    )
+    assert fresh["origin"] == "North End"
+    assert fresh["origin_source"] == "nearest"
+    home = D.resolve_origin(at_home=True, home_station="South End", city_station="Hub", stops=stops)
+    assert home["reason"] == "at_home_station"
+    fallback = D.resolve_origin(stale=True, city_station="Hub", home_station="South End", stops=stops)
+    assert fallback["origin_source"] == "default"
+    assert fallback["origin_skip_reason"]

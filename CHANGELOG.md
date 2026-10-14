@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.13.5
+
+### Fixed
+
+- My Train stop times include the live delay, and they move when the delay changes. Each stop has `est_source` (`rr`, `delay`, or `sched`). `delay_min` is the delay that was applied.
+- The remaining-stop list keeps moving from the train's own position and times when the phone's GPS stalls. You stay marked as riding. `stop_source` says whether the cut came from the train, its position, or the clock.
+- The list ends at your stop: the planned destination, the connection, or your home station when the train is still heading there. `alight_station` and `alight_source` say which. `final_destination` is filled in. A home station you have already left does not cut the list.
+- A through-running train no longer shows the same stop twice.
+- Going Home uses the ride when your coordinates are stale and you are on a train, and the last nearby station when they are stale and you are not. A fallback to the default station still sets `origin_skip_reason`.
+
 ## 1.13.4
 
 ### Changed

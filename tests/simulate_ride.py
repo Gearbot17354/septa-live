@@ -22,6 +22,22 @@ def _load():
     return module
 
 
+def _stale_delay_demo(ride) -> None:
+    """A stalled phone and a late train. No live names, just a short branch."""
+    rows = ride.apply_delay(
+        [
+            {"station": "North End", "sched": "16:50", "est": "16:50"},
+            {"station": "Hub", "sched": "16:55", "est": "16:55"},
+        ],
+        12,
+    )
+    trimmed = ride.trim_passed(rows, 17 * 60 + 5)
+    print(
+        f"stale-demo delay est={rows[0]['est']} next={trimmed['next_stop']} "
+        f"source={trimmed['stop_source']} left={trimmed['current_stop']}"
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--trainview", type=Path, default=Path(__file__).parent / "fixtures" / "tv_1.json")
@@ -33,6 +49,7 @@ def main() -> None:
     matcher = ride.RideMatcher(need_matches=args.matches, min_speed_mps=5)
     if args.fixes is None:
         print(f"{len(trains)} trains in {args.trainview.name}; pass --fixes to replay")
+        _stale_delay_demo(ride)
         return
     with args.fixes.open() as handle:
         for row in csv.DictReader(handle):
