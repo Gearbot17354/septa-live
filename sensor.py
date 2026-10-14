@@ -16,8 +16,10 @@ from homeassistant.helpers.entity_registry import async_entries_for_config_entry
 from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from homeassistant.helpers.restore_state import RestoreEntity
+
 from .const import CONF_RIDE_TRACKER, DOMAIN
-from .ids import object_key, stable_unique_id
+from .ids import dynamic_key, object_key, stable_unique_id
 from .trips import trip_ids
 from .coordinator import NY, SeptaCoordinator, slug
 from .ride import configured_riders, dedupe_riders, write_state_on_loop
@@ -113,6 +115,9 @@ def _wanted_entities(coordinator: SeptaCoordinator) -> list[SensorEntity]:
             entities.append(SeptaLineSensor(coordinator, watch))
     for trip in coordinator.configured_trips():
         entities.append(SeptaTripSensor(coordinator, trip))
+    for spec in _dynamic_specs(coordinator):
+        entities.append(SeptaDynamicSensor(coordinator, "going_home", spec))
+        entities.append(SeptaDynamicSensor(coordinator, "day_trains", spec))
     entities.append(SeptaMapSensor(coordinator))
     specs = _rider_specs(coordinator)
     if specs:
@@ -494,6 +499,105 @@ class SeptaTripSensor(CoordinatorEntity[SeptaCoordinator], SensorEntity):
         }
 
 
+class SeptaDynamicSensor(CoordinatorEntity[SeptaCoordinator], RestoreEntity, SensorEntity):
+    """Going Home, or the trains into town, for one rider."""
+
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator: SeptaCoordinator, kind: str, spec: dict) -> None:
+        super().__init__(coordinator)
+        self._kind = kind
+        slug = str(spec.get("slug") or "")
+        self._slug = slug
+        self._primary = bool(spec.get("primary")) or not slug
+        key = dynamic_key(kind, slug, self._primary)
+        self._attr_unique_id = stable_unique_id(coordinator.entry.entry_id, key)
+        self.entity_id = f"sensor.septa_{key}"
+        title = "Going home" if kind == "going_home" else "Day trains"
+        self._attr_name = title if self._primary else f"{title} {slug}"
+        if kind == "going_home":
+            self._attr_device_class = SensorDeviceClass.DURATION
+            self._attr_native_unit_of_measurement = UnitOfTime.MINUTES
+            self._attr_icon = "mdi:home-import-outline"
+        else:
+            self._attr_icon = "mdi:calendar-clock"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, coordinator.entry.entry_id)},
+            name=f"SEPTA {coordinator.station}",
+            manufacturer="SEPTA",
+            model=_device_model(coordinator),
+        )
+
+    @property
+    def suggested_object_id(self) -> str:
+        return self.entity_id.split(".", 1)[1]
+
+    def _pack(self) -> dict[str, Any]:
+        board = getattr(self.coordinator, "dynamic", None)
+        if board is None:
+            return {}
+        found = board.results.get(dynamic_key(self._kind, self._slug, self._primary)) or {}
+        return found if isinstance(found, dict) else {}
+
+    @property
+    def native_value(self) -> int | str | None:
+        pack = self._pack()
+        if self._kind == "going_home":
+            if pack.get("reason") in {"at_home_station", "disabled", "no_origin"}:
+                return None
+            minutes = pack.get("state_minutes")
+            if minutes is None or isinstance(minutes, bool):
+                return None
+            try:
+                return max(0, int(minutes))
+            except (TypeError, ValueError):
+                return None
+        train = pack.get("suggested_train") or pack.get("state_train")
+        return None if not train else str(train)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        pack = self._pack()
+        attrs = {
+            "rider": pack.get("rider"),
+            "origin": pack.get("origin"),
+            "origin_lat": pack.get("origin_lat"),
+            "origin_lon": pack.get("origin_lon"),
+            "origin_source": pack.get("origin_source"),
+            "origin_distance_m": pack.get("origin_distance_m"),
+            "home_station": pack.get("home_station"),
+            "destination": pack.get("destination"),
+            "destination_source": pack.get("destination_source"),
+            "updated": pack.get("updated"),
+            "source": pack.get("source"),
+            "reason": pack.get("reason"),
+            "error": pack.get("error"),
+            "trains": pack.get("trains") or [],
+        }
+        if self._kind == "day_trains":
+            attrs.update(
+                {
+                    "event": pack.get("event"),
+                    "suggested": pack.get("suggested"),
+                    "suggested_train": pack.get("suggested_train"),
+                    "buffer_min": pack.get("buffer_min"),
+                    "schedule_valid_until": pack.get("schedule_valid_until"),
+                    "schedule_source": pack.get("schedule_source"),
+                }
+            )
+        return attrs
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        if self._kind != "going_home":
+            return
+        board = getattr(self.coordinator, "dynamic", None)
+        last = await self.async_get_last_state()
+        origin = None if last is None else (last.attributes or {}).get("origin")
+        if board is not None and origin:
+            board.remember_last(self._slug, str(origin))
+
+
 class SeptaLineSensor(_Base):
     """Inbound and outbound sensors for an extra commute line."""
 
@@ -601,6 +705,28 @@ class SeptaMapSensor(_Base):
             "longitude": home.get("lon") if isinstance(home, dict) else None,
             "vehicles": vehicles if isinstance(vehicles, list) else [],
         }
+
+
+def _dynamic_specs(coordinator: SeptaCoordinator) -> list[dict]:
+    ride = getattr(coordinator, "ride", None)
+    if ride is not None and getattr(ride, "riders", None):
+        specs = [
+            {
+                "key": rider.key,
+                "slug": rider.slug,
+                "person": rider.person,
+                "configured": rider._configured,
+                "tracker": rider._tracker_hint,
+                "primary": rider.is_primary,
+            }
+            for rider in ride.riders.values()
+        ]
+        if specs:
+            return specs
+    specs = dedupe_riders(configured_riders(coordinator.entry.options, coordinator.entry.data), {})
+    if specs:
+        return specs
+    return [{"slug": "", "primary": True, "configured": "", "tracker": "", "person": None}]
 
 
 def _rider_specs(coordinator: SeptaCoordinator) -> list[dict]:

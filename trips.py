@@ -45,6 +45,12 @@ def nta_station(name: object) -> str:
 
 
 def clean_trips(raw: object) -> list[dict]:
+    try:
+        from .const import DEFAULT_TRIP_COUNT, MAX_TRIP_COUNT, MAX_TRIPS
+    except ImportError:
+        MAX_TRIPS = 20
+        MAX_TRIP_COUNT = 20
+        DEFAULT_TRIP_COUNT = 4
     if isinstance(raw, str):
         raw = [part.strip() for part in raw.splitlines() if part.strip()]
     if not isinstance(raw, list):
@@ -68,10 +74,10 @@ def clean_trips(raw: object) -> list[dict]:
             continue
         seen.add(tid)
         try:
-            count = int(item.get("count") if item.get("count") not in (None, "") else 4)
+            count = int(item.get("count") if item.get("count") not in (None, "") else DEFAULT_TRIP_COUNT)
         except (TypeError, ValueError):
-            count = 4
-        count = min(10, max(1, count))
+            count = DEFAULT_TRIP_COUNT
+        count = min(MAX_TRIP_COUNT, max(1, count))
         label = str(item.get("label") or "").strip()[:40]
         try:
             transfer = int(item.get("transfer_min") if item.get("transfer_min") not in (None, "") else 3)
@@ -89,7 +95,7 @@ def clean_trips(raw: object) -> list[dict]:
                 "transfer_min": transfer,
             }
         )
-        if len(out) >= 8:
+        if len(out) >= MAX_TRIPS:
             break
     return out
 

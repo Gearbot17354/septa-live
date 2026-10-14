@@ -62,7 +62,35 @@
           "ride_max_accuracy_m": "Ignore fixes worse than (meters)",
           "ride_request_updates": "Ask the phone for a fresh location near a station",
           "ride_activity_sensor": "Phone activity sensor (optional)",
-          "ride_expected": "Expected train entity (optional)"
+          "ride_expected": "Expected train entity (optional)",
+          "configure_dynamic": "Set up Going Home and day trains"
+        }
+      },
+      "dynamic": {
+        "title": "Dynamic trips",
+        "description": "Home is where Going Home ends and where day trains start. The city station is the fallback origin when nobody is near a station.",
+        "data": {
+          "home_station": "Home station",
+          "default_city_station": "Usual city station",
+          "near_radius_m": "Nearest-station radius (meters)",
+          "going_home_count": "Going Home trains to show",
+          "transfer_min": "Minimum transfer (minutes)",
+          "event_buffer_min": "Arrive before an event (minutes)",
+          "day_window": "Day trains window",
+          "geocode": "Geocode calendar locations (optional, sends the location text to Nominatim)"
+        }
+      },
+      "rider": {
+        "title": "Rider {rider}",
+        "description": "Leave a field blank to use the shared home and city stations.",
+        "data": {
+          "home_station": "Home station",
+          "city_station": "Usual city station",
+          "default_destination": "Default destination",
+          "destination_entity": "Destination entity",
+          "calendar_entity": "Calendar",
+          "enabled_going_home": "Going Home",
+          "enabled_day_trains": "Day trains"
         }
       }
     }
@@ -79,6 +107,19 @@
     "simulate_ride": {
       "name": "Simulate a ride",
       "description": "Replay phone fixes without changing the live riding sensor."
+    },
+    "set_origin_station": {
+      "name": "Set origin station",
+      "description": "Hold a Going Home origin. A blank station returns to automatic."
+    },
+    "set_destination": {
+      "name": "Set destination",
+      "description": "Hold the day-trains destination. A blank station clears it."
+    }
+  },
+  "exceptions": {
+    "unknown_station": {
+      "message": "{station} is not a Regional Rail station."
     }
   }
 }

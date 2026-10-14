@@ -407,6 +407,10 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._trip_hold: dict[str, float] = {}
         self._trip_warned: set[str] = set()
         self._place_cache: dict[str, tuple[float, dict]] = {}
+        self._nta_cache: dict[tuple, tuple] = {}
+        self._nta_fail: dict[tuple, int] = {}
+        self._nta_hold: dict[tuple, float] = {}
+        self.dynamic = None
         self._delay_seen: dict[str, dict] = {}
         self._risk_seen: dict[str, dict] = {}
         self._day_cache: dict[tuple, list] = {}
@@ -1037,27 +1041,67 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def async_refresh_trips(self, force: bool = False, trip_id: str | None = None) -> None:
         trips = self.configured_trips()
-        if not trips:
+        dynamic = getattr(self, "dynamic", None)
+        if not trips and dynamic is None:
             return
-        want = {item["id"] for item in trips}
-        self.trip_results = {key: value for key, value in self.trip_results.items() if key in want}
-        now = datetime.now(NY)
-        stamp = time.time()
-        sent = 0
-        for trip in trips:
-            if trip_id and trip["id"] != trip_id:
-                continue
-            hold = self._trip_hold.get(trip["id"], 0)
-            if not force and hold and stamp < hold:
-                continue
-            if sent:
-                await asyncio.sleep(0.35)
-            sent += 1
-            await self._refresh_one_trip(trip, now, stamp)
+        if trips:
+            want = {item["id"] for item in trips}
+            self.trip_results = {key: value for key, value in self.trip_results.items() if key in want}
+            now = datetime.now(NY)
+            stamp = time.time()
+            sent = 0
+            for trip in trips:
+                if trip_id and trip["id"] != trip_id:
+                    continue
+                hold = self._trip_hold.get(trip["id"], 0)
+                if not force and hold and stamp < hold:
+                    continue
+                if sent:
+                    await asyncio.sleep(0.35)
+                sent += 1
+                await self._refresh_one_trip(trip, now, stamp)
+        if dynamic is not None and not trip_id:
+            await dynamic.async_refresh(force=force)
         try:
             self.async_update_listeners()
         except Exception:  # noqa: BLE001
             _LOGGER.debug("SEPTA trip listener update skipped")
+
+    async def async_cached_nta(self, origin: str, dest: str, count: int, transfer: int, force: bool = False):
+        """NextToArrive with a 60s cache shared by trips and riders. Holds for 5 min after 3 failures."""
+        key = (station_key(origin), station_key(dest), int(count))
+        now_ts = time.time()
+        cached = self._nta_cache.get(key)
+        if cached and not force and now_ts - cached[0] < 60:
+            return cached[1], cached[2]
+        hold = self._nta_hold.get(key, 0)
+        if not force and hold and now_ts < hold:
+            if cached:
+                return cached[1], cached[2]
+            return [], "held"
+        try:
+            raw = await self._get(NTA_URL, {"req1": nta_station(origin), "req2": nta_station(dest), "req3": int(count)})
+            self.trip_raw_lengths[f"{key[0]}|{key[1]}|{key[2]}"] = len(raw) if isinstance(raw, list) else 0
+            parsed, error = parse_next_to_arrive(raw, datetime.now(NY), int(count), int(transfer))
+            if error:
+                raise RuntimeError(error)
+            self._nta_cache[key] = (now_ts, parsed, None)
+            self._nta_fail[key] = 0
+            self._nta_hold.pop(key, None)
+            return parsed, None
+        except Exception as err:  # noqa: BLE001
+            fails = self._nta_fail.get(key, 0) + 1
+            self._nta_fail[key] = fails
+            if fails >= 3:
+                self._nta_hold[key] = now_ts + 300
+            message = str(err) or err.__class__.__name__
+            warn = f"{origin}|{dest}"
+            if warn not in self._trip_warned:
+                self._trip_warned.add(warn)
+                _LOGGER.warning("SEPTA NextToArrive rejected %s to %s: %s", origin, dest, message)
+            if cached:
+                return cached[1], message
+            return [], message
 
     async def _places(self, station: str) -> dict:
         key = station_key(station)
@@ -1092,31 +1136,18 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         label = trip.get("label") or ""
         want_day = bool(trip.get("day"))
         limit = 50 if want_day else count
-        req1 = nta_station(origin)
-        req2 = nta_station(dest)
-        parsed: list[dict] = []
-        error = None
-        source = "nexttoarrive"
-        try:
-            raw = await self._get(NTA_URL, {"req1": req1, "req2": req2, "req3": limit})
-            self.trip_raw_lengths[trip["id"]] = len(raw) if isinstance(raw, list) else 0
-            parsed, error = parse_next_to_arrive(raw, now, limit, transfer)
-            if error:
-                raise RuntimeError(error)
-            self._trip_fail[trip["id"]] = 0
-            self._trip_hold.pop(trip["id"], None)
-        except Exception as err:  # noqa: BLE001
+        parsed, error = await self.async_cached_nta(origin, dest, limit, transfer, force=False)
+        if error:
             fails = self._trip_fail.get(trip["id"], 0) + 1
             self._trip_fail[trip["id"]] = fails
             if fails >= 3:
                 self._trip_hold[trip["id"]] = stamp + 300
-            error = str(err) or err.__class__.__name__
-            warn = f"{origin}|{dest}"
-            if warn not in self._trip_warned:
-                self._trip_warned.add(warn)
-                _LOGGER.warning("SEPTA NextToArrive rejected %s to %s: %s", origin, dest, error)
             parsed = timetable_trips(cached_schedule(), origin, dest, now, count, _LINE_NAMES)
             source = "timetable"
+        else:
+            self._trip_fail[trip["id"]] = 0
+            self._trip_hold.pop(trip["id"], None)
+            source = "nexttoarrive"
         rows = list(parsed[:count])
         day_rows = None
         if want_day:

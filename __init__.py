@@ -54,7 +54,7 @@ _FRONTEND = f"{DOMAIN}_frontend_registered"
 _CARD_JS = "septa-live-card.js"
 _PANEL_JS = "septa-live-panel.js"
 _PANEL_PATH = "septa-live"
-_CARD_VERSION = "1.12.2"
+_CARD_VERSION = "1.13.0"
 _PANEL_SIG: tuple | None = None
 _RELOADING: set[str] = set()
 
@@ -222,6 +222,51 @@ def _register_simulate(hass: HomeAssistant) -> None:
         ),
     )
 
+    async def _set_dynamic_station(call, which: str):
+        from homeassistant.exceptions import ServiceValidationError
+
+        from .dynamic import match_station
+
+        data = hass.data.get(DOMAIN) or {}
+        wanted = str(call.data.get("entry_id") or "").strip()
+        raw = str(call.data.get("station") or "").strip()
+        for entry_id, coordinator in data.items():
+            if wanted and entry_id != wanted:
+                continue
+            board = getattr(coordinator, "dynamic", None)
+            if board is None:
+                continue
+            station = None
+            if raw:
+                station = board.known_station(raw) or match_station(raw, list(STATIONS))
+                if not station:
+                    raise ServiceValidationError(
+                        translation_domain=DOMAIN,
+                        translation_key="unknown_station",
+                        translation_placeholders={"station": raw},
+                    )
+            slug = board.slug_for(call.data.get("rider"))
+            if which == "origin":
+                await board.set_origin(slug, station)
+            else:
+                await board.set_destination(slug, station)
+
+    async def _set_origin(call):
+        await _set_dynamic_station(call, "origin")
+
+    async def _set_destination_service(call):
+        await _set_dynamic_station(call, "destination")
+
+    station_schema = vol.Schema(
+        {
+            vol.Optional("entry_id"): str,
+            vol.Optional("rider"): str,
+            vol.Optional("station"): str,
+        }
+    )
+    hass.services.async_register(DOMAIN, "set_origin_station", _set_origin, schema=station_schema)
+    hass.services.async_register(DOMAIN, "set_destination", _set_destination_service, schema=station_schema)
+
 
 async def _async_migrate_entity_ids(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Point old unique ids at the config entry and put _2 names back."""
@@ -257,21 +302,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await async_preload(hass)
     await hass.async_add_executor_job(_load_schedule)
-    from datetime import date
-
-    if date.today() >= date(2026, 10, 17):
-        _LOGGER.warning(
-            "SEPTA bundled rail schedule ended 2026-10-17. Timetable fallback may be stale until rail-schedule.json is replaced"
-        )
     await _async_register_lovelace_cards(hass)
     coordinator = SeptaCoordinator(hass, entry)
     from .ride_ha import RideController
+    from .dynamic_ha import DynamicBoard
 
     coordinator.ride = RideController(hass, coordinator)
+    coordinator.dynamic = DynamicBoard(hass, coordinator)
+    await coordinator.dynamic.async_prepare()
     await coordinator.async_config_entry_first_refresh()
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     coordinator.sidebar_on = _sidebar_enabled(entry)
     entry.async_on_unload(coordinator.start_trip_poller())
+    entry.async_on_unload(coordinator.dynamic.async_stop)
     try:
         await coordinator.ride.async_start()
     except Exception:  # noqa: BLE001

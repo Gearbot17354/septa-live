@@ -54,6 +54,14 @@ def object_key(key: str) -> str:
     return _OBJECT_KEY.get(key, key)
 
 
+def dynamic_key(kind: str, slug: str, primary: bool) -> str:
+    """Entity object id. The primary rider has no slug suffix."""
+    if primary or not slug:
+        return kind
+    safe = re.sub(r"[^a-z0-9_]+", "_", str(slug).lower()).strip("_")
+    return f"{kind}_{safe}" if safe else kind
+
+
 def canonical_entity_id(domain: str, station: str, key: str) -> str | None:
     station_slug = slug(station) or "septa"
     if domain == "binary_sensor":
@@ -63,6 +71,10 @@ def canonical_entity_id(domain: str, station: str, key: str) -> str | None:
             return f"binary_sensor.septa_riding_{key[len('riding_'):]}"
         return None
     if key.startswith("trip_"):
+        return f"sensor.septa_{key}"
+    if key == "going_home" or key.startswith("going_home_"):
+        return f"sensor.septa_{key}"
+    if key == "day_trains" or key.startswith("day_trains_"):
         return f"sensor.septa_{key}"
     if key == "riders_count":
         return "sensor.septa_riders_count"
@@ -81,10 +93,13 @@ def legacy_key(unique_id: str) -> str | None:
     trip = uid.find("_trip_")
     if trip != -1:
         return "trip_" + uid[trip + len("_trip_") :]
-    for marker in ("_my_train_", "_riding_"):
+    for marker in ("_my_train_", "_riding_", "_going_home_", "_day_trains_"):
         idx = uid.rfind(marker)
         if idx != -1:
             return uid[idx + 1 :]
+    for kind in ("going_home", "day_trains"):
+        if uid.endswith("_" + kind) or uid == kind:
+            return kind
     line = uid.find("_line_")
     if line != -1:
         return uid[line + 1 :]

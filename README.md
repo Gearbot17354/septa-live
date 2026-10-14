@@ -12,7 +12,7 @@ This is a **custom repository** — the same way most community plugins are inst
 2. Open the three-dot menu → **Custom repositories**.
 3. Paste `https://github.com/Gearbot17354/septa-live`.
 4. Category: **Integration**.
-5. **Add**, then find **SEPTA Transit** and **Download** **1.12.2**. Restart Home Assistant after the update so the new ride code is the code that is running.
+5. **Add**, then find **SEPTA Transit** and **Download** **1.13.0**. Restart Home Assistant after the update so the new ride code is the code that is running.
 6. **Restart Home Assistant**.
 7. **Settings → Devices & Services → Add Integration → SEPTA Transit**.
 8. Pick a station (for example Lansdale) and a destination (Jefferson Station) used for the leave-now countdown.
@@ -26,7 +26,7 @@ Repo: [github.com/Gearbot17354/septa-live](https://github.com/Gearbot17354/septa
 If Add card still does not list SEPTA Transit, enable Advanced Mode in your profile, then **Settings → Dashboards → ⋮ → Resources → Add**:
 
 ```
-/local/septa-live-card.js?v=1.12.2
+/local/septa-live-card.js?v=1.13.0
 type: module
 ```
 
@@ -67,6 +67,41 @@ Track and platform are copied from Arrivals only when SEPTA sends them. Empty me
 | `trips` | The next departures. For a transfer, arrival is the final station |
 | `day` | Today's full list, only when Full day is on |
 | `connection` | Transfer station, connecting train, wait, and `at_risk` |
+
+## Dynamic trips (1.13)
+
+Going Home and day trains follow each rider. You do not add a trip for every station.
+
+1. **Settings → Devices & Services → SEPTA Transit → Configure**.
+2. Turn on **Set up Going Home and day trains**.
+3. Pick a home station and the station you usually leave from in the city.
+4. Add the people or phones you already use for ride detection. Each extra rider gets their own pair of sensors. The first rider has no suffix.
+
+| Sensor | What it shows |
+| --- | --- |
+| `sensor.septa_going_home` | Minutes until the next train toward home. The origin is a station you set, the nearest station, the usual city station, or the last one that worked |
+| `sensor.septa_day_trains` | The train to take toward a destination from home. A calendar or an input helper can pick the destination |
+
+Optional, per rider: a `calendar` entity and an `input_select` or `input_text` with a station name. The calendar location is matched against station names. Geocoding is off unless you turn it on. When it is on, an unmatched location is sent to OpenStreetMap Nominatim, one request at a time, and the result is cached. Coordinates already on the event or on a Home Assistant zone are used first and are not sent anywhere.
+
+Services:
+
+- `septa_live.set_origin_station` holds the Going Home origin. Leave the station blank to go back to automatic. Getting home clears it too.
+- `septa_live.set_destination` holds the day-trains destination. Blank clears it.
+
+A minimal card binds to `trains`:
+
+```yaml
+type: markdown
+content: >
+  {% for train in state_attr('sensor.septa_going_home', 'trains') or [] %}
+  {{ train.train }} {{ train.depart_est }} → {{ train.arrive_est }}
+  {% endfor %}
+```
+
+Saved trips are unchanged. The integration keeps up to 20 of them, and each trip can list up to 20 departures. The default is still 4.
+
+An entry from 1.12 picks up your existing station as home and your existing destination as the city station. Trip entity ids do not change. If the bundled timetable is past `validUntil`, the integration tries SEPTA's public rail GTFS once a day and otherwise uses live NextToArrive only.
 
 ## What's new in 1.12.2
 

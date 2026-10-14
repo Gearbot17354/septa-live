@@ -80,3 +80,41 @@ set_expected_train:
       description: ISO time. Blank uses three hours, or the scheduled arrival plus an hour when the card sends one.
       selector:
         text:
+
+set_origin_station:
+  name: Set origin station
+  description: Hold a Going Home origin until you clear it or the rider gets home. A blank station returns to automatic.
+  fields:
+    entry_id:
+      name: Config entry
+      selector:
+        text:
+    rider:
+      name: Rider
+      description: Person, tracker, or slug. Blank uses the primary rider.
+      selector:
+        text:
+    station:
+      name: Station
+      description: Regional Rail station. Blank clears the manual origin.
+      selector:
+        text:
+
+set_destination:
+  name: Set destination
+  description: Hold the day-trains destination. A blank station returns to the calendar, entity, or default.
+  fields:
+    entry_id:
+      name: Config entry
+      selector:
+        text:
+    rider:
+      name: Rider
+      description: Person, tracker, or slug. Blank uses the primary rider.
+      selector:
+        text:
+    station:
+      name: Station
+      description: Regional Rail station. Blank clears the manual destination.
+      selector:
+        text:
