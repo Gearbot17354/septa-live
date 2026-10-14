@@ -27,6 +27,7 @@ from .const import (
     CONF_GEOCODE,
     CONF_GOING_HOME_COUNT,
     CONF_HOME_STATION,
+    CONF_MAX_TRAINS,
     CONF_NEAR_RADIUS,
     CONF_RIDE_MAX_ACCURACY,
     CONF_RIDERS_CFG,
@@ -35,6 +36,7 @@ from .const import (
     DEFAULT_DAY_WINDOW,
     DEFAULT_EVENT_BUFFER,
     DEFAULT_GOING_HOME_COUNT,
+    DEFAULT_MAX_TRAINS,
     DEFAULT_NEAR_RADIUS,
     DEFAULT_RIDE_MAX_ACCURACY,
     DEFAULT_TRANSFER_MIN,
@@ -46,6 +48,8 @@ from .const import (
 from .coordinator import NY, cached_schedule, nta_station
 from .dynamic import (
     build_itineraries,
+    builtin_place,
+    cap_trains,
     indexed_stops,
     match_station,
     merge_nta,
@@ -66,7 +70,7 @@ from .ride import configured_riders, dedupe_riders
 from .trips import parse_next_to_arrive, station_key
 
 _LOGGER = logging.getLogger(__name__)
-_USER_AGENT = "septa_live/1.13.0 (Home Assistant)"
+_USER_AGENT = "septa_live/1.13.1 (Home Assistant)"
 _GEOCODE_GAP = 0.0
 
 
@@ -86,6 +90,7 @@ def _blank_payload(rider: str, home: str) -> dict:
         "reason": None,
         "error": None,
         "trains": [],
+        "trains_total": 0,
         "state_minutes": None,
         "state_train": None,
         "event": None,
@@ -269,6 +274,8 @@ class DynamicBoard:
             "event_buffer_min": integer(CONF_EVENT_BUFFER, DEFAULT_EVENT_BUFFER, 0, 180),
             "day_window": str(opt.get(CONF_DAY_WINDOW) or DEFAULT_DAY_WINDOW),
             "geocode": bool(opt.get(CONF_GEOCODE)),
+            "calendar_entity": str(opt.get("calendar_entity") or "").strip(),
+            "max_trains": integer(CONF_MAX_TRAINS, DEFAULT_MAX_TRAINS, 1, 120),
             "riders_cfg": opt.get(CONF_RIDERS_CFG) if isinstance(opt.get(CONF_RIDERS_CFG), dict) else {},
             "max_accuracy": float(
                 opt.get(CONF_RIDE_MAX_ACCURACY, data.get(CONF_RIDE_MAX_ACCURACY, DEFAULT_RIDE_MAX_ACCURACY))
@@ -312,7 +319,7 @@ class DynamicBoard:
             "city_station": pick("city_station", opt["default_city_station"]),
             "default_destination": pick("default_destination", opt["default_city_station"]),
             "destination_entity": str(raw.get("destination_entity") or "").strip(),
-            "calendar_entity": str(raw.get("calendar_entity") or "").strip(),
+            "calendar_entity": pick("calendar_entity", opt.get("calendar_entity") or ""),
             "enabled_going_home": flag("enabled_going_home"),
             "enabled_day_trains": flag("enabled_day_trains"),
         }
@@ -457,6 +464,9 @@ class DynamicBoard:
             return None
         if match_station(event.get("location"), self._names):
             return None
+        place = builtin_place(event.get("location"))
+        if place and (place.get("station") or place.get("lat") is not None):
+            return None
         query = str(event.get("location"))
         if query in self._geo_cache:
             return self._geo_cache[query]
@@ -552,6 +562,9 @@ class DynamicBoard:
                     window="rest_of_day",
                 )
             going["trains"] = merge_nta(live, schedule_rows, opt["going_home_count"], now)
+            shown, total = cap_trains(going["trains"], opt["max_trains"])
+            going["trains"] = shown
+            going["trains_total"] = total
             going["source"] = "nta" if live else ("timetable" if schedule_rows else "nta")
             going["error"] = error
             if going["trains"]:
@@ -612,10 +625,10 @@ class DynamicBoard:
                     now=now,
                     window=opt["day_window"] if opt["day_window"] in {"today", "rest_of_day"} else "rest_of_day",
                 )
-                day["trains"] = overlay_live(skeleton, live, now, LIVE_WINDOW_MIN)
+                full = overlay_live(skeleton, live, now, LIVE_WINDOW_MIN)
                 day["source"] = "timetable"
             else:
-                day["trains"] = [present_row(dict(row, live=True), now) for row in live]
+                full = [present_row(dict(row, live=True), now) for row in live]
                 day["source"] = "nta"
             day["error"] = error
             start = None
@@ -623,10 +636,13 @@ class DynamicBoard:
                 from .trips import _parse_iso
 
                 start = _parse_iso(day["event"].get("start"))
-            suggested = suggest_itinerary(day["trains"], start, opt["event_buffer_min"])
+            suggested = suggest_itinerary(full, start, opt["event_buffer_min"])
             day["suggested"] = suggested
             day["suggested_train"] = None if not suggested else suggested.get("train")
-            first = day["trains"][0]["train"] if day["trains"] else None
+            shown, total = cap_trains(full, opt["max_trains"])
+            day["trains"] = shown
+            day["trains_total"] = total
+            first = shown[0]["train"] if shown else None
             day["state_train"] = day["suggested_train"] or first
         self.results[day_key] = day
 

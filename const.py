@@ -38,11 +38,15 @@ CONF_EVENT_BUFFER: Final = "event_buffer_min"
 CONF_DAY_WINDOW: Final = "day_window"
 CONF_RIDERS_CFG: Final = "riders_cfg"
 CONF_GEOCODE: Final = "geocode"
+CONF_MAX_TRAINS: Final = "max_trains"
 DEFAULT_NEAR_RADIUS: Final = 1500
 DEFAULT_GOING_HOME_COUNT: Final = 6
 DEFAULT_TRANSFER_MIN: Final = 3
 DEFAULT_EVENT_BUFFER: Final = 15
 DEFAULT_DAY_WINDOW: Final = "rest_of_day"
+DEFAULT_MAX_TRAINS: Final = 60
+# Recorder skips these. The live state still has them for dashboards.
+UNRECORDED_TRAIN_ATTRS: Final = frozenset({"trains", "trips", "suggested", "candidates", "day"})
 ORIGIN_HYSTERESIS_M: Final = 200
 LIVE_WINDOW_MIN: Final = 90
 GTFS_RAIL_API: Final = "https://api.github.com/repos/septadev/GTFS/releases/latest"

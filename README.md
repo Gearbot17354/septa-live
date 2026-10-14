@@ -82,7 +82,9 @@ Going Home and day trains follow each rider. You do not add a trip for every sta
 | `sensor.septa_going_home` | Minutes until the next train toward home. The origin is a station you set, the nearest station, the usual city station, or the last one that worked |
 | `sensor.septa_day_trains` | The train to take toward a destination from home. A calendar or an input helper can pick the destination |
 
-Optional, per rider: a `calendar` entity and an `input_select` or `input_text` with a station name. The calendar location is matched against station names. Geocoding is off unless you turn it on. When it is on, an unmatched location is sent to OpenStreetMap Nominatim, one request at a time, and the result is cached. Coordinates already on the event or on a Home Assistant zone are used first and are not sent anywhere.
+Optional, per rider or as a default on the dynamic-trips step: a `calendar` entity and an `input_select` or `input_text` with a station name. A blank calendar on a rider uses the shared one. The calendar location is matched against station names, then a built-in list of campuses and ZIP codes (University City and 19104 are Penn Medicine, 19122 is Temple University). That match does not call a geocoder. Geocoding stays off unless you turn it on. When it is on, a location that still did not match is sent to OpenStreetMap Nominatim, one request at a time, and the result is cached. Coordinates already on the event or on a Home Assistant zone are used first and are not sent anywhere.
+
+The train lists stay on the live sensors for dashboards and are left out of Home Assistant history. **Max trains to keep** (default 60) limits how many rows `trains` holds. `trains_total` is the full count. The suggested train is picked before that cap.
 
 Services:
 

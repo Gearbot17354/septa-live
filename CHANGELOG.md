@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.13.1
+
+### Fixed
+
+- Day trains, Going Home, trip, and riding sensors no longer store the long train lists in the recorder. Dashboards still see `trains`, `trips`, `suggested`, and `candidates` on the live state.
+- The calendar field on the shared dynamic-trips step is the default for every rider. A rider can still set a different calendar.
+- A campus address or ZIP matches a station without the optional geocoder. University City and 19104 resolve to Penn Medicine. 19122 resolves to Temple University. A line that does not serve Penn Medicine transfers at a shared station such as 30th Street.
+
+### Changed
+
+- `max_trains` (default 60) caps the live `trains` list. `trains_total` is the count before that cap. Suggested trains are chosen from the full list. Row field names are unchanged, including nulls.
+
 ## 1.13.0
 
 ### Added

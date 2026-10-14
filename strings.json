@@ -68,7 +68,7 @@
       },
       "dynamic": {
         "title": "Dynamic trips",
-        "description": "Home is where Going Home ends and where day trains start. The city station is the fallback origin when nobody is near a station.",
+        "description": "Home is where Going Home ends and where day trains start. The city station is the fallback origin when nobody is near a station. The calendar here is the default for every rider.",
         "data": {
           "home_station": "Home station",
           "default_city_station": "Usual city station",
@@ -77,12 +77,14 @@
           "transfer_min": "Minimum transfer (minutes)",
           "event_buffer_min": "Arrive before an event (minutes)",
           "day_window": "Day trains window",
+          "calendar_entity": "Calendar (default for every rider)",
+          "max_trains": "Max trains to keep on the sensor",
           "geocode": "Geocode calendar locations (optional, sends the location text to Nominatim)"
         }
       },
       "rider": {
         "title": "Rider {rider}",
-        "description": "Leave a field blank to use the shared home and city stations.",
+        "description": "Leave a field blank to use the shared home, city station, and calendar.",
         "data": {
           "home_station": "Home station",
           "city_station": "Usual city station",

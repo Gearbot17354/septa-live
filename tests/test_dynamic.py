@@ -240,3 +240,109 @@ def test_dynamic_entity_ids_stay_stable():
     assert ids.legacy_key("abc123_going_home") == "going_home"
     assert ids.legacy_key("abc123_going_home_alex") == "going_home_alex"
     assert ids.stable_unique_id("abc123", "going_home") == "abc123_going_home"
+
+
+def _class_body(text: str, name: str) -> str:
+    start = text.index(f"class {name}")
+    rest = text[start:]
+    nxt = rest.find("\nclass ", 1)
+    return rest if nxt < 0 else rest[:nxt]
+
+
+def test_unrecorded_attributes_on_entity_classes():
+    const = _load("septa_const_rec", "const.py")
+    assert const.UNRECORDED_TRAIN_ATTRS == frozenset({"trains", "trips", "suggested", "candidates", "day"})
+    sensor = (ROOT / "sensor.py").read_text()
+    binary = (ROOT / "binary_sensor.py").read_text()
+    for name, src in (
+        ("SeptaTripSensor", sensor),
+        ("SeptaDynamicSensor", sensor),
+        ("SeptaMyTrainSensor", sensor),
+        ("SeptaRidingBinarySensor", binary),
+    ):
+        assert "_unrecorded_attributes = UNRECORDED_TRAIN_ATTRS" in _class_body(src, name)
+    for name, src in (("SeptaRiderTrainSensor", sensor), ("SeptaRiderBinarySensor", binary)):
+        assert "_unrecorded_attributes" not in _class_body(src, name)
+
+
+def test_calendar_option_is_global_and_per_rider():
+    flow = (ROOT / "config_flow.py").read_text()
+    body = _class_body(flow, "SeptaOptionsFlow")
+    assert body.count("calendar_entity") >= 2
+    assert "CONF_MAX_TRAINS" in body
+    ha = (ROOT / "dynamic_ha.py").read_text()
+    assert 'pick("calendar_entity", opt.get("calendar_entity")' in ha
+
+
+def test_campus_address_without_geocoder_transfers_at_30th():
+    names = ["North End", "Gray 30th St Station", "Penn Medicine Station"]
+    stops = [
+        {"name": "North End", "lat": 40.24, "lon": -75.28},
+        {"name": "Gray 30th St Station", "lat": 39.95667, "lon": -75.18166},
+        {"name": "Penn Medicine Station", "lat": 39.94806, "lon": -75.19028},
+    ]
+    event = {
+        "summary": "Class",
+        "start": "2026-10-12T10:30:00-04:00",
+        "location": "202 S 36th St, Philadelphia, PA 19104",
+    }
+    dest = D.resolve_destination(event=event, default_station="North End", names=names, stops=stops)
+    assert dest["destination"] == "Penn Medicine Station"
+    assert dest["destination_source"] == "calendar"
+    street = D.resolve_destination(
+        event={
+            "summary": "Class",
+            "start": "2026-10-12T10:30:00-04:00",
+            "location": "202 S 36th St, Philadelphia",
+        },
+        default_station="North End",
+        names=names,
+        stops=stops,
+        near_radius_m=2000,
+    )
+    assert street["destination"] == "Penn Medicine Station"
+    assert street["destination_source"] == "calendar"
+    phrase = D.resolve_destination(
+        event={"summary": "Lab", "start": "2026-10-12T10:30:00-04:00", "location": "University City"},
+        default_station="North End",
+        names=names,
+        stops=stops,
+    )
+    assert phrase["destination"] == "Penn Medicine Station"
+    days = 127
+    schedule = {
+        "stations": {
+            "North End": {
+                "S": [{"t": "09:00", "d": "Gray 30th St Station", "n": "100", "line": "NORTH", "days": days}]
+            },
+            "Gray 30th St Station": {
+                "S": [
+                    {"t": "09:40", "d": "Gray 30th St Station", "n": "100", "line": "NORTH", "days": days},
+                    {"t": "09:50", "d": "Penn Medicine Station", "n": "400", "line": "AIR", "days": days},
+                ]
+            },
+            "Penn Medicine Station": {
+                "S": [{"t": "10:00", "d": "Penn Medicine Station", "n": "400", "line": "AIR", "days": days}]
+            },
+        }
+    }
+    rows = D.build_itineraries(schedule, "North End", dest["destination"], DAY, transfer_min=3, now=NOW)
+    assert rows and rows[0]["direct"] is False
+    assert rows[0]["connection"]["station"] == "Gray 30th St Station"
+    assert rows[0]["connection"]["train"] == "400"
+    unknown = D.resolve_destination(
+        event={"summary": "X", "start": "2026-10-12T10:00:00-04:00", "location": "1 Main St, Nowhere"},
+        default_station="North End",
+        names=names,
+        stops=stops,
+    )
+    assert unknown["destination_source"] == "default"
+
+
+def test_cap_trains_reports_total_and_suggest_uses_the_full_list():
+    rows = [{"train": str(index), "arrive_est": f"2026-10-12T{9 + index:02d}:00:00-04:00"} for index in range(5)]
+    shown, total = D.cap_trains(rows, 2)
+    assert total == 5
+    assert [row["train"] for row in shown] == ["0", "1"]
+    suggested = D.suggest_itinerary(rows, datetime(2026, 10, 12, 14, 0, tzinfo=NY), 0)
+    assert suggested["train"] == "4"

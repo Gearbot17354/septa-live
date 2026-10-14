@@ -18,6 +18,7 @@ from .const import (
     CONF_GEOCODE,
     CONF_GOING_HOME_COUNT,
     CONF_HOME_STATION,
+    CONF_MAX_TRAINS,
     CONF_METRO_DEST,
     CONF_METRO_STATION,
     CONF_NEAR_RADIUS,
@@ -45,6 +46,7 @@ from .const import (
     DEFAULT_DESTINATION,
     DEFAULT_EVENT_BUFFER,
     DEFAULT_GOING_HOME_COUNT,
+    DEFAULT_MAX_TRAINS,
     DEFAULT_NEAR_RADIUS,
     DEFAULT_RIDE_MATCHES,
     DEFAULT_RIDE_MAX_ACCURACY,
@@ -329,6 +331,14 @@ class SeptaOptionsFlow(config_entries.OptionsFlow):
                     CONF_DAY_WINDOW,
                     default=str(entry.options.get(CONF_DAY_WINDOW) or DEFAULT_DAY_WINDOW),
                 ): WINDOW_SELECTOR,
+                vol.Optional(
+                    "calendar_entity",
+                    description={"suggested_value": str(entry.options.get("calendar_entity") or "")},
+                ): CALENDAR_SELECTOR,
+                vol.Optional(
+                    CONF_MAX_TRAINS,
+                    default=int(entry.options.get(CONF_MAX_TRAINS, DEFAULT_MAX_TRAINS)),
+                ): vol.All(vol.Coerce(int), vol.Range(min=1, max=120)),
                 vol.Optional(CONF_GEOCODE, default=bool(entry.options.get(CONF_GEOCODE, False))): BOOL_SELECTOR,
             }
         )

@@ -13,7 +13,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity_registry import async_entries_for_config_entry
 from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
 
-from .const import DOMAIN
+from .const import DOMAIN, UNRECORDED_TRAIN_ATTRS
 from .coordinator import SeptaCoordinator, slug
 from .ids import stable_unique_id
 from .sensor import _device_model, _rider_specs
@@ -88,6 +88,7 @@ class SeptaRidingBinarySensor(BinarySensorEntity):
     _attr_icon = "mdi:train"
     _attr_device_class = BinarySensorDeviceClass.MOVING
     _attr_should_poll = False
+    _unrecorded_attributes = UNRECORDED_TRAIN_ATTRS
 
     def __init__(self, coordinator: SeptaCoordinator) -> None:
         self.coordinator = coordinator

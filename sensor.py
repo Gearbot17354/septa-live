@@ -18,7 +18,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import CONF_RIDE_TRACKER, DOMAIN
+from .const import CONF_RIDE_TRACKER, DOMAIN, UNRECORDED_TRAIN_ATTRS
 from .ids import dynamic_key, object_key, stable_unique_id
 from .trips import trip_ids
 from .coordinator import NY, SeptaCoordinator, slug
@@ -446,6 +446,7 @@ class SeptaTripSensor(CoordinatorEntity[SeptaCoordinator], SensorEntity):
     _attr_native_unit_of_measurement = UnitOfTime.MINUTES
     _attr_icon = "mdi:transit-connection-variant"
     _attr_has_entity_name = True
+    _unrecorded_attributes = UNRECORDED_TRAIN_ATTRS
 
     def __init__(self, coordinator: SeptaCoordinator, trip: dict) -> None:
         super().__init__(coordinator)
@@ -503,6 +504,7 @@ class SeptaDynamicSensor(CoordinatorEntity[SeptaCoordinator], RestoreEntity, Sen
     """Going Home, or the trains into town, for one rider."""
 
     _attr_has_entity_name = True
+    _unrecorded_attributes = UNRECORDED_TRAIN_ATTRS
 
     def __init__(self, coordinator: SeptaCoordinator, kind: str, spec: dict) -> None:
         super().__init__(coordinator)
@@ -573,6 +575,7 @@ class SeptaDynamicSensor(CoordinatorEntity[SeptaCoordinator], RestoreEntity, Sen
             "reason": pack.get("reason"),
             "error": pack.get("error"),
             "trains": pack.get("trains") or [],
+            "trains_total": pack.get("trains_total") if pack.get("trains_total") is not None else len(pack.get("trains") or []),
         }
         if self._kind == "day_trains":
             attrs.update(
@@ -754,6 +757,7 @@ class SeptaMyTrainSensor(_Base):
 
     _attr_name = "My train"
     _attr_icon = "mdi:train"
+    _unrecorded_attributes = UNRECORDED_TRAIN_ATTRS
 
     def __init__(self, coordinator: SeptaCoordinator) -> None:
         super().__init__(coordinator, "my_train")

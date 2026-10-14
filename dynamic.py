@@ -34,6 +34,24 @@ except ImportError:
 HYSTERESIS_M = 200
 LIVE_WINDOW_MIN = 90
 
+# Public landmarks and ZIP codes. A street address can name a station
+# without calling a geocoder. Phrases are matched on word boundaries.
+_PLACE_ROWS = (
+    ("university of pennsylvania", "Penn Medicine Station", 39.9522, -75.1934),
+    ("university city", "Penn Medicine Station", 39.94806, -75.19028),
+    ("penn medicine", "Penn Medicine Station", 39.94806, -75.19028),
+    ("upenn", "Penn Medicine Station", 39.9522, -75.1934),
+    ("temple university", "Temple University", 39.98139, -75.14944),
+)
+_ZIP_ROWS = {
+    "19104": ("Penn Medicine Station", 39.9522, -75.1934),
+    "19122": ("Temple University", 39.98139, -75.14944),
+}
+# Only when the text also says Philadelphia or that ZIP. "36th St" alone is not enough.
+_STREET_ROWS = (
+    (r"\b36th\b", ("philadelphia", "19104"), 39.9524, -75.1965),
+)
+
 _ROW_KEYS = (
     "train",
     "line",
@@ -270,6 +288,45 @@ def resolve_origin(
     }
 
 
+def _words(text: object) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", str(text or "").lower())).strip()
+
+
+def builtin_place(text: object) -> dict | None:
+    """Station or coordinates for a known campus, ZIP, or street. None if unknown."""
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    folded = _words(raw)
+    padded = f" {folded} "
+    for phrase, station, lat, lon in _PLACE_ROWS:
+        if f" {phrase} " in padded:
+            return {"station": station, "lat": lat, "lon": lon, "via": "phrase"}
+    for code in re.findall(r"\b(\d{5})(?:-\d{4})?\b", raw):
+        row = _ZIP_ROWS.get(code)
+        if row:
+            station, lat, lon = row
+            return {"station": station, "lat": lat, "lon": lon, "via": "zip"}
+    low = raw.lower()
+    for pattern, context, lat, lon in _STREET_ROWS:
+        if re.search(pattern, low) and any(token in low or token in folded for token in context):
+            return {"station": None, "lat": lat, "lon": lon, "via": "street"}
+    return None
+
+
+def cap_trains(rows: list | None, limit: int = 60) -> tuple[list, int]:
+    """Keep the first `limit` rows. The second value is the count before the cap."""
+    items = list(rows or [])
+    total = len(items)
+    try:
+        kept = int(limit)
+    except (TypeError, ValueError):
+        kept = 60
+    if kept < 1:
+        return items, total
+    return items[:kept], total
+
+
 def match_station(text: object, names: list[str]) -> str | None:
     raw = str(text or "").strip()
     if not raw:
@@ -325,6 +382,11 @@ def resolve_destination(
         hit = match_station(kept.get("location"), names)
         if hit:
             return pack(hit, "calendar")
+        place = builtin_place(kept.get("location"))
+        if place and place.get("station"):
+            named = match_station(place["station"], names)
+            if named:
+                return pack(named, "calendar")
         lat = _num(kept.get("latitude"))
         lon = _num(kept.get("longitude"))
         if (lat is None or lon is None) and zones and kept.get("location"):
@@ -336,6 +398,8 @@ def resolve_destination(
                     break
         if (lat is None or lon is None) and geocoded:
             lat, lon = geocoded
+        if (lat is None or lon is None) and place and place.get("lat") is not None:
+            lat, lon = place["lat"], place["lon"]
         if lat is not None and lon is not None:
             near = nearest_station(lat, lon, stops, near_radius_m, hysteresis_m=0)
             if near:
