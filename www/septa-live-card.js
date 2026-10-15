@@ -409,26 +409,27 @@ const RAIL_STATIONS = [
     return tone(Number(t.delay_min || 0), Boolean(t.cancelled));
   }
 
-  function bubbleTrain(t, size) {
+  function bubbleTrain(t, size, hass) {
     const clock = splitClock(t.clock);
     const label = `${clock.time || "—"}${clock.period ? " " + clock.period : ""}`;
     const late = delayLabel(Number(t.delay_min || 0), Boolean(t.cancelled), t.status || (t.scheduled ? "Scheduled" : ""));
     const color = trainColor(t);
+    const faces = trainRiderChips(hass, t && t.riders);
     return `
       <div class="bubble-train is-${size}">
         <div class="bubble-clock-row">
           <div class="bubble-clock is-${size}" style="color:${color}">${esc(label)}</div>
           <div class="bubble-late" style="color:${color}">${esc(late)}</div>
         </div>
-        <div class="bubble-hint">${esc(trainHint(t))}</div>
+        <div class="bubble-hint">${faces}${esc(trainHint(t))}</div>
       </div>`;
   }
 
-  function heroInner(title, trains, entity, limit) {
+  function heroInner(title, trains, entity, limit, hass) {
     const list = Array.isArray(trains) ? trains.slice(0, Number(limit) > 0 ? Number(limit) : 2) : [];
     const first = list[0];
     const body = first
-      ? list.map((t, i) => bubbleTrain(t, i === 0 ? "lg" : "sm")).join("")
+      ? list.map((t, i) => bubbleTrain(t, i === 0 ? "lg" : "sm", hass)).join("")
       : `<div class="empty">${esc(overnightEmpty(title))}</div>`;
     return `
       <button class="hit bubble" type="button" data-entity="${esc(entity || "")}">
@@ -796,6 +797,17 @@ const RAIL_STATIONS = [
       .dep-toolbar { flex-direction: column; }
       .dep-toolbar label { min-width: 0; width: 100%; }
     }
+    .avatars { display: inline-flex; align-items: center; margin-right: 6px; vertical-align: middle; }
+    .avatar {
+      width: 22px; height: 22px; border-radius: 50%; margin-left: -6px; overflow: hidden;
+      display: inline-flex; align-items: center; justify-content: center;
+      border: 2px solid var(--ha-card-background, var(--card-background-color, #1c1c1e));
+      background: var(--secondary-background-color, #2c2c2e);
+      color: var(--primary-text-color, #f5f5f7);
+      font-size: 9px; font-weight: 700;
+    }
+    .avatar:first-child { margin-left: 0; }
+    .avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
     .bubble { min-width: 0; }
     .hero-grid { min-width: 0; }
 
@@ -1260,7 +1272,7 @@ const RAIL_STATIONS = [
         const title = name || (dir === "north" ? "Next outbound" : "Next inbound");
         const count = Number(this._config.count) > 0 ? Number(this._config.count) : 2;
         this.shadowRoot.innerHTML = `<style>${BASE_CSS}</style>
-          <ha-card>${heroInner(title, pack.trains, pack.entity || entity, count)}</ha-card>`;
+          <ha-card>${heroInner(title, pack.trains, pack.entity || entity, count, this._hass)}</ha-card>`;
         this.shadowRoot.querySelector("button")?.addEventListener("click", () => moreInfo(this, pack.entity || entity));
         return;
       }
@@ -1382,8 +1394,8 @@ const RAIL_STATIONS = [
         <ha-card>
           <div class="board-bar">${esc(bits.join(" · "))}</div>
           <div class="hero-grid">
-            ${heroInner("Next inbound", southPack.trains, southPack.entity || cfg.south)}
-            ${heroInner("Next outbound", northPack.trains, northPack.entity || cfg.north)}
+            ${heroInner("Next inbound", southPack.trains, southPack.entity || cfg.south, 2, this._hass)}
+            ${heroInner("Next outbound", northPack.trains, northPack.entity || cfg.north, 2, this._hass)}
             ${bus ? busInner(bus, cfg.bus, attr(bus, "route") ? `Bus ${attr(bus, "route")}` : "Next bus") : ""}
           </div>
         </ha-card>
@@ -2024,7 +2036,7 @@ const RAIL_STATIONS = [
                   <div class="dep-time">${esc(clock.time || mins)}${clock.period ? ` <span class="ampm">${esc(clock.period)}</span>` : ""}</div>
                   <div class="dep-dest">
                     <span class="to">${railBadge(t.line)}<span class="name">${esc(dest)}</span></span>
-                    <span class="id">${t.train_id ? "#" + esc(t.train_id) : ""}${service ? " · " + esc(service) : ""}</span>
+                    <span class="id">${trainRiderChips(this._hass, t.riders)}${t.train_id ? "#" + esc(t.train_id) : ""}${service ? " · " + esc(service) : ""}</span>
                   </div>
                   <div class="dep-plat">
                     <span class="dep-trk${track ? "" : " is-empty"}">${esc(track || "—")}</span>
@@ -2262,7 +2274,7 @@ const RAIL_STATIONS = [
   }
 
   function riderAvatar(hass, row) {
-    const name = row.friendly_name_rider || row.rider || "";
+    const name = row.friendly_name_rider || row.name || row.rider || "";
     const picture = pictureUrl(hass, row.entity_picture);
     if (picture) {
       return `<span class="avatar" title="${esc(name)}"><img src="${esc(picture)}" alt="${esc(name)}"></span>`;
@@ -2270,6 +2282,11 @@ const RAIL_STATIONS = [
     const letters = riderInitials(name);
     if (letters) return `<span class="avatar initials" title="${esc(name)}">${esc(letters)}</span>`;
     return `<span class="avatar initials" title="Rider"><ha-icon icon="mdi:account"></ha-icon></span>`;
+  }
+
+  function trainRiderChips(hass, riders) {
+    if (!Array.isArray(riders) || !riders.length) return "";
+    return `<span class="avatars">${riders.slice(0, 8).map((row) => riderAvatar(hass, row)).join("")}</span>`;
   }
 
   function trainBody(a, avatars) {

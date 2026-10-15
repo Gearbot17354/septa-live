@@ -199,12 +199,35 @@ class RiderController:
         payload["boarded_time"] = _iso(self.matcher.boarded_ts) if self.matcher.boarded_ts else None
         payload["rider"] = self.slug
         payload["person"] = self.person
-        person_state = self.hass.states.get(self.person) if self.person else None
-        payload["friendly_name_rider"] = getattr(person_state, "name", None) or self.slug
-        payload["entity_picture"] = None
-        if person_state is not None:
-            payload["entity_picture"] = person_state.attributes.get("entity_picture")
+        payload["origin"] = None if not self.matcher.expected else self.matcher.expected.get("origin")
+        payload["friendly_name_rider"] = self._friendly_name()
+        payload["entity_picture"] = self._entity_picture()
         return payload
+
+    def _friendly_name(self) -> str:
+        for entity in (self.person, self._resolved, self._tracker_hint, self._configured):
+            if not entity:
+                continue
+            state = self.hass.states.get(entity)
+            if state is None:
+                continue
+            name = getattr(state, "name", None) or state.attributes.get("friendly_name")
+            if name:
+                return str(name)
+        return self.slug
+
+    def _entity_picture(self) -> str | None:
+        """Person picture, then the tracker. Read every update so a new avatar shows up."""
+        for entity in (self.person, self._resolved, self._tracker_hint, self._configured):
+            if not entity:
+                continue
+            state = self.hass.states.get(entity)
+            if state is None:
+                continue
+            picture = state.attributes.get("entity_picture")
+            if picture:
+                return str(picture)
+        return None
 
     async def async_start(self) -> None:
         """Listen only when a tracker is configured."""

@@ -29,11 +29,19 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
     if ride is None:
         trips = coordinator.configured_trips() if coordinator is not None and hasattr(coordinator, "configured_trips") else []
         dynamic = getattr(coordinator, "dynamic", None) if coordinator is not None else None
+        schedule = None
+        keeper = getattr(coordinator, "rail_schedule", None) if coordinator is not None else None
+        if keeper is not None and hasattr(keeper, "status"):
+            try:
+                schedule = keeper.status()
+            except Exception:  # noqa: BLE001
+                schedule = None
         return {
             "ride": None,
             "trips": trips,
             "trip_response_lengths": dict(getattr(coordinator, "trip_raw_lengths", {}) or {}),
             "dynamic": dynamic.diagnostics() if dynamic is not None else None,
+            "rail_schedule": schedule,
         }
     riders = []
     for rider in getattr(ride, "riders", {}).values():
@@ -61,12 +69,20 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
     trips = coordinator.configured_trips() if coordinator is not None and hasattr(coordinator, "configured_trips") else []
     dynamic = getattr(coordinator, "dynamic", None) if coordinator is not None else None
     dynamic_info = dynamic.diagnostics() if dynamic is not None else None
+    schedule = None
+    keeper = getattr(coordinator, "rail_schedule", None) if coordinator is not None else None
+    if keeper is not None and hasattr(keeper, "status"):
+        try:
+            schedule = keeper.status()
+        except Exception:  # noqa: BLE001
+            schedule = None
     return {
         "ride": _redact(ride.attributes()),
         "riders": riders,
         "trips": trips,
         "trip_response_lengths": dict(getattr(coordinator, "trip_raw_lengths", {}) or {}),
         "dynamic": dynamic_info,
+        "rail_schedule": schedule,
         "settings": {
             "radius_m": primary.radius_m,
             "min_speed_mph": round(primary.min_speed_mps / 0.44704, 1),

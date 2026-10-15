@@ -48,13 +48,24 @@ from .const import (
     TROLLEY_STATIONS,
 )
 from .coordinator import SeptaCoordinator, _LINE_NAMES, _ha_home, _load_schedule, slug
+from .schema import (
+    REFRESH_SCHEDULE,
+    REFRESH_TRIPS,
+    SET_EXPECTED,
+    SIMULATE_RIDE,
+    STATION_SERVICE,
+    WEBSOCKET_BOARD,
+    WEBSOCKET_BUS,
+    WEBSOCKET_OPTIONS,
+    WEBSOCKET_PANEL,
+)
 
 _LOGGER = logging.getLogger(__name__)
 _FRONTEND = f"{DOMAIN}_frontend_registered"
 _CARD_JS = "septa-live-card.js"
 _PANEL_JS = "septa-live-panel.js"
 _PANEL_PATH = "septa-live"
-_CARD_VERSION = "1.13.5"
+_CARD_VERSION = "1.13.6"
 _PANEL_SIG: tuple | None = None
 _RELOADING: set[str] = set()
 
@@ -143,17 +154,7 @@ def _register_simulate(hass: HomeAssistant) -> None:
                 _LOGGER.error("SEPTA simulate_ride changed the live matcher")
         return result
 
-    register_kwargs = {
-        "schema": vol.Schema(
-            {
-                vol.Required("entry_id"): str,
-                vol.Required("fixes"): [dict],
-                vol.Optional("trainview"): [dict],
-                vol.Optional("rider"): str,
-                vol.Optional("expected_train"): str,
-            }
-        )
-    }
+    register_kwargs = {"schema": SIMULATE_RIDE}
     if support is not None:
         register_kwargs["supports_response"] = support
     hass.services.async_register(DOMAIN, "simulate_ride", _simulate, **register_kwargs)
@@ -173,12 +174,7 @@ def _register_simulate(hass: HomeAssistant) -> None:
         DOMAIN,
         "refresh_trips",
         _refresh_trips,
-        schema=vol.Schema(
-            {
-                vol.Optional("entry_id"): str,
-                vol.Optional("trip_id"): str,
-            }
-        ),
+        schema=REFRESH_TRIPS,
     )
 
     async def _set_expected(call):
@@ -208,18 +204,7 @@ def _register_simulate(hass: HomeAssistant) -> None:
         DOMAIN,
         "set_expected_train",
         _set_expected,
-        schema=vol.Schema(
-            {
-                vol.Optional("entry_id"): str,
-                vol.Optional("rider"): str,
-                vol.Optional("train"): str,
-                vol.Optional("origin"): str,
-                vol.Optional("destination"): str,
-                vol.Optional("connection_train"): str,
-                vol.Optional("connection_station"): str,
-                vol.Optional("valid_until"): str,
-            }
-        ),
+        schema=SET_EXPECTED,
     )
 
     async def _set_dynamic_station(call, which: str):
@@ -257,15 +242,30 @@ def _register_simulate(hass: HomeAssistant) -> None:
     async def _set_destination_service(call):
         await _set_dynamic_station(call, "destination")
 
-    station_schema = vol.Schema(
-        {
-            vol.Optional("entry_id"): str,
-            vol.Optional("rider"): str,
-            vol.Optional("station"): str,
-        }
-    )
-    hass.services.async_register(DOMAIN, "set_origin_station", _set_origin, schema=station_schema)
-    hass.services.async_register(DOMAIN, "set_destination", _set_destination_service, schema=station_schema)
+    hass.services.async_register(DOMAIN, "set_origin_station", _set_origin, schema=STATION_SERVICE)
+    hass.services.async_register(DOMAIN, "set_destination", _set_destination_service, schema=STATION_SERVICE)
+
+    async def _refresh_schedule(call):
+        from .schedule_ha import _KEEPER
+
+        wanted = str(call.data.get("entry_id") or "").strip()
+        force = bool(call.data.get("force"))
+        data = hass.data.get(DOMAIN) or {}
+        seen: set[int] = set()
+        for entry_id, coordinator in list(data.items()):
+            if wanted and entry_id != wanted:
+                continue
+            keeper = getattr(coordinator, "rail_schedule", None)
+            if keeper is None or id(keeper) in seen:
+                continue
+            seen.add(id(keeper))
+            await keeper.async_refresh(force=force)
+        if not seen:
+            keeper = hass.data.get(_KEEPER)
+            if keeper is not None:
+                await keeper.async_refresh(force=force)
+
+    hass.services.async_register(DOMAIN, "refresh_schedule", _refresh_schedule, schema=REFRESH_SCHEDULE)
 
 
 async def _async_migrate_entity_ids(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -319,6 +319,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.async_add_executor_job(_load_schedule)
     await _async_register_lovelace_cards(hass)
     coordinator = SeptaCoordinator(hass, entry)
+    from .schedule_ha import async_attach_schedule, audit_saved_stations
+
+    try:
+        await async_attach_schedule(hass, coordinator)
+    except Exception:  # noqa: BLE001
+        _LOGGER.exception("SEPTA timetable did not start")
     from .ride_ha import RideController
     from .dynamic_ha import DynamicBoard
 
@@ -343,6 +349,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(lambda: coordinator.async_remove_listener(_push))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_entry_updated))
+    try:
+        audit_saved_stations(hass, entry)
+    except Exception:  # noqa: BLE001
+        _LOGGER.debug("SEPTA station audit skipped", exc_info=True)
     await _async_sync_panel(hass)
     return True
 
@@ -398,12 +408,7 @@ async def _async_register_lovelace_cards(hass: HomeAssistant) -> None:
         async_call_later(hass, 15, _retry)
 
 
-@websocket_api.websocket_command(
-    {
-        vol.Required("type"): "septa_live/board",
-        vol.Required("station"): str,
-    }
-)
+@websocket_api.websocket_command(WEBSOCKET_BOARD)
 @websocket_api.async_response
 async def websocket_board(
     hass: HomeAssistant,
@@ -444,7 +449,7 @@ def _live_board(coordinator: SeptaCoordinator) -> dict:
     }
 
 
-@websocket_api.websocket_command({vol.Required("type"): "septa_live/panel"})
+@websocket_api.websocket_command(WEBSOCKET_PANEL)
 @websocket_api.async_response
 async def websocket_panel(
     hass: HomeAssistant,
@@ -488,7 +493,7 @@ async def websocket_panel(
         msg["id"],
         {
             "entries": entries,
-            "stations": list(STATIONS),
+            "stations": _rail_stations(hass, data),
             "nearest_stations": await _nearest_stations(data),
             "lines": [{"id": code, "name": name} for code, name in _LINE_NAMES.items()],
             "bus_routes": [{"id": rid, "name": name} for rid, name in BUS_ROUTES],
@@ -498,6 +503,21 @@ async def websocket_panel(
             "trolley_stations": list(TROLLEY_STATIONS),
         },
     )
+
+
+def _rail_stations(hass: HomeAssistant, data: dict) -> list:
+    """Regional Rail stations from the active timetable. Metro and trolley stay separate."""
+    from .schedule_ha import rail_names
+
+    line = ""
+    for coordinator in data.values():
+        line = str(getattr(coordinator, "rail_line", "") or "")
+        if line:
+            break
+    try:
+        return rail_names(hass, line or None, list(STATIONS))
+    except Exception:  # noqa: BLE001
+        return list(STATIONS)
 
 
 async def _nearest_stations(data: dict) -> list[dict]:
@@ -547,14 +567,7 @@ def _clean_trips(raw: object) -> list[dict]:
     return clean_trips(raw)
 
 
-@websocket_api.websocket_command(
-    {
-        vol.Required("type"): "septa_live/bus_picker",
-        vol.Required("entry_id"): str,
-        vol.Optional("route"): str,
-        vol.Optional("stop_id"): str,
-    }
-)
+@websocket_api.websocket_command(WEBSOCKET_BUS)
 @websocket_api.async_response
 async def websocket_bus_picker(
     hass: HomeAssistant,
@@ -573,38 +586,7 @@ async def websocket_bus_picker(
     connection.send_result(msg["id"], choices)
 
 
-@websocket_api.websocket_command(
-    {
-        vol.Required("type"): "septa_live/options",
-        vol.Required("entry_id"): str,
-        vol.Optional("destination"): str,
-        vol.Optional("walk_minutes"): vol.All(vol.Coerce(int), vol.Range(min=0, max=60)),
-        vol.Optional("show_sidebar"): bool,
-        vol.Optional("show_rail"): bool,
-        vol.Optional("show_bus"): bool,
-        vol.Optional("show_metro"): bool,
-        vol.Optional("show_trolley"): bool,
-        vol.Optional("station"): str,
-        vol.Optional("rail_line"): str,
-        vol.Optional("bus_line"): str,
-        vol.Optional("bus_stop"): str,
-        vol.Optional("bus_destination"): str,
-        vol.Optional("metro_line"): str,
-        vol.Optional("trolley_line"): str,
-        vol.Optional("metro_home"): str,
-        vol.Optional("metro_dest"): str,
-        vol.Optional("trolley_home"): str,
-        vol.Optional("trolley_dest"): str,
-        vol.Optional("watches"): list,
-        vol.Optional("trips"): list,
-        vol.Optional("ride_tracker"): str,
-        vol.Optional("ride_radius_m"): int,
-        vol.Optional("ride_min_speed_mph"): int,
-        vol.Optional("ride_matches"): int,
-        vol.Optional("ride_max_accuracy_m"): int,
-        vol.Optional("ride_request_updates"): bool,
-    }
-)
+@websocket_api.websocket_command(WEBSOCKET_OPTIONS)
 @websocket_api.async_response
 async def websocket_options(
     hass: HomeAssistant,
@@ -639,7 +621,7 @@ async def websocket_options(
             "trolley_dest": CONF_TROLLEY_DEST,
         }
         for src, dest in mapping.items():
-            if src not in msg:
+            if src not in msg or msg.get(src) is None:
                 continue
             if dest == CONF_DESTINATION and not str(msg.get(src) or "").strip():
                 continue
@@ -830,6 +812,12 @@ async def _apply_saved_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
         await async_sync_binary_sensors(coordinator)
     except Exception:  # noqa: BLE001
         _LOGGER.exception("SEPTA riding sensor sync failed")
+    try:
+        from .device_tracker import async_sync_train_trackers
+
+        await async_sync_train_trackers(coordinator)
+    except Exception:  # noqa: BLE001
+        _LOGGER.exception("SEPTA train tracker sync failed")
     show = _sidebar_enabled(entry)
     if show != bool(coordinator.sidebar_on):
         coordinator.sidebar_on = show
@@ -848,6 +836,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id, None)
+        from .schedule_ha import async_detach_schedule
+
+        async_detach_schedule(hass)
         if entry.entry_id not in _RELOADING:
             await _async_sync_panel(hass)
     return unload_ok

@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.13.6
+
+### Fixed
+
+- Service calls now accept numbers wherever a train, station or id is expected. A template like `train: "{{ train }}"` no longer fails with `expected str at 'train'`.
+- All service and websocket inputs are trimmed, and blank values are treated as "not set".
+- Numeric options sent as text (e.g. `"300"`) are accepted.
+- No behaviour change for existing calls.
+- Regional Rail station pickers now only list Regional Rail stations, sorted and validated. Metro and trolley stops stay on their own lists. A saved value that is not Regional Rail is left as it is and a repair issue points at the options flow.
+
+### Added
+
+- The rail timetable refreshes itself from SEPTA's published GTFS feed. It is checked daily and updates before the old one expires. The bundled timetable stays as the fallback. `sensor.septa_rail_schedule` shows the valid-through date, and a repair issue appears if the refresh keeps failing while the timetable is expired or about to expire.
+- `septa_live.refresh_schedule` forces a timetable refresh.
+- Trains list who is riding them (`riders`, with profile pictures) so cards can show a face on each train.
+- A per-rider train tracker, `device_tracker.septa_<rider>_train`, puts that rider's current train on the Home Assistant map. It uses the rider's picture, and the line, next stop, and delay. It has no location when the ride ends. People on the same train each get a marker at the same point so the entity id never changes.
+
 ## 1.13.5
 
 ### Fixed

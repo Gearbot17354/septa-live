@@ -110,20 +110,91 @@ def schedule_expired(schedule: dict | None, today: date) -> bool:
 
 
 def select_schedule(bundled: dict | None, cached: dict | None, today: date) -> tuple[dict, str]:
-    """Prefer a current bundled file, then a refreshed GTFS cache, else the stale file."""
-    if isinstance(bundled, dict) and bundled.get("stations") and not schedule_expired(bundled, today):
+    """Fresh downloaded cache, else a current bundled file, else whichever is newer."""
+    def usable(item: dict | None) -> bool:
+        return isinstance(item, dict) and bool(item.get("stations")) and not schedule_expired(item, today)
+
+    if usable(cached):
+        return cached, "downloaded"
+    if usable(bundled):
         return bundled, "bundled"
-    if isinstance(cached, dict) and cached.get("stations") and not schedule_expired(cached, today):
-        return cached, "gtfs"
-    if isinstance(bundled, dict) and bundled.get("stations"):
-        return bundled, "expired"
-    if isinstance(cached, dict) and cached.get("stations"):
-        return cached, "expired"
-    return {"stations": {}}, "missing"
+    ranked: list[tuple[date, dict]] = []
+    for item in (cached, bundled):
+        if isinstance(item, dict) and item.get("stations"):
+            ranked.append((parse_valid_until(item) or date.min, item))
+    if not ranked:
+        return {"stations": {}}, "missing"
+    ranked.sort(key=lambda pair: pair[0])
+    return ranked[-1][1], "expired"
 
 
 def timetable_allowed(source: str) -> bool:
-    return source in {"bundled", "gtfs"}
+    return source in {"bundled", "gtfs", "downloaded"}
+
+
+def rail_station_names(schedule: dict | None) -> list[str]:
+    """Unique station names from the active timetable, sorted A–Z."""
+    stations = (schedule or {}).get("stations") if isinstance(schedule, dict) else None
+    if not isinstance(stations, dict):
+        return []
+    seen: dict[str, str] = {}
+    for name in stations:
+        text = str(name).strip()
+        key = text.casefold()
+        if text and key not in seen:
+            seen[key] = text
+    return sorted(seen.values(), key=str.casefold)
+
+
+def rail_picker_options(schedule: dict | None, fallback: list[str] | None = None, line: str | None = None) -> list[str]:
+    """Regional Rail stations only. A line's stops come first when one is set."""
+    names = rail_station_names(schedule)
+    if not names:
+        seen: dict[str, str] = {}
+        for name in fallback or []:
+            text = str(name).strip()
+            key = text.casefold()
+            if text and key not in seen:
+                seen[key] = text
+        return sorted(seen.values(), key=str.casefold)
+    code = str(line or "").strip()
+    if not code:
+        return names
+    index = line_index(schedule)
+    first: list[str] = []
+    rest: list[str] = []
+    for name in names:
+        lines = {str(item).upper() for item in index.get(station_key(name), set())}
+        if code.upper() in lines:
+            first.append(name)
+        else:
+            rest.append(name)
+    return first + rest if first else names
+
+
+def canonical_rail_station(text: object, names: list[str]) -> str | None:
+    return match_station(text, list(names or []))
+
+
+def legacy_non_rail(values: list, schedule: dict | None, metro: list | None, trolley: list | None) -> list[str]:
+    """Saved Metro/trolley names that are not in the rail timetable. Rail names are kept."""
+    rail_names = rail_station_names(schedule)
+    rail = {name.casefold() for name in rail_names}
+    if not rail:
+        return []
+    other: list[str] = []
+    for name in list(metro or []) + list(trolley or []):
+        if str(name).casefold() not in rail:
+            other.append(str(name))
+    other_keys = {station_key(name) for name in other}
+    bad: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text.casefold() in rail or match_station(text, rail_names):
+            continue
+        if station_key(text) in other_keys or match_station(text, other):
+            bad.append(text)
+    return bad
 
 
 def indexed_stops(schedule: dict | None, geo: dict | None) -> list[dict]:

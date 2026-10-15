@@ -210,33 +210,38 @@ class DynamicBoard:
         await self._load_store()
         self._listen()
 
+    def reload_schedule(self) -> None:
+        self._load_local()
+
     def _load_local(self) -> None:
         from .ride import _load_geo
 
-        bundled = cached_schedule()
         geo = _load_geo()
-        cached = None
-        if self._cache_file.exists():
-            try:
-                saved = json.loads(self._cache_file.read_text())
-                cached = saved.get("schedule") if isinstance(saved, dict) else None
-            except (OSError, json.JSONDecodeError):
-                cached = None
-        chosen, source = select_schedule(bundled, cached, datetime.now(NY).date())
-        if source == "expired":
-            refreshed = _download_gtfs(self._cache_file)
-            if refreshed:
-                chosen, source = select_schedule(bundled, refreshed, datetime.now(NY).date())
-        self._schedule = chosen if isinstance(chosen, dict) else {"stations": {}}
-        self._schedule_source = source
-        base = bundled if isinstance(bundled, dict) and bundled.get("stations") else self._schedule
-        self._stops = indexed_stops(base, geo if isinstance(geo, dict) else {})
-        self._names = station_names(base, geo if isinstance(geo, dict) else {})
-        if source in {"expired", "missing"} and not self._warned:
+        bundled = cached_schedule()
+        keeper = getattr(self.coordinator, "rail_schedule", None)
+        book = getattr(keeper, "book", None)
+        if book is not None and isinstance(book.schedule, dict) and book.schedule.get("stations"):
+            self._schedule = book.schedule
+            self._schedule_source = book.timetable_source()
+        else:
+            cached = None
+            if self._cache_file.exists():
+                try:
+                    saved = json.loads(self._cache_file.read_text())
+                    cached = saved.get("schedule") if isinstance(saved, dict) else None
+                except (OSError, json.JSONDecodeError):
+                    cached = None
+            chosen, source = select_schedule(bundled, cached, datetime.now(NY).date())
+            self._schedule = chosen if isinstance(chosen, dict) else {"stations": {}}
+            self._schedule_source = source
+        base = self._schedule if isinstance(self._schedule, dict) and self._schedule.get("stations") else bundled
+        self._stops = indexed_stops(base if isinstance(base, dict) else {}, geo if isinstance(geo, dict) else {})
+        self._names = station_names(self._schedule, geo if isinstance(geo, dict) else {})
+        if self._schedule_source in {"expired", "missing"} and not self._warned:
             self._warned = True
             _LOGGER.warning(
                 "SEPTA timetable is %s. Day trains are using live NextToArrive only until a schedule refresh succeeds",
-                source,
+                self._schedule_source,
             )
 
     async def _load_store(self) -> None:

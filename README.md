@@ -371,8 +371,10 @@ Each station creates a device with:
 | Metro | number of L / B / M trips in service |
 | Trolley | number of T / G / D vehicles reporting |
 | Map | number of GPS vehicles; `vehicles` lists lat/lon for the live map card |
-| My train | train number while you are riding, otherwise empty. Attributes: line, destination, next stop, late minutes, consist, remaining stops |
+| My train | train number while you are riding, otherwise empty. Attributes: line, destination, next stop, late minutes, consist, remaining stops, and `riders` (other people on that train, with pictures) |
 | Riding | on while the phone is matched to that train (`binary_sensor.septa_riding_<name>`) |
+| Train tracker | `device_tracker.septa_<rider>_train`. On the map only while that rider is on a train. Uses the rider's picture, or a train icon |
+| Rail schedule | diagnostic date sensor `sensor.septa_rail_schedule`. State is the timetable's last valid day |
 
 Object ids for a rider are `sensor.septa_my_train_<name>` and `binary_sensor.septa_riding_<name>`. If Home Assistant prefixes an area, the card still finds the entity.
 
@@ -381,6 +383,16 @@ Object ids for a rider are `sensor.septa_my_train_<name>` and `binary_sensor.sep
 In **Settings → Devices & Services → SEPTA Transit → Configure**, set **Phone tracker** to the Companion app's `device_tracker` (or the `person` that uses it). Leave it empty and nothing extra is created: no listeners, no extra SEPTA calls, no new entities.
 
 The integration compares that tracker's existing Home Assistant location to SEPTA TrainView. It does not run a separate location service and it does not put your coordinates on the sensor. Attributes include distance, train, and stops only.
+
+The rider's train is a separate map entity. It stays at the TrainView position, not the phone, and it clears when the ride ends. Two riders on one train are two markers in the same place so each entity id stays stable:
+
+```yaml
+type: map
+entities:
+  - device_tracker.septa_alpha_train
+```
+
+Use the rider slug from the integration, not a person's name. `sensor.septa_my_train_<rider>` lists the other riders on that train under `riders`, including `entity_picture` when the person entity has one.
 
 Defaults: within 300 m (plus a little slack when the train position is a few seconds old), at least 15 mph, two fixes in a row on the same train, ignore GPS worse than 100 m. A heading check drops the train going the other way on the same track.
 

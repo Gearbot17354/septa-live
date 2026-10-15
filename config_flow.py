@@ -61,21 +61,29 @@ from .const import (
     DEFAULT_TRANSFER_MIN,
     DEFAULT_WALK,
     DOMAIN,
+    METRO_STATIONS,
     STATIONS,
+    TROLLEY_STATIONS,
 )
 from .coordinator import slug
 from .dynamic import migrate_options
 from .ride import configured_riders, dedupe_riders
 
-STATION_SELECTOR = selector(
-    {
-        "select": {
-            "options": STATIONS,
-            "custom_value": True,
-            "mode": "dropdown",
+def _list_selector(options: list[str]):
+    return selector(
+        {
+            "select": {
+                "options": list(options),
+                "custom_value": True,
+                "mode": "dropdown",
+            }
         }
-    }
-)
+    )
+
+
+STATION_SELECTOR = _list_selector(list(STATIONS))
+METRO_SELECTOR = _list_selector(list(METRO_STATIONS))
+TROLLEY_SELECTOR = _list_selector(list(TROLLEY_STATIONS))
 TEXT_SELECTOR = selector({"text": {}})
 BOOL_SELECTOR = selector({"boolean": {}})
 TRACKER_SELECTOR = selector({"entity": {"domain": ["device_tracker", "person"]}})
@@ -84,6 +92,46 @@ ACTIVITY_SELECTOR = selector({"entity": {"domain": "sensor"}})
 WINDOW_SELECTOR = selector({"select": {"options": ["today", "rest_of_day"], "mode": "dropdown"}})
 DEST_ENTITY_SELECTOR = selector({"entity": {"domain": ["input_select", "input_text"]}})
 CALENDAR_SELECTOR = selector({"entity": {"domain": "calendar"}})
+
+
+async def _rail_choice(hass, line: str | None = None) -> tuple[list[str], list[str]]:
+    from .coordinator import _load_schedule, cached_schedule
+    from .dynamic import rail_picker_options, rail_station_names
+    from .schedule_ha import active_schedule
+
+    schedule = active_schedule(hass)
+    if not (isinstance(schedule, dict) and schedule.get("stations")):
+        schedule = cached_schedule()
+    if not (isinstance(schedule, dict) and schedule.get("stations")):
+        schedule = await hass.async_add_executor_job(_load_schedule)
+    shown = rail_picker_options(schedule, list(STATIONS), line)
+    canonical = rail_station_names(schedule) or shown
+    return shown, canonical
+
+
+def _keep_rail(user_input: dict, names: list[str], fields: list[tuple[str, bool]], previous: dict | None = None):
+    """Normalise a rail station. An unchanged legacy value is kept; a new bad one errors."""
+    from .dynamic import canonical_rail_station
+
+    cleaned = dict(user_input)
+    errors: dict[str, str] = {}
+    saved = previous or {}
+    for key, required in fields:
+        raw = str(cleaned.get(key) or "").strip()
+        prior = str(saved.get(key) or "").strip()
+        if not raw:
+            if required:
+                errors[key] = "invalid_station"
+            continue
+        hit = canonical_rail_station(raw, names)
+        if hit:
+            cleaned[key] = hit
+            continue
+        if prior and raw == prior:
+            cleaned[key] = prior
+            continue
+        errors[key] = "invalid_station"
+    return cleaned, errors
 
 
 def _flag(entry, key: str, default: bool) -> bool:
@@ -125,25 +173,31 @@ class SeptaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return True
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None):
+        shown, names = await _rail_choice(self.hass)
+        errors: dict[str, str] = {}
         if user_input is not None:
-            station = user_input[CONF_STATION]
-            dest = user_input.get(CONF_DESTINATION) or DEFAULT_DESTINATION
-            await self.async_set_unique_id(f"{DOMAIN}_{slug(station)}_{slug(dest)}")
-            self._abort_if_unique_id_configured()
-            return self.async_create_entry(
-                title=f"SEPTA {station}",
-                data=user_input,
+            cleaned, errors = _keep_rail(
+                user_input,
+                names,
+                [(CONF_STATION, True), (CONF_DESTINATION, False)],
             )
+            if not errors:
+                station = cleaned[CONF_STATION]
+                dest = cleaned.get(CONF_DESTINATION) or DEFAULT_DESTINATION
+                cleaned[CONF_DESTINATION] = dest
+                await self.async_set_unique_id(f"{DOMAIN}_{slug(station)}_{slug(dest)}")
+                self._abort_if_unique_id_configured()
+                return self.async_create_entry(title=f"SEPTA {station}", data=cleaned)
 
         schema = vol.Schema(
             {
-                vol.Required(CONF_STATION, default=DEFAULT_STATION): STATION_SELECTOR,
-                vol.Optional(CONF_DESTINATION, default=DEFAULT_DESTINATION): STATION_SELECTOR,
+                vol.Required(CONF_STATION, default=DEFAULT_STATION): _list_selector(shown),
+                vol.Optional(CONF_DESTINATION, default=DEFAULT_DESTINATION): _list_selector(shown),
                 vol.Optional(CONF_BUS_DEST, default=""): TEXT_SELECTOR,
-                vol.Optional(CONF_METRO_STATION, default=""): TEXT_SELECTOR,
-                vol.Optional(CONF_METRO_DEST, default=""): TEXT_SELECTOR,
-                vol.Optional(CONF_TROLLEY_STATION, default=""): TEXT_SELECTOR,
-                vol.Optional(CONF_TROLLEY_DEST, default=""): TEXT_SELECTOR,
+                vol.Optional(CONF_METRO_STATION, default=""): METRO_SELECTOR,
+                vol.Optional(CONF_METRO_DEST, default=""): METRO_SELECTOR,
+                vol.Optional(CONF_TROLLEY_STATION, default=""): TROLLEY_SELECTOR,
+                vol.Optional(CONF_TROLLEY_DEST, default=""): TROLLEY_SELECTOR,
                 vol.Optional(CONF_WALK, default=DEFAULT_WALK): vol.All(
                     vol.Coerce(int), vol.Range(min=0, max=60)
                 ),
@@ -154,7 +208,7 @@ class SeptaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_SIDEBAR, default=True): BOOL_SELECTOR,
             }
         )
-        return self.async_show_form(step_id="user", data_schema=schema)
+        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
 
     @staticmethod
     @callback
@@ -165,41 +219,43 @@ class SeptaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 class SeptaOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         entry = self.config_entry
-        if user_input is not None:
-            merged = {**entry.options, **user_input}
-            saved_dest = str(
-                entry.options.get(CONF_DESTINATION) or entry.data.get(CONF_DESTINATION) or DEFAULT_DESTINATION
-            )
-            submitted = str(merged.get(CONF_DESTINATION) or "").strip()
-            if submitted and (submitted in STATIONS or submitted == saved_dest):
-                merged[CONF_DESTINATION] = submitted
-            else:
-                merged[CONF_DESTINATION] = saved_dest
-            riders = merged.get(CONF_RIDE_RIDERS) or []
-            if isinstance(riders, str):
-                riders = [part.strip() for part in riders.split(",") if part.strip()]
-            riders = [str(item).strip() for item in riders if str(item).strip()]
-            if riders:
-                merged[CONF_RIDE_RIDERS] = riders
-                merged[CONF_RIDE_TRACKER] = riders[0]
-            else:
-                merged.pop(CONF_RIDE_RIDERS, None)
-                merged.pop(CONF_RIDE_TRACKER, None)
-            activity = str(merged.get(CONF_RIDE_ACTIVITY) or "").strip()
-            if activity:
-                merged[CONF_RIDE_ACTIVITY] = activity
-            else:
-                merged.pop(CONF_RIDE_ACTIVITY, None)
-            configure = bool(merged.pop("configure_dynamic", False))
-            if configure:
-                self._pending = merged
-                self._riders = []
-                self._rider_index = 0
-                return await self.async_step_dynamic()
-            return self.async_create_entry(title="", data=merged)
+        line = str(entry.options.get("rail_line") or entry.data.get("rail_line") or "")
+        shown, names = await _rail_choice(self.hass, line or None)
+        errors: dict[str, str] = {}
         saved_dest = str(
             entry.options.get(CONF_DESTINATION) or entry.data.get(CONF_DESTINATION) or DEFAULT_DESTINATION
         )
+        if user_input is not None:
+            cleaned, errors = _keep_rail(
+                user_input,
+                names,
+                [(CONF_DESTINATION, True)],
+                {CONF_DESTINATION: saved_dest},
+            )
+            if not errors:
+                merged = {**entry.options, **cleaned}
+                riders = merged.get(CONF_RIDE_RIDERS) or []
+                if isinstance(riders, str):
+                    riders = [part.strip() for part in riders.split(",") if part.strip()]
+                riders = [str(item).strip() for item in riders if str(item).strip()]
+                if riders:
+                    merged[CONF_RIDE_RIDERS] = riders
+                    merged[CONF_RIDE_TRACKER] = riders[0]
+                else:
+                    merged.pop(CONF_RIDE_RIDERS, None)
+                    merged.pop(CONF_RIDE_TRACKER, None)
+                activity = str(merged.get(CONF_RIDE_ACTIVITY) or "").strip()
+                if activity:
+                    merged[CONF_RIDE_ACTIVITY] = activity
+                else:
+                    merged.pop(CONF_RIDE_ACTIVITY, None)
+                configure = bool(merged.pop("configure_dynamic", False))
+                if configure:
+                    self._pending = merged
+                    self._riders = []
+                    self._rider_index = 0
+                    return await self.async_step_dynamic()
+                return self.async_create_entry(title="", data=merged)
         current_riders = configured_riders(entry.options, entry.data)
         riders_key = vol.Optional(
             CONF_RIDE_RIDERS,
@@ -207,7 +263,7 @@ class SeptaOptionsFlow(config_entries.OptionsFlow):
         )
         schema = vol.Schema(
             {
-                vol.Required(CONF_DESTINATION, default=saved_dest): STATION_SELECTOR,
+                vol.Required(CONF_DESTINATION, default=saved_dest): _list_selector(shown),
                 vol.Optional(
                     CONF_BUS_DEST,
                     default=entry.options.get(CONF_BUS_DEST, entry.data.get(CONF_BUS_DEST, "")),
@@ -217,23 +273,23 @@ class SeptaOptionsFlow(config_entries.OptionsFlow):
                     default=entry.options.get(
                         CONF_METRO_STATION, entry.data.get(CONF_METRO_STATION, "")
                     ),
-                ): TEXT_SELECTOR,
+                ): METRO_SELECTOR,
                 vol.Optional(
                     CONF_METRO_DEST,
                     default=entry.options.get(CONF_METRO_DEST, entry.data.get(CONF_METRO_DEST, "")),
-                ): TEXT_SELECTOR,
+                ): METRO_SELECTOR,
                 vol.Optional(
                     CONF_TROLLEY_STATION,
                     default=entry.options.get(
                         CONF_TROLLEY_STATION, entry.data.get(CONF_TROLLEY_STATION, "")
                     ),
-                ): TEXT_SELECTOR,
+                ): TROLLEY_SELECTOR,
                 vol.Optional(
                     CONF_TROLLEY_DEST,
                     default=entry.options.get(
                         CONF_TROLLEY_DEST, entry.data.get(CONF_TROLLEY_DEST, "")
                     ),
-                ): TEXT_SELECTOR,
+                ): TROLLEY_SELECTOR,
                 vol.Optional(
                     CONF_WALK,
                     default=entry.options.get(
@@ -290,17 +346,13 @@ class SeptaOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional("configure_dynamic", default=False): BOOL_SELECTOR,
             }
         )
-        return self.async_show_form(step_id="init", data_schema=schema)
+        return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
 
     async def async_step_dynamic(self, user_input: dict[str, Any] | None = None):
         entry = self.config_entry
-        if user_input is not None:
-            self._pending.update(user_input)
-            self._riders = dedupe_riders(configured_riders(self._pending, entry.data), {})
-            self._rider_index = 0
-            if not self._riders:
-                return self.async_create_entry(title="", data=self._pending)
-            return await self.async_step_rider()
+        line = str(entry.options.get("rail_line") or entry.data.get("rail_line") or "")
+        shown, names = await _rail_choice(self.hass, line or None)
+        errors: dict[str, str] = {}
         home = str(entry.options.get(CONF_HOME_STATION) or entry.data.get(CONF_STATION) or "")
         city = str(
             entry.options.get(CONF_DEFAULT_CITY)
@@ -308,10 +360,24 @@ class SeptaOptionsFlow(config_entries.OptionsFlow):
             or entry.data.get(CONF_DESTINATION)
             or ""
         )
+        if user_input is not None:
+            cleaned, errors = _keep_rail(
+                user_input,
+                names,
+                [(CONF_HOME_STATION, True), (CONF_DEFAULT_CITY, True)],
+                {CONF_HOME_STATION: home, CONF_DEFAULT_CITY: city},
+            )
+            if not errors:
+                self._pending.update(cleaned)
+                self._riders = dedupe_riders(configured_riders(self._pending, entry.data), {})
+                self._rider_index = 0
+                if not self._riders:
+                    return self.async_create_entry(title="", data=self._pending)
+                return await self.async_step_rider()
         schema = vol.Schema(
             {
-                vol.Required(CONF_HOME_STATION, default=home): STATION_SELECTOR,
-                vol.Required(CONF_DEFAULT_CITY, default=city): STATION_SELECTOR,
+                vol.Required(CONF_HOME_STATION, default=home): _list_selector(shown),
+                vol.Required(CONF_DEFAULT_CITY, default=city): _list_selector(shown),
                 vol.Optional(
                     CONF_NEAR_RADIUS,
                     default=int(entry.options.get(CONF_NEAR_RADIUS, DEFAULT_NEAR_RADIUS)),
@@ -343,31 +409,50 @@ class SeptaOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(CONF_GEOCODE, default=bool(entry.options.get(CONF_GEOCODE, False))): BOOL_SELECTOR,
             }
         )
-        return self.async_show_form(step_id="dynamic", data_schema=schema)
+        return self.async_show_form(step_id="dynamic", data_schema=schema, errors=errors)
 
     async def async_step_rider(self, user_input: dict[str, Any] | None = None):
         spec = self._riders[self._rider_index]
-        slug = spec["slug"]
+        slug_name = spec["slug"]
+        entry = self.config_entry
+        line = str(entry.options.get("rail_line") or entry.data.get("rail_line") or "")
+        shown, names = await _rail_choice(self.hass, line or None)
+        saved = (entry.options.get(CONF_RIDERS_CFG) or {}).get(slug_name) or {}
+        errors: dict[str, str] = {}
         if user_input is not None:
-            cfg = dict(self._pending.get(CONF_RIDERS_CFG) or {})
-            kept = {key: value for key, value in user_input.items() if value not in ("", None, False) or key.startswith("enabled_")}
-            for key in ("home_station", "city_station", "default_destination", "destination_entity", "calendar_entity"):
-                if not str(kept.get(key) or "").strip():
-                    kept.pop(key, None)
-            cfg[slug] = kept
-            self._pending[CONF_RIDERS_CFG] = cfg
-            self._rider_index += 1
-            if self._rider_index >= len(self._riders):
-                return self.async_create_entry(title="", data=self._pending)
-            return await self.async_step_rider()
-        saved = (self.config_entry.options.get(CONF_RIDERS_CFG) or {}).get(slug) or {}
+            cleaned, errors = _keep_rail(
+                user_input,
+                names,
+                [
+                    (CONF_HOME_STATION, False),
+                    ("city_station", False),
+                    ("default_destination", False),
+                ],
+                saved,
+            )
+            if not errors:
+                cfg = dict(self._pending.get(CONF_RIDERS_CFG) or {})
+                kept = {
+                    key: value
+                    for key, value in cleaned.items()
+                    if value not in ("", None, False) or str(key).startswith("enabled_")
+                }
+                for key in ("home_station", "city_station", "default_destination", "destination_entity", "calendar_entity"):
+                    if not str(kept.get(key) or "").strip():
+                        kept.pop(key, None)
+                cfg[slug_name] = kept
+                self._pending[CONF_RIDERS_CFG] = cfg
+                self._rider_index += 1
+                if self._rider_index >= len(self._riders):
+                    return self.async_create_entry(title="", data=self._pending)
+                return await self.async_step_rider()
         schema = vol.Schema(
             {
-                vol.Optional(CONF_HOME_STATION, description={"suggested_value": saved.get(CONF_HOME_STATION, "")}): STATION_SELECTOR,
-                vol.Optional("city_station", description={"suggested_value": saved.get("city_station", "")}): STATION_SELECTOR,
+                vol.Optional(CONF_HOME_STATION, description={"suggested_value": saved.get(CONF_HOME_STATION, "")}): _list_selector(shown),
+                vol.Optional("city_station", description={"suggested_value": saved.get("city_station", "")}): _list_selector(shown),
                 vol.Optional(
                     "default_destination", description={"suggested_value": saved.get("default_destination", "")}
-                ): STATION_SELECTOR,
+                ): _list_selector(shown),
                 vol.Optional(
                     "destination_entity", description={"suggested_value": saved.get("destination_entity", "")}
                 ): DEST_ENTITY_SELECTOR,
@@ -381,5 +466,6 @@ class SeptaOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_form(
             step_id="rider",
             data_schema=schema,
-            description_placeholders={"rider": slug},
+            description_placeholders={"rider": slug_name},
+            errors=errors,
         )

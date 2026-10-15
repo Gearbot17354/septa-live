@@ -33,6 +33,9 @@
     },
     "abort": {
       "already_configured": "That station and destination are already configured."
+    },
+    "error": {
+      "invalid_station": "Pick a Regional Rail station. Metro and trolley stops belong on their own lists."
     }
   },
   "options": {
@@ -95,6 +98,9 @@
           "enabled_day_trains": "Day trains"
         }
       }
+    },
+    "error": {
+      "invalid_station": "Pick a Regional Rail station. Metro and trolley stops belong on their own lists."
     }
   },
   "services": {
@@ -117,6 +123,20 @@
     "set_destination": {
       "name": "Set destination",
       "description": "Hold the day-trains destination. A blank station clears it."
+    },
+    "refresh_schedule": {
+      "name": "Refresh rail schedule",
+      "description": "Download SEPTA's Regional Rail timetable. Leave force off to skip a timetable that is still current."
+    }
+  },
+  "issues": {
+    "rail_schedule_stale": {
+      "title": "Regional Rail timetable is out of date",
+      "description": "SEPTA Live could not refresh the Regional Rail timetable and the one in use is expired or about to expire. Trains keep updating. The timetable will be replaced on the next successful refresh."
+    },
+    "rail_station_legacy": {
+      "title": "Saved station is not Regional Rail",
+      "description": "{station} is not a Regional Rail station, so it was left as saved. Open SEPTA options and pick a station from the Regional Rail list."
     }
   },
   "exceptions": {

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
@@ -11,6 +11,7 @@ from homeassistant.const import UnitOfTime
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity_registry import async_entries_for_config_entry
 from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
@@ -22,7 +23,7 @@ from .const import CONF_RIDE_TRACKER, DOMAIN, UNRECORDED_TRAIN_ATTRS
 from .ids import dynamic_ids, dynamic_key, object_key, stable_unique_id
 from .trips import trip_ids
 from .coordinator import NY, SeptaCoordinator, slug
-from .ride import configured_riders, dedupe_riders, write_state_on_loop
+from .ride import companions, configured_riders, dedupe_riders, riders_on_train, write_state_on_loop
 
 # Card and YAML expect these object ids, not the device-area prefix HA would add.
 _OBJECT_KEY = {
@@ -119,6 +120,7 @@ def _wanted_entities(coordinator: SeptaCoordinator) -> list[SensorEntity]:
         entities.append(SeptaDynamicSensor(coordinator, "going_home", spec))
         entities.append(SeptaDynamicSensor(coordinator, "day_trains", spec))
     entities.append(SeptaMapSensor(coordinator))
+    entities.append(SeptaRailScheduleSensor(coordinator))
     specs = _rider_specs(coordinator)
     if specs:
         entities.append(SeptaRidersCountSensor(coordinator))
@@ -284,9 +286,22 @@ class SeptaRailBoardSensor(_Base):
         dest = str(first.get("destination") or "").strip()
         return dest or "Scheduled"
 
+    def _with_riders(self, trains: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        rows = _rider_rows(self.coordinator)
+        out = []
+        for train in trains:
+            item = dict(train)
+            number = str(item.get("train_id") or item.get("train") or "")
+            party = riders_on_train(rows, number) if number else []
+            if party:
+                item["riders"] = party
+                item["rider_pictures"] = [row["entity_picture"] for row in party if row.get("entity_picture")]
+            out.append(item)
+        return out
+
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        trains = self._trains()
+        trains = self._with_riders(self._trains())
         first = trains[0] if trains else {}
         ended = not trains
         return {
@@ -685,6 +700,51 @@ class SeptaLineSensor(_Base):
         }
 
 
+class SeptaRailScheduleSensor(_Base):
+    """Valid-through date of the Regional Rail timetable."""
+
+    _attr_name = "Rail schedule"
+    _attr_icon = "mdi:calendar"
+    _attr_device_class = SensorDeviceClass.DATE
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: SeptaCoordinator) -> None:
+        super().__init__(coordinator, "rail_schedule")
+        self.entity_id = "sensor.septa_rail_schedule"
+
+    def _status(self) -> dict[str, Any]:
+        keeper = getattr(self.coordinator, "rail_schedule", None)
+        if keeper is None or not hasattr(keeper, "status"):
+            return {}
+        try:
+            data = keeper.status()
+        except Exception:  # noqa: BLE001
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    @property
+    def native_value(self) -> date | None:
+        raw = self._status().get("state")
+        if not raw:
+            return None
+        try:
+            return date.fromisoformat(str(raw)[:10])
+        except ValueError:
+            return None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self._status()
+        return {
+            "feed": data.get("feed"),
+            "source": data.get("source"),
+            "last_check": data.get("last_check"),
+            "last_success": data.get("last_success"),
+            "last_error": data.get("last_error"),
+            "days_remaining": data.get("days_remaining"),
+        }
+
+
 class SeptaMapSensor(_Base):
     _attr_name = "Map"
     _attr_icon = "mdi:map-marker-path"
@@ -736,6 +796,19 @@ def _dynamic_specs(coordinator: SeptaCoordinator) -> list[dict]:
     if specs:
         return specs
     return [{"slug": "", "primary": True, "configured": "", "tracker": "", "person": None}]
+
+
+def _rider_rows(coordinator: SeptaCoordinator) -> list[dict]:
+    ride = getattr(coordinator, "ride", None)
+    if ride is None or not getattr(ride, "riders", None):
+        return []
+    rows = []
+    for rider in ride.riders.values():
+        try:
+            rows.append(rider.attributes())
+        except Exception:  # noqa: BLE001
+            continue
+    return rows
 
 
 def _rider_specs(coordinator: SeptaCoordinator) -> list[dict]:
@@ -792,7 +865,12 @@ class SeptaMyTrainSensor(_Base):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        return self._ride()
+        data = dict(self._ride())
+        slug_name = str(self._spec.get("slug") or "")
+        party = companions(_rider_rows(self.coordinator), slug_name, data.get("train"))
+        data["riders"] = party
+        data["rider_pictures"] = [row["entity_picture"] for row in party if row.get("entity_picture")]
+        return data
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -886,6 +964,7 @@ class SeptaRidersCountSensor(_Base):
             "riding": data.get("riding") or [],
             "riders": data.get("riders") or [],
             "trains": data.get("trains") or {},
+            "parties": data.get("parties") or [],
         }
 
     async def async_added_to_hass(self) -> None:

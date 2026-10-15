@@ -2318,6 +2318,50 @@ def dedupe_riders(entity_ids: list[str], person_to_tracker: dict[str, str] | Non
     return out
 
 
+MAX_RIDERS_ON_TRAIN = 20
+
+
+def riders_on_train(rows: list[dict] | None, trainno: str | None = None, limit: int = MAX_RIDERS_ON_TRAIN) -> list[dict]:
+    """People currently on a train, sorted by name. A picture is optional."""
+    found: list[dict] = []
+    for row in rows or []:
+        if not isinstance(row, dict) or not row.get("riding"):
+            continue
+        number = str(row.get("train") or "")
+        if trainno is not None and number != str(trainno):
+            continue
+        if trainno is None and not number:
+            continue
+        name = str(row.get("friendly_name_rider") or row.get("name") or row.get("rider") or "")
+        picture = row.get("entity_picture") or None
+        if picture == "":
+            picture = None
+        found.append(
+            {
+                "rider": row.get("rider"),
+                "name": name,
+                "entity_id": row.get("person") or row.get("tracker") or row.get("entity_id"),
+                "entity_picture": picture,
+                "boarded_at": row.get("boarded_at") or row.get("boarded_time"),
+                "origin": row.get("origin"),
+                "destination": row.get("final_destination") or row.get("destination"),
+            }
+        )
+    found.sort(key=lambda item: (str(item.get("name") or "").casefold(), str(item.get("rider") or "")))
+    cap = max(0, int(limit or 0))
+    return found[:cap]
+
+
+def rider_pictures(riders: list[dict] | None) -> list[str]:
+    return [str(item.get("entity_picture")) for item in (riders or []) if isinstance(item, dict) and item.get("entity_picture")]
+
+
+def companions(rows: list[dict] | None, rider: str, trainno: str | None) -> list[dict]:
+    """Other riders on this train. The rider's own row is left off their My Train sensor."""
+    others = [row for row in (rows or []) if str(row.get("rider") or "") != str(rider)]
+    return riders_on_train(others, trainno)
+
+
 def riders_summary(rows: list[dict]) -> dict:
     riding = []
     trains: dict[str, list] = {}
@@ -2340,11 +2384,17 @@ def riders_summary(rows: list[dict]) -> dict:
                 trains.setdefault(str(train), []).append(slug)
         else:
             pass
+    parties = []
+    for number in trains:
+        members = riders_on_train(rows, number)
+        if members:
+            parties.append({"train": number, "riders": members, "rider_pictures": rider_pictures(members)})
     return {
         "count": len(riding),
         "riding": riding,
         "riders": [row.get("rider") for row in rows],
         "trains": trains,
+        "parties": parties,
     }
 
 

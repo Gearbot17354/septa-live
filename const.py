@@ -22,7 +22,7 @@ def integration_version() -> str:
     return _VERSION
 
 DOMAIN: Final = "septa_live"
-PLATFORMS: Final = ["sensor", "binary_sensor"]
+PLATFORMS: Final = ["sensor", "binary_sensor", "device_tracker"]
 
 CONF_STATION: Final = "station"
 CONF_DESTINATION: Final = "destination"
@@ -71,6 +71,14 @@ UNRECORDED_TRAIN_ATTRS: Final = frozenset(
 ORIGIN_HYSTERESIS_M: Final = 200
 LIVE_WINDOW_MIN: Final = 90
 GTFS_RAIL_API: Final = "https://api.github.com/repos/septadev/GTFS/releases/latest"
+# Public regional-rail GTFS. google_rail.zip is inside this archive.
+GTFS_URL: Final = "https://www3.septa.org/developer/gtfs_public.zip"
+CONF_GTFS_URL: Final = "gtfs_url"
+SCHEDULE_REFRESH_DAYS: Final = 7
+SCHEDULE_NEAR_DAYS: Final = 2
+SCHEDULE_MAX_BYTES: Final = 50 * 1024 * 1024
+SCHEDULE_STARTUP_DELAY_S: Final = 300
+TRAIN_TRACKER_STALE_S: Final = 300
 CONF_RIDE_TRACKER: Final = "ride_tracker"
 CONF_RIDE_RIDERS: Final = "ride_riders"
 CONF_RIDE_ACTIVITY: Final = "ride_activity_sensor"

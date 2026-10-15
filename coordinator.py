@@ -165,6 +165,13 @@ def cached_schedule() -> dict[str, Any]:
     return _SCHEDULE if isinstance(_SCHEDULE, dict) else {"stations": {}}
 
 
+def set_cached_schedule(schedule: dict[str, Any]) -> None:
+    """Swap the in-memory timetable. The bundled package file is not touched."""
+    global _SCHEDULE
+    if isinstance(schedule, dict) and isinstance(schedule.get("stations"), dict):
+        _SCHEDULE = schedule
+
+
 def _load_schedule() -> dict[str, Any]:
     global _SCHEDULE
     if _SCHEDULE is None:

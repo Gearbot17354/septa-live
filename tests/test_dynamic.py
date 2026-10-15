@@ -208,11 +208,12 @@ def test_expired_schedule_skips_timetable():
     assert chosen is bundled
     fresh = {"validUntil": "20261201", "stations": {"North End": {"S": []}}, "feed": "gtfs"}
     cached, cached_source = D.select_schedule(bundled, fresh, date(2026, 10, 13))
-    assert cached_source == "gtfs"
+    assert cached_source == "downloaded"
     assert cached is fresh
     current = {"validUntil": "20261201", "stations": {"Keep": {"S": []}}}
-    _kept, bundled_source = D.select_schedule(current, fresh, date(2026, 10, 13))
-    assert bundled_source == "bundled"
+    kept, kept_source = D.select_schedule(current, fresh, date(2026, 10, 13))
+    assert kept_source == "downloaded"
+    assert kept is fresh
 
 
 def test_gtfs_tables_build_a_station_row():
