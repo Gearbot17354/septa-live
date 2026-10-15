@@ -392,7 +392,7 @@ entities:
   - device_tracker.septa_alpha_train
 ```
 
-Use the rider slug from the integration, not a person's name. `sensor.septa_my_train_<rider>` lists the other riders on that train under `riders`, including `entity_picture` when the person entity has one.
+Use the rider slug from the integration, not a person's name. `sensor.septa_my_train_<rider>` lists the other riders on that train under `riders`, including `entity_picture` when the person entity has one. While the ride is active, both that sensor and the train tracker also carry `route_shape` (a simplified line), `route_color`, and `stops` with `passed` / `remaining`. The line is cleared when the ride ends. Cards that want the full line can call the `septa_live/route` websocket command.
 
 Defaults: within 300 m (plus a little slack when the train position is a few seconds old), at least 15 mph, two fixes in a row on the same train, ignore GPS worse than 100 m. A heading check drops the train going the other way on the same track.
 

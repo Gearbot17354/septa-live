@@ -58,6 +58,7 @@ from .schema import (
     WEBSOCKET_BUS,
     WEBSOCKET_OPTIONS,
     WEBSOCKET_PANEL,
+    WEBSOCKET_ROUTE,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -65,7 +66,7 @@ _FRONTEND = f"{DOMAIN}_frontend_registered"
 _CARD_JS = "septa-live-card.js"
 _PANEL_JS = "septa-live-panel.js"
 _PANEL_PATH = "septa-live"
-_CARD_VERSION = "1.13.6"
+_CARD_VERSION = "1.13.7"
 _PANEL_SIG: tuple | None = None
 _RELOADING: set[str] = set()
 
@@ -76,6 +77,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     websocket_api.async_register_command(hass, websocket_panel)
     websocket_api.async_register_command(hass, websocket_options)
     websocket_api.async_register_command(hass, websocket_bus_picker)
+    websocket_api.async_register_command(hass, websocket_route)
     _register_simulate(hass)
     return True
 
@@ -584,6 +586,40 @@ async def websocket_bus_picker(
         str(msg.get("stop_id") or ""),
     )
     connection.send_result(msg["id"], choices)
+
+
+@websocket_api.websocket_command(WEBSOCKET_ROUTE)
+@websocket_api.async_response
+async def websocket_route(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict,
+) -> None:
+    """Full route line for a rider or a train number. Read from the GTFS cache."""
+    from .shapes import resolve_route
+
+    data = hass.data.get(DOMAIN) or {}
+    entry_id = msg.get("entry_id")
+    if entry_id:
+        coords = [data.get(entry_id)]
+        if coords[0] is None:
+            connection.send_result(msg["id"], {"error": "not_found"})
+            return
+    else:
+        coords = [item for item in data.values() if hasattr(item, "rail_schedule") or hasattr(item, "ride")]
+    pairs = []
+    for coordinator in coords:
+        keeper = getattr(coordinator, "rail_schedule", None)
+        cache = getattr(keeper, "shapes", None) or {}
+        ride = getattr(coordinator, "ride", None)
+        rows = []
+        for rider in getattr(ride, "riders", {}).values() if ride is not None else []:
+            try:
+                rows.append(rider.attributes())
+            except Exception:  # noqa: BLE001
+                continue
+        pairs.append((cache, rows))
+    connection.send_result(msg["id"], resolve_route(pairs, msg.get("train"), msg.get("rider")))
 
 
 @websocket_api.websocket_command(WEBSOCKET_OPTIONS)

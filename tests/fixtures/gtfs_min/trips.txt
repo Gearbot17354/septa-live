@@ -1,0 +1,4 @@
+trip_id,route_id,service_id,trip_headsign,trip_short_name,direction_id,shape_id
+t1,SYN,wk,Stop F,91001,0,sh1
+t2,SYN,wk,Stop A,91002,1,sh1
+t3,SYN,wk,Stop D,91003,0,sh1

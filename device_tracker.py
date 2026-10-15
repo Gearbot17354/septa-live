@@ -19,10 +19,11 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity_registry import async_entries_for_config_entry
 from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
 
-from .const import DOMAIN
+from .const import DOMAIN, UNRECORDED_TRAIN_ATTRS
 from .coordinator import SeptaCoordinator
 from .ride import position_is_stale, riders_on_train, write_state_on_loop
 from .sensor import _device_model, _rider_specs
+from .shapes import cleared_route
 from .tracker import leftover_trackers, project_tracker, tracker_attributes, tracker_entities, tracker_icon
 
 
@@ -85,6 +86,7 @@ class SeptaTrainTracker(TrackerEntity):
     _attr_should_poll = False
     _attr_has_entity_name = True
     _attr_icon = "mdi:train"
+    _unrecorded_attributes = UNRECORDED_TRAIN_ATTRS
 
     def __init__(self, coordinator: SeptaCoordinator, spec: dict) -> None:
         self.coordinator = coordinator
@@ -150,6 +152,10 @@ class SeptaTrainTracker(TrackerEntity):
                 except Exception:  # noqa: BLE001
                     continue
         party = riders_on_train(rows, own.get("train")) if riding else []
+        route = cleared_route()
+        keeper = getattr(self.coordinator, "rail_schedule", None)
+        if riding and keeper is not None and hasattr(keeper, "route_for"):
+            route = keeper.route_for(own)
         self._attrs = tracker_attributes(
             train=own.get("train"),
             line=own.get("line"),
@@ -160,6 +166,7 @@ class SeptaTrainTracker(TrackerEntity):
             last_update=own.get("boarded_time") or own.get("last_fix"),
             riders=party,
             stale=bool(self._state.get("stale")),
+            route=route,
         )
         self._attr_icon = tracker_icon(self._picture)
 

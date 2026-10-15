@@ -24,6 +24,7 @@ from .ids import dynamic_ids, dynamic_key, object_key, stable_unique_id
 from .trips import trip_ids
 from .coordinator import NY, SeptaCoordinator, slug
 from .ride import companions, configured_riders, dedupe_riders, riders_on_train, write_state_on_loop
+from .shapes import cleared_route
 
 # Card and YAML expect these object ids, not the device-area prefix HA would add.
 _OBJECT_KEY = {
@@ -870,6 +871,11 @@ class SeptaMyTrainSensor(_Base):
         party = companions(_rider_rows(self.coordinator), slug_name, data.get("train"))
         data["riders"] = party
         data["rider_pictures"] = [row["entity_picture"] for row in party if row.get("entity_picture")]
+        keeper = getattr(self.coordinator, "rail_schedule", None)
+        if keeper is not None and hasattr(keeper, "route_for"):
+            data.update(keeper.route_for(data))
+        else:
+            data.update(cleared_route())
         return data
 
     async def async_added_to_hass(self) -> None:

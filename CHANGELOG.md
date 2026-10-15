@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.13.7
+
+### Added
+
+- Rider train trackers (`device_tracker.septa_<rider>_train` and `my_train`) now include the route the train is running: a simplified map line (`route_shape`), the line colour (`route_color`), and its stops with passed/remaining flags plus the rider's `alight_station`.
+- Route lines come from SEPTA's published GTFS feed, which the timetable refresher already downloads. No extra network calls. If a trip has no shape, the line is drawn through its stops.
+- The attributes are kept small (under 16 KB) and are left out of the recorder history.
+- New websocket command `septa_live/route` returns the full-resolution route for cards that want more detail.
+- No behaviour change for existing entities or services.
+
 ## 1.13.6
 
 ### Fixed

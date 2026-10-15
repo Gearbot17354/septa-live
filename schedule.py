@@ -35,6 +35,8 @@ _WANTED = {
     "calendar.txt": "calendar",
     "calendar_dates.txt": "calendar_dates",
     "feed_info.txt": "feed_info",
+    "shapes.txt": "shapes",
+    "routes.txt": "routes",
 }
 
 

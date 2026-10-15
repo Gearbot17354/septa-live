@@ -22,10 +22,12 @@ from .const import (
 from .coordinator import cached_schedule, set_cached_schedule
 from .dynamic import legacy_non_rail, rail_picker_options
 from .schedule import MAX_BYTES, ScheduleBook, build_schedule, read_schedule_file, stamp, write_schedule_file
+from .shapes import absorb_shapes, attach_route, cleared_route, read_shapes_file, write_shapes_file
 
 _LOGGER = logging.getLogger(__name__)
 _KEEPER = "septa_live_rail_schedule"
 _STORAGE = "septa_live_rail_schedule.json"
+_SHAPES = "septa_live_rail_shapes.json"
 _LEGACY_LOGGED: set[str] = set()
 
 
@@ -48,6 +50,9 @@ class RailSchedule:
         self.hass = hass
         self.book = ScheduleBook()
         self.path = Path(hass.config.path(".storage", _STORAGE))
+        self.shapes_path = Path(hass.config.path(".storage", _SHAPES))
+        self.shapes: dict = {"shapes": {}, "trains": {}, "routes": {}}
+        self.shape_memo: dict = {}
         self._unsubs: list = []
         self._running = False
 
@@ -75,6 +80,9 @@ class RailSchedule:
         self.book.load(bundled, cached, date.today())
         if self.book.schedule.get("stations"):
             set_cached_schedule(self.book.schedule)
+        loaded = read_shapes_file(self.shapes_path)
+        self.shapes = loaded or {"shapes": {}, "trains": {}, "routes": {}}
+        self.shape_memo = {}
 
     async def _kick(self, _now) -> None:
         await self.async_refresh(force=False)
@@ -133,6 +141,17 @@ class RailSchedule:
             }
             await self.hass.async_add_executor_job(write_schedule_file, self.path, payload)
             set_cached_schedule(self.book.schedule)
+            shapes, err = await self.hass.async_add_executor_job(absorb_shapes, self.shapes, fetched["body"])
+            if err:
+                self.book.last_error = err
+            else:
+                self.shapes = shapes or {"shapes": {}, "trains": {}, "routes": {}}
+                self.shape_memo = {}
+                try:
+                    await self.hass.async_add_executor_job(write_shapes_file, self.shapes_path, self.shapes)
+                except Exception:  # noqa: BLE001
+                    _LOGGER.warning("SEPTA route shape cache was not saved")
+                    self.book.last_error = "shapes"
             await self._publish()
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("SEPTA timetable refresh failed: %s", err)
@@ -215,6 +234,15 @@ class RailSchedule:
                 ir.async_delete_issue(self.hass, DOMAIN, "rail_schedule_stale")
         except Exception:  # noqa: BLE001
             _LOGGER.debug("SEPTA schedule repair issue skipped", exc_info=True)
+
+    def route_for(self, data: dict) -> dict:
+        try:
+            if not isinstance(self.shape_memo, dict):
+                self.shape_memo = {}
+            return attach_route(data if isinstance(data, dict) else {}, self.shapes or {}, self.shape_memo)
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("SEPTA route shape skipped", exc_info=True)
+            return cleared_route()
 
     def status(self) -> dict:
         try:

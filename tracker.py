@@ -69,9 +69,10 @@ def tracker_attributes(
     last_update,
     riders,
     stale: bool,
+    route: dict | None = None,
 ) -> dict:
     pictures = [str(item.get("entity_picture")) for item in (riders or []) if isinstance(item, dict) and item.get("entity_picture")]
-    return {
+    attrs = {
         "train": train,
         "line": line,
         "next_stop": next_stop,
@@ -84,6 +85,9 @@ def tracker_attributes(
         "source": "trainview",
         "stale": bool(stale),
     }
+    if route:
+        attrs.update(route)
+    return attrs
 
 
 def tracker_entities(entry_id: str, slugs: list[str]) -> list[dict]:

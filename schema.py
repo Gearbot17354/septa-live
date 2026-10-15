@@ -180,6 +180,13 @@ WEBSOCKET_BUS = {
     vol.Optional("stop_id"): opt_str,
 }
 
+WEBSOCKET_ROUTE = {
+    vol.Required("type"): "septa_live/route",
+    vol.Optional("entry_id"): opt_str,
+    vol.Optional("rider"): opt_str,
+    vol.Optional("train"): train_id,
+}
+
 WEBSOCKET_OPTIONS = {
     vol.Required("type"): "septa_live/options",
     vol.Required("entry_id"): as_text,
@@ -225,6 +232,7 @@ WEBSOCKET_SCHEMAS = {
     "septa_live/panel": WEBSOCKET_PANEL,
     "septa_live/bus_picker": WEBSOCKET_BUS,
     "septa_live/options": WEBSOCKET_OPTIONS,
+    "septa_live/route": WEBSOCKET_ROUTE,
 }
 
 
