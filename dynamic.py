@@ -14,6 +14,7 @@ try:
         _NTA_ALIASES,
         _iso,
         _parse_iso,
+        bare_train,
         station_key,
         train_paths,
     )
@@ -28,6 +29,7 @@ except ImportError:
     _NTA_ALIASES = _trips._NTA_ALIASES
     _iso = _trips._iso
     _parse_iso = _trips._parse_iso
+    bare_train = _trips.bare_train
     station_key = _trips.station_key
     train_paths = _trips.train_paths
 
@@ -70,6 +72,12 @@ _ROW_KEYS = (
     "transfer",
     "connection",
     "live",
+    "train_number",
+    "service_type",
+    "stops_count",
+    "stops",
+    "skipped",
+    "through",
 )
 
 
@@ -741,7 +749,60 @@ def shared_transfer_stations(schedule: dict | None, origin: str, destination: st
     return found
 
 
+_ITINERARIES = None
+
+
+def _itinerary_fn():
+    """Load the index once. Reloading it would throw away the timetable cache."""
+    global _ITINERARIES
+    if _ITINERARIES is not None:
+        return _ITINERARIES
+    try:
+        from .index import cached_itineraries
+    except ImportError:
+        import importlib.util
+        from pathlib import Path
+
+        _spec = importlib.util.spec_from_file_location("septa_index_dyn", Path(__file__).with_name("index.py"))
+        _index = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(_index)
+        cached_itineraries = _index.cached_itineraries
+    _ITINERARIES = cached_itineraries
+    return _ITINERARIES
+
+
 def build_itineraries(
+    schedule: dict | None,
+    origin: str,
+    destination: str,
+    day,
+    transfer_min: int = 3,
+    now: datetime | None = None,
+    window: str = "rest_of_day",
+    line_names: dict | None = None,
+    limit: int | None = None,
+    enforce_transfer: bool = True,
+    through: bool = True,
+    by_depart: bool = False,
+) -> list[dict]:
+    """Direct trains, then one legal transfer. Uses the precomputed timetable index."""
+    return _itinerary_fn()(
+        schedule,
+        origin,
+        destination,
+        day,
+        transfer_min,
+        now,
+        window,
+        line_names,
+        limit,
+        enforce_transfer,
+        through,
+        by_depart,
+    )
+
+
+def build_itineraries_scan(
     schedule: dict | None,
     origin: str,
     destination: str,
@@ -864,31 +925,63 @@ def present_row(row: dict, now: datetime | None = None) -> dict:
         transfer["track"] = link.get("track")
         transfer["platform"] = link.get("platform")
         transfer["delay_min"] = link.get("delay_min")
-    depart = _parse_iso(row.get("depart_est") or row.get("depart_sched"))
+        for extra in ("service_type", "stops", "stops_count", "skipped", "train_number"):
+            if link.get(extra) not in (None, "", []):
+                transfer[extra] = link.get(extra)
+    direct = bool(row.get("direct", transfer is None)) or bool(row.get("through"))
+    if direct:
+        transfer = None
+    lean = None
+    if transfer is not None:
+        lean = {
+            "station": transfer.get("station"),
+            "train": transfer.get("train"),
+            "wait_min": transfer.get("wait_min"),
+            "at_risk": bool(transfer.get("at_risk")),
+        }
+    depart_sched = row.get("depart_sched")
+    arrive_sched = row.get("arrive_sched")
+    depart_est = row.get("depart_est")
+    arrive_est = row.get("arrive_est")
+    if depart_est in (None, "", depart_sched):
+        depart_est = None
+    if arrive_est in (None, "", arrive_sched):
+        arrive_est = None
+    depart = _parse_iso(depart_est or depart_sched)
     minutes = row.get("minutes")
     if minutes is None and depart is not None and now is not None:
         base = now.astimezone(depart.tzinfo) if now.tzinfo else now
         minutes = int(round((depart - base).total_seconds() / 60))
+
+    def _empty(value):
+        return None if value in ("",) else value
+
     shaped = {key: None for key in _ROW_KEYS}
     shaped.update(
         {
             "train": str(row.get("train") or "") or None,
+            "train_number": row.get("train_number") or bare_train(row.get("train")) or None,
             "line": str(row.get("line") or "") or None,
             "destination": row.get("destination") or None,
-            "depart_sched": row.get("depart_sched"),
-            "depart_est": row.get("depart_est"),
-            "arrive_sched": row.get("arrive_sched"),
-            "arrive_est": row.get("arrive_est"),
+            "depart_sched": depart_sched,
+            "depart_est": depart_est,
+            "arrive_sched": arrive_sched,
+            "arrive_est": arrive_est,
             "late_min": delay,
             "delay_min": delay,
             "minutes": minutes,
-            "track": row.get("track"),
-            "platform": row.get("platform"),
+            "track": _empty(row.get("track")),
+            "platform": _empty(row.get("platform")),
             "track_changed": bool(row.get("track_changed")),
-            "direct": bool(row.get("direct", transfer is None)),
+            "direct": direct,
+            "through": bool(row.get("through")),
             "transfer": transfer,
-            "connection": transfer,
+            "connection": lean,
             "live": bool(row.get("live")),
+            "service_type": row.get("service_type") or "",
+            "stops_count": row.get("stops_count"),
+            "stops": row.get("stops") or [],
+            "skipped": row.get("skipped") or [],
         }
     )
     return shaped
@@ -918,6 +1011,22 @@ def overlay_live(rows: list[dict], live_rows: list[dict], now: datetime, window_
         else:
             copy["live"] = False
         out.append(present_row(copy, now))
+    return out
+
+
+def trim_published(rows: list[dict] | None, keep_stops: int = 4) -> list[dict]:
+    """State attributes keep stops on the first few rows only. The websocket has the rest."""
+    out = []
+    for index, row in enumerate(rows or []):
+        item = dict(row)
+        if index >= keep_stops:
+            item["stops"] = []
+            link = item.get("transfer")
+            if isinstance(link, dict):
+                link = dict(link)
+                link["stops"] = []
+                item["transfer"] = link
+        out.append(item)
     return out
 
 
@@ -1090,6 +1199,13 @@ def _compact_plan_row(row: dict, now: datetime | None) -> dict:
         "live": bool(row.get("live")),
         "delay": delay,
         "suggested": bool(row.get("suggested")),
+        "train_number": row.get("train_number") or bare_train(row.get("train")) or None,
+        "service_type": row.get("service_type") or "",
+        "stops_count": row.get("stops_count"),
+        "stops": row.get("stops") or [],
+        "skipped": row.get("skipped") or [],
+        "through": bool(row.get("through")),
+        "direct": bool(row.get("direct", link is None)),
     }
 
 
@@ -1122,30 +1238,29 @@ def plan_trips(
         else:
             day = datetime.now(NY).date()
 
-    def on(one_day: date) -> list[dict]:
+    def on(one_day: date, depart_after: datetime | None = None, capped: bool = False) -> list[dict]:
         return build_itineraries(
             schedule,
             origin,
             destination,
             one_day,
             transfer_min=transfer_min,
-            now=None,
-            window="today",
+            now=depart_after,
+            window="rest_of_day" if depart_after is not None else "today",
+            limit=limit if capped else None,
+            by_depart=capped,
         )
 
     chosen = day
-    rows = on(chosen)
+    rows: list[dict] = []
     if after is not None:
         base = after.astimezone(NY) if after.tzinfo else after.replace(tzinfo=NY)
-        kept = []
-        for row in rows:
-            depart = _parse_iso(row.get("depart_sched"))
-            if depart is not None and depart >= base:
-                kept.append(row)
+        rows = on(chosen, base, True)
+        kept = list(rows)
         if not kept:
             for offset in range(1, 8):
                 trial_day = day + timedelta(days=offset)
-                trial = on(trial_day)
+                trial = on(trial_day, capped=True)
                 if trial:
                     chosen = trial_day
                     kept = trial
@@ -1154,6 +1269,7 @@ def plan_trips(
         rows = kept[:limit]
     elif arrive_by is not None:
         base = arrive_by.astimezone(NY) if arrive_by.tzinfo else arrive_by.replace(tzinfo=NY)
+        rows = on(chosen)
         kept = []
         for row in rows:
             arrive = _parse_iso(row.get("arrive_est") or row.get("arrive_sched"))
@@ -1164,7 +1280,7 @@ def plan_trips(
         if rows:
             rows[0] = dict(rows[0], suggested=True)
     else:
-        rows = list(rows)[:limit]
+        rows = list(on(chosen, capped=True))[:limit]
     if live_rows is not None and now is not None:
         marked = {str(row.get("train")): bool(row.get("suggested")) for row in rows}
         overlaid = overlay_live(rows, live_rows, now, LIVE_WINDOW_MIN)

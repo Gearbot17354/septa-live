@@ -222,6 +222,9 @@
     }
 
     async _onLive() {
+      const now = Date.now();
+      if (this._liveAt && now - this._liveAt < 10000) return;
+      this._liveAt = now;
       if (!this._hass || this._busy || this._liveLock) return;
       this._liveLock = true;
       try {

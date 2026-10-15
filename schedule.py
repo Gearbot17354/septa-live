@@ -26,7 +26,7 @@ except ImportError:  # loaded by file path in unit tests
 MAX_BYTES = 50 * 1024 * 1024
 MIN_STATION_RATIO = 0.5
 REFRESH_WITHIN_DAYS = 7
-NEAR_EXPIRY_DAYS = 2
+NEAR_EXPIRY_DAYS = 3
 
 _WANTED = {
     "stops.txt": "stops",

@@ -62,6 +62,7 @@ from .schema import (
     WEBSOCKET_OPTIONS,
     WEBSOCKET_PANEL,
     WEBSOCKET_PLAN,
+    WEBSOCKET_DAY,
     WEBSOCKET_ROUTE,
 )
 
@@ -70,7 +71,7 @@ _FRONTEND = f"{DOMAIN}_frontend_registered"
 _CARD_JS = "septa-live-card.js"
 _PANEL_JS = "septa-live-panel.js"
 _PANEL_PATH = "septa-live"
-_CARD_VERSION = "1.13.8"
+_CARD_VERSION = "1.13.9"
 _PANEL_SIG: tuple | None = None
 _RELOADING: set[str] = set()
 
@@ -83,6 +84,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     websocket_api.async_register_command(hass, websocket_bus_picker)
     websocket_api.async_register_command(hass, websocket_route)
     websocket_api.async_register_command(hass, websocket_plan)
+    websocket_api.async_register_command(hass, websocket_day_trains)
     _register_simulate(hass)
     return True
 
@@ -292,18 +294,23 @@ def _register_simulate(hass: HomeAssistant) -> None:
                 live = fetched or []
         except Exception:  # noqa: BLE001
             live = []
-        return plan_query(
-            board._schedule,
-            names,
-            origin=origin,
-            destination=destination,
-            home=home,
-            after=call.data.get("after"),
-            arrive_by=call.data.get("arrive_by"),
-            count=call.data.get("count") or 8,
-            transfer_min=opt["transfer_min"],
-            now=now,
-            live_rows=live,
+        from functools import partial
+
+        return await hass.async_add_executor_job(
+            partial(
+                plan_query,
+                board._schedule,
+                names,
+                origin=origin,
+                destination=destination,
+                home=home,
+                after=call.data.get("after"),
+                arrive_by=call.data.get("arrive_by"),
+                count=call.data.get("count") or 8,
+                transfer_min=opt["transfer_min"],
+                now=now,
+                live_rows=live,
+            )
         )
 
     hass.services.async_register(
@@ -739,21 +746,62 @@ async def websocket_plan(
             live = fetched or []
     except Exception:  # noqa: BLE001
         live = []
+    from functools import partial
+
     connection.send_result(
         msg["id"],
-        plan_query(
-            board._schedule,
-            names,
-            origin=origin,
-            destination=destination,
-            home=home,
-            after=msg.get("after"),
-            arrive_by=msg.get("arrive_by"),
-            count=msg.get("count") or 8,
-            transfer_min=opt["transfer_min"],
-            now=now,
-            live_rows=live,
+        await hass.async_add_executor_job(
+            partial(
+                plan_query,
+                board._schedule,
+                names,
+                origin=origin,
+                destination=destination,
+                home=home,
+                after=msg.get("after"),
+                arrive_by=msg.get("arrive_by"),
+                count=msg.get("count") or 8,
+                transfer_min=opt["transfer_min"],
+                now=now,
+                live_rows=live,
+            )
         ),
+    )
+
+
+@websocket_api.websocket_command(WEBSOCKET_DAY)
+@websocket_api.async_response
+async def websocket_day_trains(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict,
+) -> None:
+    """Full day-train list. State attributes keep a shorter copy."""
+    data = hass.data.get(DOMAIN) or {}
+    entry_id = msg.get("entry_id")
+    if entry_id:
+        coordinator = data.get(entry_id)
+    else:
+        coordinator = next((item for item in data.values() if getattr(item, "dynamic", None) is not None), None)
+    board = getattr(coordinator, "dynamic", None)
+    if board is None:
+        connection.send_result(msg["id"], {"error": "not_found"})
+        return
+    slug = board.slug_for(msg.get("rider"))
+    primary = not slug
+    from .ids import dynamic_key
+
+    day = board.results.get(dynamic_key("day_trains", slug, primary or not slug)) or {}
+    rows = day.get("trains_full") or day.get("trains") or []
+    connection.send_result(
+        msg["id"],
+        {
+            "rider": slug,
+            "origin": day.get("origin"),
+            "destination": day.get("destination"),
+            "suggested_train": day.get("suggested_train"),
+            "trains": rows,
+        },
     )
 
 

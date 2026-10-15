@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.13.9
+
+### Fixed
+
+- Timetable search no longer freezes the Home Assistant event loop on a low-power host. A city-to-home itinerary is indexed once per service day instead of scanning every stop on every refresh.
+- A connection shorter than the minimum transfer is no longer chosen ahead of a legal one.
+- A train that keeps its number and runs through onto another line is one direct trip, not a zero-minute transfer.
+- Direct trains no longer carry a blank transfer object.
+- Times after midnight, such as 24:27, are the next calendar day.
+- An expected train accepts a line prefix (`LAN5305`) or the bare number (`5305`).
+
+### Changed
+
+- State attributes are smaller. The default cap is 20 trains. Direction sensors no longer repeat both directions. Large lists, including `trains`, `stops`, `vehicles`, and `updated`, are excluded from the recorder.
+- Day-train and Going Home skeletons are rebuilt only when the trip changes. Live minutes are overlaid on the cached timetable.
+
+### Added
+
+- Each train row can include `train_number`, `service_type`, `stops_count`, `stops`, `skipped`, and `through`.
+- Websocket `septa_live/day_trains` returns the full list when the sensor attribute is capped.
+- Diagnostics include a `perf` block: index build time, cache hits, and cache misses.
+
+Existing entities, services, and automations keep working. `trains` on the sensor is capped at the option (20 by default). The full list is on `septa_live/day_trains`.
+
 ## 1.13.8
 
 ### Added

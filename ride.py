@@ -9,7 +9,7 @@ import re
 import threading
 import traceback
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -586,6 +586,35 @@ def weekday_bit(weekday: int) -> int:
     return 1 << ((weekday + 1) % 7)
 
 
+def _indexed_stops(schedule: dict | None, trainno: str, weekday: int):
+    """Ordered stops from the day index. None means the index could not be built."""
+    try:
+        from .index import index_for
+    except ImportError:
+        return None
+    today = datetime.now(NY).date()
+    delta = (int(weekday) - today.weekday()) % 7
+    day = today + timedelta(days=delta)
+    try:
+        path = index_for(schedule, day).stops_for_number(str(trainno))
+    except Exception:  # noqa: BLE001
+        return None
+    if not path:
+        return None
+    found = []
+    for stop in path:
+        clock = str(stop.get("clock") or "")
+        parts = clock.split(":")
+        if len(parts) < 2:
+            continue
+        try:
+            mins = int(parts[0]) * 60 + int(parts[1])
+        except ValueError:
+            continue
+        found.append((mins, str(stop["station"]), clock))
+    return found
+
+
 def remaining_from_timetable(
     schedule: dict | None,
     trainno: str,
@@ -602,26 +631,30 @@ def remaining_from_timetable(
     bit = weekday_bit(weekday)
     found: list[tuple[int, str, str]] = []
     want = str(trainno)
-    for name, dirs in stations.items():
-        if not isinstance(dirs, dict):
-            continue
-        for key in ("N", "S"):
-            rows = dirs.get(key) or []
-            if not isinstance(rows, list):
+    indexed = _indexed_stops(schedule, want, weekday)
+    if indexed is not None:
+        found = indexed
+    else:
+        for name, dirs in stations.items():
+            if not isinstance(dirs, dict):
                 continue
-            for row in rows:
-                if not isinstance(row, dict) or str(row.get("n") or "") != want:
+            for key in ("N", "S"):
+                rows = dirs.get(key) or []
+                if not isinstance(rows, list):
                     continue
-                days = int(row.get("days") or 0)
-                if days and not (days & bit):
-                    continue
-                clock = str(row.get("t") or "")
-                try:
-                    hour, minute = clock.split(":")
-                    mins = int(hour) * 60 + int(minute)
-                except ValueError:
-                    continue
-                found.append((mins, str(name), clock))
+                for row in rows:
+                    if not isinstance(row, dict) or str(row.get("n") or "") != want:
+                        continue
+                    days = int(row.get("days") or 0)
+                    if days and not (days & bit):
+                        continue
+                    clock = str(row.get("t") or "")
+                    try:
+                        hour, minute = clock.split(":")
+                        mins = int(hour) * 60 + int(minute)
+                    except ValueError:
+                        continue
+                    found.append((mins, str(name), clock))
     found.sort()
     unique: list[tuple[int, str, str]] = []
     seen: set[tuple[str, str]] = set()
@@ -1567,6 +1600,13 @@ class RideMatcher:
             self.leg = 1
             return
         train = str(hint.get("train") or "").strip()
+        normalized = re.sub(r"^[A-Za-z]+(?=\d)", "", train).strip() or train
+        if normalized != train:
+            _LOGGER.debug("Expected train %s normalized to %s", train, normalized)
+        train = normalized
+        connection = str(hint.get("connection_train") or "").strip()
+        if connection:
+            connection = re.sub(r"^[A-Za-z]+(?=\d)", "", connection).strip() or connection
         valid = hint.get("valid_until")
         if valid is None and now is not None:
             valid = float(now) + 3 * 3600
@@ -1575,7 +1615,7 @@ class RideMatcher:
             "first_train": train,
             "origin": hint.get("origin") or None,
             "destination": hint.get("destination") or None,
-            "connection_train": str(hint.get("connection_train") or "").strip() or None,
+            "connection_train": connection or None,
             "connection_station": hint.get("connection_station") or None,
             "connection_line": hint.get("connection_line") or None,
             "connection_depart_est": hint.get("connection_depart_est"),

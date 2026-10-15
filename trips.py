@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta
+from functools import lru_cache
 from zoneinfo import ZoneInfo
 
 NY = ZoneInfo("America/New_York")
@@ -29,10 +30,43 @@ _NTA_ALIASES = {
 }
 
 
+@lru_cache(maxsize=8192)
 def station_key(name: object) -> str:
     text = re.sub(r"[^a-z0-9]+", " ", str(name or "").lower())
     text = re.sub(r"\bstation\b", " ", text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+_TRAIN_PREFIX = re.compile(r"^[A-Za-z]+(?=\d)")
+
+
+def bare_train(value: object) -> str:
+    """Train number without a line prefix. LAN5305 and 5305 are the same train."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    stripped = _TRAIN_PREFIX.sub("", text).strip()
+    return stripped or text
+
+
+def clock_on(day, clock: str) -> datetime | None:
+    """Clock on a service day. 24:27 is 00:27 the next calendar day."""
+    parts = str(clock or "").split(":")
+    if len(parts) < 2:
+        return None
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+    except ValueError:
+        return None
+    if minute < 0 or minute > 59 or hour < 0:
+        return None
+    extra = hour // 24
+    hour = hour % 24
+    when = datetime(day.year, day.month, day.day, hour, minute, tzinfo=NY)
+    if extra:
+        when += timedelta(days=extra)
+    return when
 
 
 def nta_station(name: object) -> str:
@@ -262,11 +296,7 @@ def _weekday_bit(day) -> int:
 
 
 def _hhmm(day, clock: str):
-    try:
-        hour, minute = str(clock).split(":")
-        return datetime(day.year, day.month, day.day, int(hour), int(minute), tzinfo=NY)
-    except (TypeError, ValueError):
-        return None
+    return clock_on(day, clock)
 
 
 def _station_rows(schedule: dict | None, name: str) -> list[tuple[str, dict]]:

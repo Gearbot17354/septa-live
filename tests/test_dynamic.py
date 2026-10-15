@@ -259,8 +259,23 @@ def _class_body(text: str, name: str) -> str:
 
 def test_unrecorded_attributes_on_entity_classes():
     const = _load("septa_const_rec", "const.py")
-    assert const.UNRECORDED_TRAIN_ATTRS == frozenset(
-        {"trains", "trips", "suggested", "candidates", "day", "remaining_stops", "route_shape", "stops"}
+    assert const.UNRECORDED_TRAIN_ATTRS >= frozenset(
+        {
+            "trains",
+            "trips",
+            "suggested",
+            "candidates",
+            "day",
+            "remaining_stops",
+            "route_shape",
+            "stops",
+            "southbound",
+            "northbound",
+            "vehicles",
+            "transfer",
+            "connection",
+            "updated",
+        }
     )
     sensor = (ROOT / "sensor.py").read_text()
     binary = (ROOT / "binary_sensor.py").read_text()

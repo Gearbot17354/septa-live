@@ -67,11 +67,12 @@ DEFAULT_EVENT_BUFFER: Final = 15
 DEFAULT_EVENT_LOOKAHEAD: Final = 24
 DEFAULT_EVENT_WALK_SPEED: Final = 80
 DEFAULT_DAY_WINDOW: Final = "rest_of_day"
-DEFAULT_MAX_TRAINS: Final = 60
+DEFAULT_MAX_TRAINS: Final = 20
 # Recorder skips these. The live state still has them for dashboards.
 UNRECORDED_TRAIN_ATTRS: Final = frozenset(
     {
         "trains",
+        "trains_full",
         "trips",
         "suggested",
         "candidates",
@@ -79,6 +80,17 @@ UNRECORDED_TRAIN_ATTRS: Final = frozenset(
         "remaining_stops",
         "route_shape",
         "stops",
+        "southbound",
+        "northbound",
+        "vehicles",
+        "legs",
+        "transfer",
+        "connection",
+        "riders",
+        "rider_pictures",
+        "skipped",
+        "event",
+        "updated",
     }
 )
 ORIGIN_HYSTERESIS_M: Final = 200
@@ -88,7 +100,7 @@ GTFS_RAIL_API: Final = "https://api.github.com/repos/septadev/GTFS/releases/late
 GTFS_URL: Final = "https://www3.septa.org/developer/gtfs_public.zip"
 CONF_GTFS_URL: Final = "gtfs_url"
 SCHEDULE_REFRESH_DAYS: Final = 7
-SCHEDULE_NEAR_DAYS: Final = 2
+SCHEDULE_NEAR_DAYS: Final = 3
 SCHEDULE_MAX_BYTES: Final = 50 * 1024 * 1024
 SCHEDULE_STARTUP_DELAY_S: Final = 300
 TRAIN_TRACKER_STALE_S: Final = 300

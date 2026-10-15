@@ -6,14 +6,13 @@ calendars, the coordinator's HTTP session, and the config directory.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
-import zipfile
 from datetime import datetime, timedelta
-from io import BytesIO
+from functools import partial
 from pathlib import Path
-from urllib.request import Request, urlopen
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_state_change_event
@@ -47,7 +46,6 @@ from .const import (
     DEFAULT_TRANSFER_MIN,
     DEFAULT_WALK,
     DOMAIN,
-    GTFS_RAIL_API,
     LIVE_WINDOW_MIN,
     NTA_URL,
 )
@@ -70,6 +68,7 @@ from .dynamic import (
     station_names,
     suggestion_fields,
     timetable_allowed,
+    trim_published,
     walk_minutes_for,
     watch_entities,
     zone_station,
@@ -121,67 +120,13 @@ def _blank_payload(rider: str, home: str) -> dict:
     }
 
 
-def _download_gtfs(cache_file: Path) -> dict | None:
-    """Download SEPTA's public rail GTFS at most once a day. Runs off the loop."""
-    now = time.time()
-    if cache_file.exists() and now - cache_file.stat().st_mtime < 86400:
-        try:
-            saved = json.loads(cache_file.read_text())
-            schedule = saved.get("schedule") if isinstance(saved, dict) else None
-            if isinstance(schedule, dict) and schedule.get("stations"):
-                return schedule
-        except (OSError, json.JSONDecodeError):
-            pass
+def _perf() -> dict:
     try:
-        request = Request(GTFS_RAIL_API, headers={"User-Agent": _USER_AGENT, "Accept": "application/vnd.github+json"})
-        with urlopen(request, timeout=30) as response:
-            release = json.loads(response.read().decode())
-        asset = ""
-        for item in release.get("assets") or []:
-            url = str(item.get("browser_download_url") or "")
-            if url.endswith(".zip"):
-                asset = url
-                break
-        if not asset:
-            return None
-        packed = Request(asset, headers={"User-Agent": _USER_AGENT})
-        with urlopen(packed, timeout=60) as response:
-            blob = response.read()
-        files = _rail_texts(blob)
-        if "stops" not in files or "stop_times" not in files:
-            return None
-        schedule = gtfs_tables_to_schedule(files)
-        cache_file.parent.mkdir(parents=True, exist_ok=True)
-        cache_file.write_text(json.dumps({"fetched_at": now, "schedule": schedule}))
-        return schedule
+        from .index import perf_snapshot
+
+        return perf_snapshot()
     except Exception:  # noqa: BLE001
-        _LOGGER.debug("SEPTA GTFS refresh failed", exc_info=True)
-        return None
-
-
-def _rail_texts(blob: bytes) -> dict[str, str]:
-    wanted = {"stops.txt": "stops", "trips.txt": "trips", "stop_times.txt": "stop_times", "calendar.txt": "calendar", "feed_info.txt": "feed_info"}
-    found: dict[str, str] = {}
-    with zipfile.ZipFile(BytesIO(blob)) as outer:
-        names = outer.namelist()
-        inner = next((name for name in names if name.endswith("google_rail.zip")), "")
-        if inner:
-            blob = outer.read(inner)
-            with zipfile.ZipFile(BytesIO(blob)) as rail:
-                names = rail.namelist()
-                source = rail
-                _read_zip(source, names, wanted, found)
-        else:
-            _read_zip(outer, names, wanted, found)
-    return found
-
-
-def _read_zip(archive, names, wanted, found) -> None:
-    for name in names:
-        base = name.rsplit("/", 1)[-1]
-        key = wanted.get(base)
-        if key and key not in found:
-            found[key] = archive.read(name).decode("utf-8", "replace")
+        return {}
 
 
 class DynamicBoard:
@@ -198,6 +143,10 @@ class DynamicBoard:
         self._last_seen_at: dict[str, float] = {}
         self._geo_cache: dict[str, tuple[float, float] | None] = {}
         self._event_cache: dict[str, list] = {}
+        self._refresh_lock: asyncio.Lock | None = None
+        self._last_run = 0.0
+        self._store_snap = None
+        self._result_sig = None
         self._schedule: dict = {"stations": {}}
         self._schedule_source = "bundled"
         self._stops: list[dict] = []
@@ -222,6 +171,9 @@ class DynamicBoard:
 
     def reload_schedule(self) -> None:
         self._load_local()
+
+    async def async_reload_schedule(self) -> None:
+        await self.hass.async_add_executor_job(self._load_local)
 
     def _load_local(self) -> None:
         from .ride import _load_geo
@@ -266,10 +218,25 @@ class DynamicBoard:
         self._last_origin = {str(k): str(v) for k, v in (saved.get("last") or {}).items() if v}
 
     async def _save_store(self) -> None:
+        snap = (
+            tuple(sorted(self._manual_origin.items())),
+            tuple(sorted(self._manual_dest.items())),
+            tuple(sorted(self._last_origin.items())),
+        )
+        if snap == self._store_snap:
+            return
+        self._store_snap = snap
+        payload = {
+            "origin": dict(self._manual_origin),
+            "destination": dict(self._manual_dest),
+            "last": dict(self._last_origin),
+        }
         try:
-            await self._store.async_save(
-                {"origin": self._manual_origin, "destination": self._manual_dest, "last": self._last_origin}
-            )
+            delay = getattr(self._store, "async_delay_save", None)
+            if delay is not None:
+                delay(lambda: payload, 15)
+            else:
+                await self._store.async_save(payload)
         except Exception:  # noqa: BLE001
             _LOGGER.debug("SEPTA dynamic store was not saved")
 
@@ -668,6 +635,17 @@ class DynamicBoard:
         return point
 
     async def async_refresh(self, force: bool = False, only_slug: str | None = None) -> None:
+        if self._refresh_lock is None:
+            self._refresh_lock = asyncio.Lock()
+        if self._refresh_lock.locked() and not force:
+            return
+        async with self._refresh_lock:
+            if not force and time.time() - self._last_run < 2:
+                return
+            self._last_run = time.time()
+            await self._refresh_locked(force, only_slug)
+
+    async def _refresh_locked(self, force: bool = False, only_slug: str | None = None) -> None:
         self._listen()
         self._event_cache = {}
         opt = self.options()
@@ -686,6 +664,20 @@ class DynamicBoard:
                 self._last_seen_at[slug] = time.time()
             await self._fill(spec, cfg, opt, origin, now, until)
         await self._save_store()
+        sig = tuple(
+            (
+                key,
+                pack.get("origin"),
+                pack.get("state_train"),
+                pack.get("state_minutes"),
+                pack.get("suggested_train"),
+                pack.get("trains_total"),
+            )
+            for key, pack in sorted(self.results.items())
+        )
+        if sig == self._result_sig and not force:
+            return
+        self._result_sig = sig
         try:
             self.coordinator.async_update_listeners()
         except Exception:  # noqa: BLE001
@@ -734,18 +726,23 @@ class DynamicBoard:
             )
             schedule_rows = []
             if timetable_allowed(self._schedule_source):
-                schedule_rows = build_itineraries(
-                    self._schedule,
-                    origin["origin"],
-                    home,
-                    now.date(),
-                    transfer_min=opt["transfer_min"],
-                    now=now,
-                    window="rest_of_day",
+                schedule_rows = await self.hass.async_add_executor_job(
+                    partial(
+                        build_itineraries,
+                        self._schedule,
+                        origin["origin"],
+                        home,
+                        now.date(),
+                        transfer_min=opt["transfer_min"],
+                        now=now,
+                        window="rest_of_day",
+                        limit=opt["going_home_count"],
+                    )
                 )
             going["trains"] = merge_nta(live, schedule_rows, opt["going_home_count"], now)
             shown, total = cap_trains(going["trains"], opt["max_trains"])
-            going["trains"] = shown
+            going["trains_full"] = shown
+            going["trains"] = trim_published(shown)
             going["trains_total"] = total
             going["source"] = "nta" if live else ("timetable" if schedule_rows else "nta")
             going["error"] = error
@@ -808,14 +805,17 @@ class DynamicBoard:
                 home, dest["destination"], 10, opt["transfer_min"], force=False
             )
             if timetable_allowed(self._schedule_source):
-                skeleton = build_itineraries(
-                    self._schedule,
-                    home,
-                    dest["destination"],
-                    now.date(),
-                    transfer_min=opt["transfer_min"],
-                    now=now,
-                    window=opt["day_window"] if opt["day_window"] in {"today", "rest_of_day"} else "rest_of_day",
+                skeleton = await self.hass.async_add_executor_job(
+                    partial(
+                        build_itineraries,
+                        self._schedule,
+                        home,
+                        dest["destination"],
+                        now.date(),
+                        transfer_min=opt["transfer_min"],
+                        now=now,
+                        window=opt["day_window"] if opt["day_window"] in {"today", "rest_of_day"} else "rest_of_day",
+                    )
                 )
                 full = overlay_live(skeleton, live, now, LIVE_WINDOW_MIN)
                 day["source"] = "timetable"
@@ -835,14 +835,17 @@ class DynamicBoard:
                 and event_day is not None
                 and event_day != now.date()
             ):
-                suggest_rows = build_itineraries(
-                    self._schedule,
-                    home,
-                    dest["destination"],
-                    event_day,
-                    transfer_min=opt["transfer_min"],
-                    now=None,
-                    window="today",
+                suggest_rows = await self.hass.async_add_executor_job(
+                    partial(
+                        build_itineraries,
+                        self._schedule,
+                        home,
+                        dest["destination"],
+                        event_day,
+                        transfer_min=opt["transfer_min"],
+                        now=None,
+                        window="today",
+                    )
                 )
                 suggest_rows = overlay_live(suggest_rows, live, now, LIVE_WINDOW_MIN)
             distance = dest.get("destination_distance_m")
@@ -866,7 +869,8 @@ class DynamicBoard:
                 fields["suggest_reason"] = "no_event"
             day.update(fields)
             shown, total = cap_trains(full, opt["max_trains"])
-            day["trains"] = shown
+            day["trains_full"] = shown
+            day["trains"] = trim_published(shown)
             day["trains_total"] = total
             first = shown[0]["train"] if shown else None
             day["state_train"] = day["suggested_train"] or first
@@ -959,4 +963,5 @@ class DynamicBoard:
             "riders": riders,
             "cache": cache,
             "nta_hold": holds,
+            "perf": _perf(),
         }

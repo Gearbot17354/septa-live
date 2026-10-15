@@ -217,6 +217,20 @@ def _trip_dt(service_day: date, hhmm: str) -> datetime | None:
     return dt
 
 
+def _board_service(train: str, day) -> str:
+    try:
+        from .index import peek_index
+
+        schedule = _load_schedule()
+        label = ""
+        idx = peek_index(schedule, day)
+        if idx is not None:
+            label = idx.trip_service(train)
+        return label or "Local"
+    except Exception:  # noqa: BLE001
+        return "Local"
+
+
 def _scheduled_fill(station: str, direction: str, now: datetime) -> list[dict[str, Any]]:
     pack = _station_schedule(station)
     if not pack:
@@ -258,7 +272,7 @@ def _scheduled_fill(station: str, direction: str, now: datetime) -> list[dict[st
                     "sched_dt": dt,
                     "minutes": minutes_until(dt, now),
                     "scheduled": True,
-                    "service_type": "LOCAL",
+                    "service_type": _board_service(str(trip.get("n") or ""), day),
                 }
             )
     found.sort(key=lambda row: row.get("sched_dt") or now)
@@ -1259,26 +1273,31 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         commute: list[dict[str, Any]] = []
         alerts: list[dict[str, Any]] = []
         if self.show_rail:
+            try:
+                from .index import index_for
+
+                await self.hass.async_add_executor_job(index_for, _load_schedule(), now.date())
+            except Exception:  # noqa: BLE001
+                _LOGGER.debug("SEPTA timetable index skipped", exc_info=True)
             arrivals_raw = None
             nta_raw = None
             alerts_raw = None
-            try:
-                arrivals_raw = await self._get(
-                    ARRIVALS_URL, {"station": self.station, "results": BOARD_LIMIT}
-                )
-            except Exception as err:  # noqa: BLE001
-                _LOGGER.warning("SEPTA arrivals failed, using the schedule: %s", err)
-            try:
-                nta_raw = await self._get(
-                    NTA_URL,
-                    {"req1": self.station, "req2": self.destination, "req3": 6},
-                )
-            except Exception as err:  # noqa: BLE001
-                _LOGGER.debug("SEPTA next-to-arrive failed: %s", err)
-            try:
-                alerts_raw = await self._get(ALERTS_URL, {})
-            except Exception as err:  # noqa: BLE001
-                _LOGGER.debug("SEPTA alerts failed: %s", err)
+
+            async def _safe(url, params, label, warn=False):
+                try:
+                    return await self._get(url, params)
+                except Exception as err:  # noqa: BLE001
+                    if warn:
+                        _LOGGER.warning("SEPTA %s failed, using the schedule: %s", label, err)
+                    else:
+                        _LOGGER.debug("SEPTA %s failed: %s", label, err)
+                    return None
+
+            arrivals_raw, nta_raw, alerts_raw = await asyncio.gather(
+                _safe(ARRIVALS_URL, {"station": self.station, "results": BOARD_LIMIT}, "arrivals", True),
+                _safe(NTA_URL, {"req1": self.station, "req2": self.destination, "req3": 6}, "next-to-arrive"),
+                _safe(ALERTS_URL, {}, "alerts"),
+            )
 
             if arrivals_raw is not None:
                 north, south = _parse_arrivals(arrivals_raw)

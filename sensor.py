@@ -186,6 +186,7 @@ def _drop_removed_entities(
 
 class _Base(CoordinatorEntity[SeptaCoordinator], SensorEntity):
     _attr_has_entity_name = True
+    _unrecorded_attributes = UNRECORDED_TRAIN_ATTRS
 
     def __init__(self, coordinator: SeptaCoordinator, key: str) -> None:
         super().__init__(coordinator)
@@ -702,8 +703,6 @@ class SeptaLineSensor(_Base):
             "delay_min": row.get("delay_min"),
             "service_type": row.get("service_type"),
             "trains": trains,
-            "southbound": pack.get("southbound") or [],
-            "northbound": pack.get("northbound") or [],
         }
 
 

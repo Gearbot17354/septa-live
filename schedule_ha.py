@@ -198,7 +198,12 @@ class RailSchedule:
         data = self.hass.data.get(DOMAIN) or {}
         for coordinator in data.values():
             board = getattr(coordinator, "dynamic", None)
-            if board is not None and hasattr(board, "reload_schedule"):
+            if board is not None and hasattr(board, "async_reload_schedule"):
+                try:
+                    await board.async_reload_schedule()
+                except Exception:  # noqa: BLE001
+                    _LOGGER.debug("SEPTA schedule reload skipped", exc_info=True)
+            elif board is not None and hasattr(board, "reload_schedule"):
                 try:
                     board.reload_schedule()
                 except Exception:  # noqa: BLE001

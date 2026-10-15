@@ -173,6 +173,12 @@ PLAN_TRIPS = vol.Schema(
     }
 )
 
+WEBSOCKET_DAY = {
+    vol.Required("type"): "septa_live/day_trains",
+    vol.Optional("entry_id"): opt_str,
+    vol.Optional("rider"): opt_str,
+}
+
 WEBSOCKET_PLAN = {
     vol.Required("type"): "septa_live/plan",
     vol.Optional("entry_id"): opt_str,
@@ -262,6 +268,7 @@ WEBSOCKET_SCHEMAS = {
     "septa_live/options": WEBSOCKET_OPTIONS,
     "septa_live/route": WEBSOCKET_ROUTE,
     "septa_live/plan": WEBSOCKET_PLAN,
+    "septa_live/day_trains": WEBSOCKET_DAY,
 }
 
 
