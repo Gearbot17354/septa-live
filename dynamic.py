@@ -493,6 +493,120 @@ def _event_start(event: dict | None) -> datetime | None:
     return _parse_iso(event.get("start") or event.get("start_time"))
 
 
+def walk_minutes_for(distance_m: object, speed_m_per_min: float = 80, detour: float = 1.3) -> int:
+    """Minutes to walk from the station to the event. Unknown distance is zero."""
+    number = _num(distance_m)
+    if number is None or number < 0:
+        return 0
+    speed = _num(speed_m_per_min) or 80
+    if speed <= 0:
+        speed = 80
+    factor = _num(detour) or 1.3
+    if factor <= 0:
+        factor = 1.3
+    return int(math.ceil((number * factor) / speed))
+
+
+def _stop_coords(name: object, stops: list[dict] | None) -> tuple[float, float] | None:
+    want = station_key(name)
+    if not want:
+        return None
+    for stop in stops or []:
+        if station_key(stop.get("name")) != want:
+            continue
+        lat = _num(stop.get("lat"))
+        lon = _num(stop.get("lon"))
+        if lat is None or lon is None:
+            return None
+        return lat, lon
+    return None
+
+
+def _event_point(event: dict | None, zones: list[dict] | None, geocoded: tuple[float, float] | None) -> tuple[float, float] | None:
+    if not isinstance(event, dict):
+        return None
+    lat = _num(event.get("latitude"))
+    lon = _num(event.get("longitude"))
+    if (lat is None or lon is None) and zones and event.get("location"):
+        want = station_key(event.get("location"))
+        for zone in zones:
+            if station_key(zone.get("name")) == want:
+                lat = _num(zone.get("latitude"))
+                lon = _num(zone.get("longitude"))
+                break
+    if (lat is None or lon is None) and geocoded:
+        lat, lon = geocoded
+    if lat is None or lon is None:
+        place = builtin_place(event.get("location"))
+        if place and place.get("lat") is not None:
+            lat, lon = place["lat"], place["lon"]
+    if lat is None or lon is None:
+        return None
+    return float(lat), float(lon)
+
+
+def _has_location(event: dict | None) -> bool:
+    if not isinstance(event, dict):
+        return False
+    if str(event.get("location") or "").strip():
+        return True
+    return _num(event.get("latitude")) is not None and _num(event.get("longitude")) is not None
+
+
+def _date_only(value: object) -> bool:
+    text = str(value or "").strip()
+    return bool(text) and "T" not in text and len(text) <= 10
+
+
+def event_is_usable(event: dict | None, now: datetime) -> bool:
+    """A timed event with a place, not already more than 30 minutes underway."""
+    if not isinstance(event, dict) or event.get("all_day") or _date_only(event.get("start") or event.get("start_time")):
+        return False
+    start = _event_start(event)
+    if start is None or not _has_location(event):
+        return False
+    base = now.astimezone(start.tzinfo) if now.tzinfo else now.replace(tzinfo=start.tzinfo)
+    return start >= base - timedelta(minutes=30)
+
+
+def pick_calendar_event(state_event: dict | None, fetched: list | None, now: datetime) -> tuple[dict | None, str | None]:
+    """First timed event that still has a location. All-day events are skipped."""
+    if event_is_usable(state_event, now):
+        return state_event, None
+    saw_locationless = _has_start(state_event) and not _has_location(state_event) and not _is_all_day(state_event)
+    ranked = []
+    for item in fetched or []:
+        if not isinstance(item, dict) or _is_all_day(item):
+            continue
+        start = _event_start(item)
+        if start is None:
+            continue
+        base = now.astimezone(start.tzinfo) if now.tzinfo else now.replace(tzinfo=start.tzinfo)
+        if start < base - timedelta(minutes=30):
+            continue
+        ranked.append((start, item))
+    ranked.sort(key=lambda pair: pair[0])
+    for _start, item in ranked:
+        if _has_location(item):
+            return item, None
+        saw_locationless = True
+    if saw_locationless:
+        return state_event if isinstance(state_event, dict) else None, "no_location"
+    return None, "no_event"
+
+
+def _has_start(event: dict | None) -> bool:
+    return isinstance(event, dict) and _event_start(event) is not None and not _is_all_day(event)
+
+
+def _is_all_day(event: dict | None) -> bool:
+    if not isinstance(event, dict):
+        return False
+    if event.get("all_day"):
+        return True
+    return _date_only(event.get("start") or event.get("start_time"))
+
+
 def resolve_destination(
     *,
     manual: str | None = None,
@@ -509,9 +623,19 @@ def resolve_destination(
     names = names or []
     stops = stops or []
     kept = event if isinstance(event, dict) else None
+    point = _event_point(kept, zones, geocoded)
 
     def pack(station: str | None, source: str | None) -> dict:
-        return {"destination": station, "destination_source": source, "event": kept}
+        distance = None
+        coords = _stop_coords(station, stops)
+        if point and coords:
+            distance = int(round(haversine_m(point[0], point[1], coords[0], coords[1])))
+        return {
+            "destination": station,
+            "destination_source": source,
+            "event": kept,
+            "destination_distance_m": distance,
+        }
 
     if str(manual or "").strip():
         return pack(match_station(manual, names) or str(manual).strip(), "manual")
@@ -810,10 +934,22 @@ def merge_nta(live_rows: list[dict], schedule_rows: list[dict], count: int, now:
     return out[: max(1, count)] if count else out
 
 
-def suggest_itinerary(rows: list[dict], event_start: datetime | None, buffer_min: int) -> dict | None:
+def suggest_itinerary(
+    rows: list[dict],
+    event_start: datetime | None,
+    buffer_min: int,
+    egress_walk_min: int = 0,
+) -> dict | None:
+    """Latest train that still arrives before the event, after buffer and the walk."""
     if event_start is None:
         return None
-    deadline = event_start - timedelta(minutes=int(buffer_min or 0))
+    try:
+        extra = int(egress_walk_min or 0)
+    except (TypeError, ValueError):
+        extra = 0
+    if extra < 0:
+        extra = 0
+    deadline = event_start - timedelta(minutes=int(buffer_min or 0) + extra)
     if deadline.tzinfo is None:
         deadline = deadline.replace(tzinfo=NY)
     best = None
@@ -825,6 +961,273 @@ def suggest_itinerary(rows: list[dict], event_start: datetime | None, buffer_min
         if best_arrive is None or arrive > best_arrive:
             best, best_arrive = row, arrive
     return best
+
+
+def suggestion_fields(
+    rows: list[dict] | None,
+    event: dict | None,
+    *,
+    buffer_min: int = 0,
+    egress_walk_min: int = 0,
+    walk_minutes: int = 0,
+    destination: str | None = None,
+    destination_source: str | None = None,
+    distance_m: object = None,
+    empty_service: bool = False,
+) -> dict:
+    """Arrive-by details for day trains. Existing train rows are left to the caller."""
+    start = _event_start(event) if isinstance(event, dict) else None
+    try:
+        egress = max(0, int(egress_walk_min or 0))
+    except (TypeError, ValueError):
+        egress = 0
+    deadline = None
+    if start is not None:
+        deadline = start - timedelta(minutes=int(buffer_min or 0) + egress)
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=NY)
+    located = destination_source in {"manual", "entity", "calendar"}
+    reason = "ok"
+    suggested = None
+    if not isinstance(event, dict) or start is None:
+        reason = "no_event"
+    elif not _has_location(event):
+        reason = "no_location"
+    elif not destination or not located:
+        reason = "no_station"
+    elif empty_service or not rows:
+        reason = "no_service"
+    else:
+        suggested = suggest_itinerary(rows, start, buffer_min, egress)
+        if suggested is None:
+            reason = "none_in_time"
+    leave_by = None
+    spare = None
+    if suggested is not None and deadline is not None:
+        depart = _parse_iso(suggested.get("depart_est") or suggested.get("depart_sched"))
+        arrive = _parse_iso(suggested.get("arrive_est") or suggested.get("arrive_sched"))
+        if depart is not None:
+            try:
+                home_walk = max(0, int(walk_minutes or 0))
+            except (TypeError, ValueError):
+                home_walk = 0
+            leave_by = depart - timedelta(minutes=home_walk)
+        if arrive is not None:
+            spare = int(round((deadline - arrive).total_seconds() / 60))
+    return {
+        "suggested": suggested,
+        "suggested_train": None if not suggested else suggested.get("train"),
+        "egress_walk_min": egress,
+        "destination_distance_m": None if distance_m is None else distance_m,
+        "arrive_deadline": None if deadline is None else deadline.isoformat(),
+        "leave_by": None if leave_by is None else leave_by.isoformat(),
+        "spare_min": spare,
+        "suggest_reason": reason,
+    }
+
+
+def parse_plan_time(value: object, now: datetime | None = None) -> datetime | None:
+    """ISO datetime, or HH:MM on today's New York date."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=NY)
+    text = str(value).strip()
+    if not text:
+        return None
+    clock = re.fullmatch(r"(\d{1,2}):(\d{2})", text)
+    if clock:
+        hour, minute = int(clock.group(1)), int(clock.group(2))
+        if hour > 23 or minute > 59:
+            return None
+        base = now.astimezone(NY) if isinstance(now, datetime) and now.tzinfo else datetime.now(NY)
+        if isinstance(now, datetime) and now.tzinfo is None:
+            base = now.replace(tzinfo=NY)
+        return base.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return _parse_iso(text)
+
+
+def _compact_plan_row(row: dict, now: datetime | None) -> dict:
+    link = row.get("connection") if isinstance(row.get("connection"), dict) else None
+    if link is None and isinstance(row.get("transfer"), dict):
+        link = row["transfer"]
+    direct = bool(row.get("direct", link is None))
+    depart = row.get("depart_est") or row.get("depart_sched")
+    arrive = row.get("arrive_est") or row.get("arrive_sched")
+    legs = [
+        {
+            "train": row.get("train"),
+            "line": row.get("line"),
+            "depart": depart,
+            "arrive": (link or {}).get("arrive_sched") if link and not direct else arrive,
+        }
+    ]
+    if link and not direct:
+        legs.append(
+            {
+                "train": link.get("train"),
+                "line": link.get("line"),
+                "depart": link.get("depart_est") or link.get("depart_sched"),
+                "arrive": link.get("arrive_final_est") or link.get("arrive_final_sched") or arrive,
+            }
+        )
+    depart_at = _parse_iso(depart)
+    minutes = row.get("minutes")
+    if minutes is None and depart_at is not None and now is not None:
+        base = now.astimezone(depart_at.tzinfo) if now.tzinfo else now.replace(tzinfo=depart_at.tzinfo)
+        minutes = int(round((depart_at - base).total_seconds() / 60))
+    delay = row.get("delay_min")
+    if delay is None:
+        delay = row.get("late_min")
+    return {
+        "train": None if not row.get("train") else str(row.get("train")),
+        "depart": depart,
+        "arrive": arrive,
+        "line": row.get("line"),
+        "transfer": None if direct else link,
+        "legs": legs,
+        "minutes": minutes,
+        "live": bool(row.get("live")),
+        "delay": delay,
+        "suggested": bool(row.get("suggested")),
+    }
+
+
+def plan_trips(
+    schedule: dict | None,
+    origin: str,
+    destination: str,
+    *,
+    after: datetime | None = None,
+    arrive_by: datetime | None = None,
+    count: int = 8,
+    transfer_min: int = 3,
+    day: date | None = None,
+    now: datetime | None = None,
+    live_rows: list[dict] | None = None,
+) -> dict:
+    """Read-only itineraries. `after` rolls to the next day that actually has trains."""
+    try:
+        limit = int(count or 8)
+    except (TypeError, ValueError):
+        limit = 8
+    limit = min(20, max(1, limit))
+    if day is None:
+        if isinstance(after, datetime):
+            day = (after.astimezone(NY) if after.tzinfo else after.replace(tzinfo=NY)).date()
+        elif isinstance(arrive_by, datetime):
+            day = (arrive_by.astimezone(NY) if arrive_by.tzinfo else arrive_by.replace(tzinfo=NY)).date()
+        elif isinstance(now, datetime):
+            day = (now.astimezone(NY) if now.tzinfo else now.replace(tzinfo=NY)).date()
+        else:
+            day = datetime.now(NY).date()
+
+    def on(one_day: date) -> list[dict]:
+        return build_itineraries(
+            schedule,
+            origin,
+            destination,
+            one_day,
+            transfer_min=transfer_min,
+            now=None,
+            window="today",
+        )
+
+    chosen = day
+    rows = on(chosen)
+    if after is not None:
+        base = after.astimezone(NY) if after.tzinfo else after.replace(tzinfo=NY)
+        kept = []
+        for row in rows:
+            depart = _parse_iso(row.get("depart_sched"))
+            if depart is not None and depart >= base:
+                kept.append(row)
+        if not kept:
+            for offset in range(1, 8):
+                trial_day = day + timedelta(days=offset)
+                trial = on(trial_day)
+                if trial:
+                    chosen = trial_day
+                    kept = trial
+                    break
+        kept.sort(key=lambda item: item.get("depart_sched") or "")
+        rows = kept[:limit]
+    elif arrive_by is not None:
+        base = arrive_by.astimezone(NY) if arrive_by.tzinfo else arrive_by.replace(tzinfo=NY)
+        kept = []
+        for row in rows:
+            arrive = _parse_iso(row.get("arrive_est") or row.get("arrive_sched"))
+            if arrive is not None and arrive <= base:
+                kept.append(row)
+        kept.sort(key=lambda item: item.get("arrive_sched") or "", reverse=True)
+        rows = kept[:limit]
+        if rows:
+            rows[0] = dict(rows[0], suggested=True)
+    else:
+        rows = list(rows)[:limit]
+    if live_rows is not None and now is not None:
+        marked = {str(row.get("train")): bool(row.get("suggested")) for row in rows}
+        overlaid = overlay_live(rows, live_rows, now, LIVE_WINDOW_MIN)
+        rows = []
+        for row in overlaid:
+            row = dict(row)
+            if marked.get(str(row.get("train"))):
+                row["suggested"] = True
+            rows.append(row)
+    compact = [_compact_plan_row(row, now) for row in rows]
+    suggested = next((row.get("train") for row in compact if row.get("suggested")), None)
+    return {
+        "origin": origin,
+        "destination": destination,
+        "day": chosen.isoformat(),
+        "rows": compact,
+        "suggested_train": suggested,
+    }
+
+
+def plan_query(
+    schedule: dict | None,
+    names: list[str],
+    *,
+    origin: object,
+    destination: object = None,
+    home: str | None = None,
+    after: object = None,
+    arrive_by: object = None,
+    count: int = 8,
+    transfer_min: int = 3,
+    now: datetime | None = None,
+    live_rows: list[dict] | None = None,
+) -> dict:
+    """Match station names and plan. Does not write rider state."""
+    matched = match_station(origin, names)
+    if not matched:
+        return {"error": "not_found"}
+    dest_name = None
+    if str(destination or "").strip():
+        dest_name = match_station(destination, names)
+        if not dest_name:
+            return {"error": "not_found"}
+    else:
+        dest_name = match_station(home, names) or (str(home).strip() if str(home or "").strip() else None)
+    if not dest_name:
+        return {"error": "not_found"}
+    after_at = parse_plan_time(after, now)
+    arrive_at = parse_plan_time(arrive_by, now)
+    planned = plan_trips(
+        schedule,
+        matched,
+        dest_name,
+        after=after_at,
+        arrive_by=arrive_at,
+        count=count,
+        transfer_min=transfer_min,
+        now=now,
+        live_rows=live_rows,
+    )
+    planned["after"] = None if after_at is None else after_at.isoformat()
+    planned["arrive_by"] = None if arrive_at is None else arrive_at.isoformat()
+    return planned
 
 
 def migrate_options(data: dict | None, options: dict | None) -> dict:

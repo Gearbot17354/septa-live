@@ -133,3 +133,44 @@ refresh_schedule:
       selector:
         boolean:
 
+plan_trips:
+  name: Plan trips
+  description: List trains from one station to another after a time, or arriving by a time. Read only. Does not change a rider's Going Home origin.
+  fields:
+    entry_id:
+      name: Config entry
+      selector:
+        text:
+    rider:
+      name: Rider
+      description: Person, tracker, slug, or a Going Home / Day Trains entity id. Blank uses the primary rider. The destination defaults to that rider's home station.
+      selector:
+        text:
+    origin:
+      name: Origin
+      required: true
+      description: Station to leave from.
+      selector:
+        text:
+    destination:
+      name: Destination
+      description: Station to reach. Blank uses the rider's home station.
+      selector:
+        text:
+    after:
+      name: Leave after
+      description: ISO datetime, or HH:MM today in Eastern Time. The next trains that depart after this time.
+      selector:
+        text:
+    arrive_by:
+      name: Arrive by
+      description: ISO datetime, or HH:MM today in Eastern Time. Trains that arrive by this time, latest first.
+      selector:
+        text:
+    count:
+      name: How many
+      description: 1 to 20. A number or a string both work. Blank uses 8.
+      selector:
+        text:
+
+

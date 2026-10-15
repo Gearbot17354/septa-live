@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.13.8
+
+### Added
+
+- The "Into the City" suggestion now counts the walk from the arrival station to your event, so an 8:30 event with a 10-minute buffer and a 10-minute walk suggests a train arriving by 8:10.
+- New `day_trains` attributes: `egress_walk_min`, `arrive_deadline`, `leave_by`, `spare_min`, `suggest_reason`.
+- Events later today or tomorrow are planned against that day's timetable. All-day events are ignored. New option: event look-ahead hours.
+- New read-only trip planner: websocket `septa_live/plan` and service `septa_live.plan_trips` (returns a response) list trains from any station to any station (default: home) after a time or arriving by a time, including transfers. It never changes a rider's live Going Home origin.
+- No behaviour change for existing entities or services.
+
 ## 1.13.7
 
 ### Added

@@ -24,6 +24,8 @@ from .const import (
     CONF_DEFAULT_CITY,
     CONF_DESTINATION,
     CONF_EVENT_BUFFER,
+    CONF_EVENT_LOOKAHEAD,
+    CONF_EVENT_WALK_SPEED,
     CONF_GEOCODE,
     CONF_GOING_HOME_COUNT,
     CONF_HOME_STATION,
@@ -33,13 +35,17 @@ from .const import (
     CONF_RIDERS_CFG,
     CONF_STATION,
     CONF_TRANSFER_MIN,
+    CONF_WALK,
     DEFAULT_DAY_WINDOW,
     DEFAULT_EVENT_BUFFER,
+    DEFAULT_EVENT_LOOKAHEAD,
+    DEFAULT_EVENT_WALK_SPEED,
     DEFAULT_GOING_HOME_COUNT,
     DEFAULT_MAX_TRAINS,
     DEFAULT_NEAR_RADIUS,
     DEFAULT_RIDE_MAX_ACCURACY,
     DEFAULT_TRANSFER_MIN,
+    DEFAULT_WALK,
     DOMAIN,
     GTFS_RAIL_API,
     LIVE_WINDOW_MIN,
@@ -62,12 +68,15 @@ from .dynamic import (
     round_coord,
     select_schedule,
     station_names,
-    suggest_itinerary,
+    suggestion_fields,
     timetable_allowed,
+    walk_minutes_for,
     watch_entities,
     zone_station,
     ORIGIN_MAX_AGE_S,
     gtfs_tables_to_schedule,
+    event_is_usable,
+    pick_calendar_event,
 )
 from .ids import dynamic_key
 from .ride import configured_riders, dedupe_riders
@@ -188,6 +197,7 @@ class DynamicBoard:
         self._last_origin: dict[str, str] = {}
         self._last_seen_at: dict[str, float] = {}
         self._geo_cache: dict[str, tuple[float, float] | None] = {}
+        self._event_cache: dict[str, list] = {}
         self._schedule: dict = {"stations": {}}
         self._schedule_source = "bundled"
         self._stops: list[dict] = []
@@ -288,6 +298,9 @@ class DynamicBoard:
             "going_home_count": integer(CONF_GOING_HOME_COUNT, DEFAULT_GOING_HOME_COUNT, 1, 20),
             "transfer_min": integer(CONF_TRANSFER_MIN, DEFAULT_TRANSFER_MIN, 0, 30),
             "event_buffer_min": integer(CONF_EVENT_BUFFER, DEFAULT_EVENT_BUFFER, 0, 180),
+            "event_lookahead_h": integer(CONF_EVENT_LOOKAHEAD, DEFAULT_EVENT_LOOKAHEAD, 1, 72),
+            "event_walk_speed": integer(CONF_EVENT_WALK_SPEED, DEFAULT_EVENT_WALK_SPEED, 40, 200),
+            "walk_minutes": integer(CONF_WALK, int(data.get(CONF_WALK, DEFAULT_WALK) or DEFAULT_WALK), 0, 60),
             "day_window": str(opt.get(CONF_DAY_WINDOW) or DEFAULT_DAY_WINDOW),
             "geocode": bool(opt.get(CONF_GEOCODE)),
             "calendar_entity": str(opt.get("calendar_entity") or "").strip(),
@@ -543,7 +556,12 @@ class DynamicBoard:
             return None
         from .trips import _parse_iso
 
-        start = _parse_iso(state.attributes.get("start_time") or state.attributes.get("start"))
+        if state.attributes.get("all_day"):
+            return None
+        start_raw = state.attributes.get("start_time") or state.attributes.get("start")
+        if start_raw and "T" not in str(start_raw) and len(str(start_raw).strip()) <= 10:
+            return None
+        start = _parse_iso(start_raw)
         if start is None:
             return None
         base = now.astimezone(start.tzinfo) if now.tzinfo else now
@@ -557,6 +575,44 @@ class DynamicBoard:
             "latitude": state.attributes.get("latitude"),
             "longitude": state.attributes.get("longitude"),
         }
+
+    async def _calendar_event(self, entity: str, now: datetime, hours: int) -> tuple[dict | None, str | None]:
+        """State event, or the next timed calendar event. A failed lookup is not an error."""
+        state_event = self._event(entity, now)
+        if event_is_usable(state_event, now):
+            return state_event, None
+        if not entity:
+            return pick_calendar_event(state_event, [], now)
+        if entity not in self._event_cache:
+            self._event_cache[entity] = await self._fetch_events(entity, now, hours)
+        return pick_calendar_event(state_event, self._event_cache.get(entity) or [], now)
+
+    async def _fetch_events(self, entity: str, now: datetime, hours: int) -> list:
+        try:
+            response = await self.hass.services.async_call(
+                "calendar",
+                "get_events",
+                {
+                    "entity_id": entity,
+                    "start_date_time": now.isoformat(),
+                    "end_date_time": (now + timedelta(hours=max(1, int(hours or 24)))).isoformat(),
+                },
+                blocking=True,
+                return_response=True,
+            )
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("SEPTA calendar lookahead failed")
+            return []
+        found: list = []
+        if isinstance(response, dict):
+            for value in response.values():
+                if isinstance(value, dict):
+                    rows = value.get("events") or []
+                    if isinstance(rows, list):
+                        found.extend(row for row in rows if isinstance(row, dict))
+                elif isinstance(value, list):
+                    found.extend(row for row in value if isinstance(row, dict))
+        return found
 
     def _zones(self) -> list[dict]:
         try:
@@ -613,6 +669,7 @@ class DynamicBoard:
 
     async def async_refresh(self, force: bool = False, only_slug: str | None = None) -> None:
         self._listen()
+        self._event_cache = {}
         opt = self.options()
         now = datetime.now(NY)
         until = parse_valid_until(self._schedule)
@@ -697,7 +754,7 @@ class DynamicBoard:
                 going["state_minutes"] = None if minutes is None else max(0, int(minutes))
         self.results[going_key] = going
 
-        event = self._event(cfg["calendar_entity"], now)
+        event, event_gap = await self._calendar_event(cfg["calendar_entity"], now, opt["event_lookahead_h"])
         geocoded = await self._maybe_geocode(opt["geocode"], event)
         entity_state = ""
         if cfg["destination_entity"]:
@@ -722,8 +779,14 @@ class DynamicBoard:
                 "destination": dest.get("destination"),
                 "destination_source": dest.get("destination_source"),
                 "updated": now.isoformat(),
-                "event": self._public_event(dest.get("event")),
+                "event": self._public_event(dest.get("event") or event),
                 "buffer_min": opt["event_buffer_min"],
+                "egress_walk_min": 0,
+                "destination_distance_m": dest.get("destination_distance_m"),
+                "arrive_deadline": None,
+                "leave_by": None,
+                "spare_min": None,
+                "suggest_reason": event_gap or "no_event",
                 "schedule_source": self._schedule_source,
                 "schedule_valid_until": until.isoformat() if until else None,
             }
@@ -736,6 +799,10 @@ class DynamicBoard:
             day["reason"] = "disabled"
         elif not home or not dest.get("destination") or station_key(home) == station_key(dest.get("destination")):
             day["reason"] = "no_destination"
+            if event_gap:
+                day["suggest_reason"] = event_gap
+            elif isinstance(event, dict):
+                day["suggest_reason"] = "no_station"
         else:
             live, error = await self.coordinator.async_cached_nta(
                 home, dest["destination"], 10, opt["transfer_min"], force=False
@@ -757,13 +824,47 @@ class DynamicBoard:
                 day["source"] = "nta"
             day["error"] = error
             start = None
-            if isinstance(day["event"], dict):
+            if isinstance(event, dict):
                 from .trips import _parse_iso
 
-                start = _parse_iso(day["event"].get("start"))
-            suggested = suggest_itinerary(full, start, opt["event_buffer_min"])
-            day["suggested"] = suggested
-            day["suggested_train"] = None if not suggested else suggested.get("train")
+                start = _parse_iso(event.get("start") or event.get("start_time"))
+            suggest_rows = full
+            event_day = start.astimezone(NY).date() if start is not None and start.tzinfo else (start.date() if start else None)
+            if (
+                timetable_allowed(self._schedule_source)
+                and event_day is not None
+                and event_day != now.date()
+            ):
+                suggest_rows = build_itineraries(
+                    self._schedule,
+                    home,
+                    dest["destination"],
+                    event_day,
+                    transfer_min=opt["transfer_min"],
+                    now=None,
+                    window="today",
+                )
+                suggest_rows = overlay_live(suggest_rows, live, now, LIVE_WINDOW_MIN)
+            distance = dest.get("destination_distance_m")
+            egress = walk_minutes_for(distance, opt["event_walk_speed"])
+            fields = suggestion_fields(
+                suggest_rows,
+                event if event_gap != "no_location" else event,
+                buffer_min=opt["event_buffer_min"],
+                egress_walk_min=egress,
+                walk_minutes=opt["walk_minutes"],
+                destination=dest.get("destination"),
+                destination_source=dest.get("destination_source"),
+                distance_m=distance,
+                empty_service=not suggest_rows,
+            )
+            if event_gap == "no_location":
+                fields["suggest_reason"] = "no_location"
+                fields["suggested"] = None
+                fields["suggested_train"] = None
+            elif event_gap == "no_event":
+                fields["suggest_reason"] = "no_event"
+            day.update(fields)
             shown, total = cap_trains(full, opt["max_trains"])
             day["trains"] = shown
             day["trains_total"] = total

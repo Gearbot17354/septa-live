@@ -11,6 +11,8 @@ _RANGES = {
     "ride_min_speed_mph": (5, 60),
     "ride_matches": (1, 5),
     "ride_max_accuracy_m": (20, 500),
+    "event_lookahead_h": (1, 72),
+    "event_walk_speed": (40, 200),
 }
 
 
@@ -159,6 +161,29 @@ STATION_SERVICE = vol.Schema(
     }
 )
 
+PLAN_TRIPS = vol.Schema(
+    {
+        vol.Optional("entry_id"): opt_str,
+        vol.Optional("rider"): opt_str,
+        vol.Required("origin"): as_text,
+        vol.Optional("destination"): opt_str,
+        vol.Optional("after"): opt_str,
+        vol.Optional("arrive_by"): opt_str,
+        vol.Optional("count"): ranged_int(1, 20),
+    }
+)
+
+WEBSOCKET_PLAN = {
+    vol.Required("type"): "septa_live/plan",
+    vol.Optional("entry_id"): opt_str,
+    vol.Optional("rider"): opt_str,
+    vol.Required("origin"): as_text,
+    vol.Optional("destination"): opt_str,
+    vol.Optional("after"): opt_str,
+    vol.Optional("arrive_by"): opt_str,
+    vol.Optional("count"): ranged_int(1, 20),
+}
+
 REFRESH_SCHEDULE = vol.Schema(
     {
         vol.Optional("entry_id"): opt_str,
@@ -216,6 +241,8 @@ WEBSOCKET_OPTIONS = {
     vol.Optional("ride_matches"): _int("ride_matches"),
     vol.Optional("ride_max_accuracy_m"): _int("ride_max_accuracy_m"),
     vol.Optional("ride_request_updates"): opt_bool,
+    vol.Optional("event_lookahead_h"): _int("event_lookahead_h"),
+    vol.Optional("event_walk_speed"): _int("event_walk_speed"),
 }
 
 SERVICE_SCHEMAS = {
@@ -225,6 +252,7 @@ SERVICE_SCHEMAS = {
     "set_origin_station": STATION_SERVICE,
     "set_destination": STATION_SERVICE,
     "refresh_schedule": REFRESH_SCHEDULE,
+    "plan_trips": PLAN_TRIPS,
 }
 
 WEBSOCKET_SCHEMAS = {
@@ -233,6 +261,7 @@ WEBSOCKET_SCHEMAS = {
     "septa_live/bus_picker": WEBSOCKET_BUS,
     "septa_live/options": WEBSOCKET_OPTIONS,
     "septa_live/route": WEBSOCKET_ROUTE,
+    "septa_live/plan": WEBSOCKET_PLAN,
 }
 
 

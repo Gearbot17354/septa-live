@@ -54,6 +54,8 @@ CONF_NEAR_RADIUS: Final = "near_radius_m"
 CONF_GOING_HOME_COUNT: Final = "going_home_count"
 CONF_TRANSFER_MIN: Final = "transfer_min"
 CONF_EVENT_BUFFER: Final = "event_buffer_min"
+CONF_EVENT_LOOKAHEAD: Final = "event_lookahead_h"
+CONF_EVENT_WALK_SPEED: Final = "event_walk_speed"
 CONF_DAY_WINDOW: Final = "day_window"
 CONF_RIDERS_CFG: Final = "riders_cfg"
 CONF_GEOCODE: Final = "geocode"
@@ -62,6 +64,8 @@ DEFAULT_NEAR_RADIUS: Final = 1500
 DEFAULT_GOING_HOME_COUNT: Final = 6
 DEFAULT_TRANSFER_MIN: Final = 3
 DEFAULT_EVENT_BUFFER: Final = 15
+DEFAULT_EVENT_LOOKAHEAD: Final = 24
+DEFAULT_EVENT_WALK_SPEED: Final = 80
 DEFAULT_DAY_WINDOW: Final = "rest_of_day"
 DEFAULT_MAX_TRAINS: Final = 60
 # Recorder skips these. The live state still has them for dashboards.

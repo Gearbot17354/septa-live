@@ -79,6 +79,8 @@
           "going_home_count": "Going Home trains to show",
           "transfer_min": "Minimum transfer (minutes)",
           "event_buffer_min": "Arrive before an event (minutes)",
+          "event_lookahead_h": "Look ahead for the next event (hours)",
+          "event_walk_speed": "Walk from the station to the event (meters per minute)",
           "day_window": "Day trains window",
           "calendar_entity": "Calendar (default for every rider)",
           "max_trains": "Max trains to keep on the sensor",
@@ -127,6 +129,10 @@
     "refresh_schedule": {
       "name": "Refresh rail schedule",
       "description": "Download SEPTA's Regional Rail timetable. Leave force off to skip a timetable that is still current."
+    },
+    "plan_trips": {
+      "name": "Plan trips",
+      "description": "List trains from one station to another after a time, or arriving by a time. Does not change a rider's Going Home origin."
     }
   },
   "issues": {

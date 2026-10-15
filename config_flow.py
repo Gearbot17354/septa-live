@@ -15,6 +15,8 @@ from .const import (
     CONF_DEFAULT_CITY,
     CONF_DESTINATION,
     CONF_EVENT_BUFFER,
+    CONF_EVENT_LOOKAHEAD,
+    CONF_EVENT_WALK_SPEED,
     CONF_GEOCODE,
     CONF_GOING_HOME_COUNT,
     CONF_HOME_STATION,
@@ -45,6 +47,8 @@ from .const import (
     DEFAULT_DAY_WINDOW,
     DEFAULT_DESTINATION,
     DEFAULT_EVENT_BUFFER,
+    DEFAULT_EVENT_LOOKAHEAD,
+    DEFAULT_EVENT_WALK_SPEED,
     DEFAULT_GOING_HOME_COUNT,
     DEFAULT_MAX_TRAINS,
     DEFAULT_NEAR_RADIUS,
@@ -394,6 +398,14 @@ class SeptaOptionsFlow(config_entries.OptionsFlow):
                     CONF_EVENT_BUFFER,
                     default=int(entry.options.get(CONF_EVENT_BUFFER, DEFAULT_EVENT_BUFFER)),
                 ): vol.All(vol.Coerce(int), vol.Range(min=0, max=180)),
+                vol.Optional(
+                    CONF_EVENT_LOOKAHEAD,
+                    default=int(entry.options.get(CONF_EVENT_LOOKAHEAD, DEFAULT_EVENT_LOOKAHEAD)),
+                ): vol.All(vol.Coerce(int), vol.Range(min=1, max=72)),
+                vol.Optional(
+                    CONF_EVENT_WALK_SPEED,
+                    default=int(entry.options.get(CONF_EVENT_WALK_SPEED, DEFAULT_EVENT_WALK_SPEED)),
+                ): vol.All(vol.Coerce(int), vol.Range(min=40, max=200)),
                 vol.Optional(
                     CONF_DAY_WINDOW,
                     default=str(entry.options.get(CONF_DAY_WINDOW) or DEFAULT_DAY_WINDOW),

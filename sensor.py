@@ -606,6 +606,12 @@ class SeptaDynamicSensor(CoordinatorEntity[SeptaCoordinator], RestoreEntity, Sen
                     "suggested": pack.get("suggested"),
                     "suggested_train": pack.get("suggested_train"),
                     "buffer_min": pack.get("buffer_min"),
+                    "egress_walk_min": pack.get("egress_walk_min"),
+                    "destination_distance_m": pack.get("destination_distance_m"),
+                    "arrive_deadline": pack.get("arrive_deadline"),
+                    "leave_by": pack.get("leave_by"),
+                    "spare_min": pack.get("spare_min"),
+                    "suggest_reason": pack.get("suggest_reason"),
                     "schedule_valid_until": pack.get("schedule_valid_until"),
                     "schedule_source": pack.get("schedule_source"),
                 }

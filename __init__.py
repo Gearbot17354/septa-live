@@ -8,7 +8,7 @@ from pathlib import Path
 import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, SupportsResponse
 from homeassistant.helpers.event import async_call_later
 
 from .bus_routes import BUS_ROUTES
@@ -18,6 +18,8 @@ from .const import (
     CONF_BUS_LINE,
     CONF_BUS_STOP,
     CONF_DESTINATION,
+    CONF_EVENT_LOOKAHEAD,
+    CONF_EVENT_WALK_SPEED,
     CONF_METRO_DEST,
     CONF_METRO_LINE,
     CONF_METRO_STATION,
@@ -54,10 +56,12 @@ from .schema import (
     SET_EXPECTED,
     SIMULATE_RIDE,
     STATION_SERVICE,
+    PLAN_TRIPS,
     WEBSOCKET_BOARD,
     WEBSOCKET_BUS,
     WEBSOCKET_OPTIONS,
     WEBSOCKET_PANEL,
+    WEBSOCKET_PLAN,
     WEBSOCKET_ROUTE,
 )
 
@@ -66,7 +70,7 @@ _FRONTEND = f"{DOMAIN}_frontend_registered"
 _CARD_JS = "septa-live-card.js"
 _PANEL_JS = "septa-live-panel.js"
 _PANEL_PATH = "septa-live"
-_CARD_VERSION = "1.13.7"
+_CARD_VERSION = "1.13.8"
 _PANEL_SIG: tuple | None = None
 _RELOADING: set[str] = set()
 
@@ -78,6 +82,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     websocket_api.async_register_command(hass, websocket_options)
     websocket_api.async_register_command(hass, websocket_bus_picker)
     websocket_api.async_register_command(hass, websocket_route)
+    websocket_api.async_register_command(hass, websocket_plan)
     _register_simulate(hass)
     return True
 
@@ -246,6 +251,68 @@ def _register_simulate(hass: HomeAssistant) -> None:
 
     hass.services.async_register(DOMAIN, "set_origin_station", _set_origin, schema=STATION_SERVICE)
     hass.services.async_register(DOMAIN, "set_destination", _set_destination_service, schema=STATION_SERVICE)
+
+    async def _plan_trips(call):
+        from datetime import datetime
+
+        from .coordinator import NY
+        from .dynamic import match_station, plan_query
+
+        data = hass.data.get(DOMAIN) or {}
+        wanted = str(call.data.get("entry_id") or "").strip()
+        chosen = None
+        for entry_id, coordinator in data.items():
+            if wanted and entry_id != wanted:
+                continue
+            if getattr(coordinator, "dynamic", None) is not None:
+                chosen = coordinator
+                break
+        if chosen is None:
+            return {"error": "not_found"}
+        board = chosen.dynamic
+        opt = board.options()
+        slug = board.slug_for(call.data.get("rider"))
+        cfg = board._cfg(slug, opt)
+        home = str(cfg.get("home_station") or opt.get("home_station") or "").strip()
+        names = list(board._names or STATIONS)
+        origin = match_station(call.data.get("origin"), names)
+        if not origin:
+            return {"error": "not_found"}
+        destination = call.data.get("destination")
+        if destination and not match_station(destination, names):
+            return {"error": "not_found"}
+        now = datetime.now(NY)
+        live: list = []
+        dest_name = match_station(destination, names) if destination else (match_station(home, names) or home)
+        try:
+            if dest_name:
+                fetched, _error = await chosen.async_cached_nta(
+                    origin, dest_name, int(call.data.get("count") or 8), opt["transfer_min"], force=False
+                )
+                live = fetched or []
+        except Exception:  # noqa: BLE001
+            live = []
+        return plan_query(
+            board._schedule,
+            names,
+            origin=origin,
+            destination=destination,
+            home=home,
+            after=call.data.get("after"),
+            arrive_by=call.data.get("arrive_by"),
+            count=call.data.get("count") or 8,
+            transfer_min=opt["transfer_min"],
+            now=now,
+            live_rows=live,
+        )
+
+    hass.services.async_register(
+        DOMAIN,
+        "plan_trips",
+        _plan_trips,
+        schema=PLAN_TRIPS,
+        supports_response=SupportsResponse.ONLY,
+    )
 
     async def _refresh_schedule(call):
         from .schedule_ha import _KEEPER
@@ -622,6 +689,74 @@ async def websocket_route(
     connection.send_result(msg["id"], resolve_route(pairs, msg.get("train"), msg.get("rider")))
 
 
+@websocket_api.websocket_command(WEBSOCKET_PLAN)
+@websocket_api.async_response
+async def websocket_plan(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict,
+) -> None:
+    """Read-only trip plan. Does not change a rider's Going Home origin."""
+    from datetime import datetime
+
+    from .coordinator import NY
+    from .dynamic import match_station, plan_query
+
+    data = hass.data.get(DOMAIN) or {}
+    entry_id = msg.get("entry_id")
+    if entry_id:
+        coordinator = data.get(entry_id)
+        if coordinator is None or getattr(coordinator, "dynamic", None) is None:
+            connection.send_result(msg["id"], {"error": "not_found"})
+            return
+    else:
+        coordinator = next((item for item in data.values() if getattr(item, "dynamic", None) is not None), None)
+        if coordinator is None:
+            connection.send_result(msg["id"], {"error": "not_found"})
+            return
+    board = coordinator.dynamic
+    opt = board.options()
+    slug = board.slug_for(msg.get("rider"))
+    cfg = board._cfg(slug, opt)
+    home = str(cfg.get("home_station") or opt.get("home_station") or "").strip()
+    names = list(board._names or STATIONS)
+    origin = match_station(msg.get("origin"), names)
+    if not origin:
+        connection.send_result(msg["id"], {"error": "not_found"})
+        return
+    destination = msg.get("destination")
+    if destination and not match_station(destination, names):
+        connection.send_result(msg["id"], {"error": "not_found"})
+        return
+    now = datetime.now(NY)
+    dest_name = match_station(destination, names) if destination else (match_station(home, names) or home)
+    live: list = []
+    try:
+        if dest_name:
+            fetched, _error = await coordinator.async_cached_nta(
+                origin, dest_name, int(msg.get("count") or 8), opt["transfer_min"], force=False
+            )
+            live = fetched or []
+    except Exception:  # noqa: BLE001
+        live = []
+    connection.send_result(
+        msg["id"],
+        plan_query(
+            board._schedule,
+            names,
+            origin=origin,
+            destination=destination,
+            home=home,
+            after=msg.get("after"),
+            arrive_by=msg.get("arrive_by"),
+            count=msg.get("count") or 8,
+            transfer_min=opt["transfer_min"],
+            now=now,
+            live_rows=live,
+        ),
+    )
+
+
 @websocket_api.websocket_command(WEBSOCKET_OPTIONS)
 @websocket_api.async_response
 async def websocket_options(
@@ -678,6 +813,8 @@ async def websocket_options(
             "ride_matches": CONF_RIDE_MATCHES,
             "ride_max_accuracy_m": CONF_RIDE_MAX_ACCURACY,
             "ride_request_updates": CONF_RIDE_REQUEST,
+            "event_lookahead_h": CONF_EVENT_LOOKAHEAD,
+            "event_walk_speed": CONF_EVENT_WALK_SPEED,
         }
         for src, dest in ride_map.items():
             if src in msg:
