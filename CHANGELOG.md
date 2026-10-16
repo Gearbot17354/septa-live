@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.13.13
+
+### Fixed
+
+- While riding, the integration stays locked on the train you boarded, including through Center City tunnels where SEPTA's live data drops out, instead of jumping to another nearby train.
+
 ## 1.13.12
 
 ### Fixed

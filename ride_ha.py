@@ -83,7 +83,7 @@ class RiderController:
         self.coordinator = coordinator
         self.manager = manager
         self.entry = coordinator.entry
-        self.matcher = RideMatcher()
+        self.matcher = RideMatcher(switch_fixes=3, switch_min_s=120)
         self.key = spec["key"]
         self.slug = spec["slug"]
         self.person = spec.get("person")

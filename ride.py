@@ -219,6 +219,7 @@ class Train:
     late: int = 0
     consist: list[str] = field(default_factory=list)
     track: str = ""
+    block_id: str = ""
 
 
 @dataclass
@@ -284,6 +285,7 @@ def parse_trainview(rows: object) -> list[Train]:
                 late=late_min,
                 consist=_consist(item.get("consist")),
                 track=str(item.get("TRACK") or ""),
+                block_id=str(item.get("block_id") or item.get("block") or "").strip(),
             )
         )
     return [train for train in out if train.trainno]
@@ -1053,6 +1055,8 @@ class RideMatcher:
         apart_fixes: int = APART_FIXES,
         max_ride_seconds: float = MAX_RIDE_SECONDS,
         reboard_cooldown_s: float = REBOARD_COOLDOWN_S,
+        switch_fixes: int | None = None,
+        switch_min_s: float = 0,
     ) -> None:
         self.radius_m = radius_m
         self.min_speed_mps = min_speed_mps
@@ -1069,6 +1073,8 @@ class RideMatcher:
         self.apart_fixes = max(1, int(apart_fixes))
         self.max_ride_seconds = float(max_ride_seconds)
         self.reboard_cooldown_s = float(reboard_cooldown_s)
+        self.switch_fixes = None if switch_fixes is None else max(1, int(switch_fixes))
+        self.switch_min_s = float(switch_min_s)
         self.candidate: str | None = None
         self.match_count = 0
         self.misses = 0
@@ -1149,6 +1155,13 @@ class RideMatcher:
         self._at_destination: str | None = None
         self._terminal_since: float | None = None
         self._cooldown: dict[str, float] = {}
+        self.locked_train: str | None = None
+        self.lock_block: str | None = None
+        self.lock_state: str | None = None
+        self.last_seen_trainview: float | None = None
+        self.switches: list[dict] = []
+        self._switch_first: float | None = None
+        self._phone_gap = False
 
     @property
     def riding(self) -> bool:
@@ -1583,7 +1596,7 @@ class RideMatcher:
             picked = self._speed_confirm(fix, scored, views, speed, tol)
             if picked is not None:
                 best, best_dist, best_via = picked
-        if best is None and self._fast_count >= SPEED_CONFIRM_FIXES and (speed or 0) >= FAST_MPH * 0.44704:
+        if best is None and not self.riding and not self._phone_gap and self._fast_count >= SPEED_CONFIRM_FIXES and (speed or 0) >= FAST_MPH * 0.44704:
             for train in trains:
                 if self._ignore_board(train, fix.ts):
                     continue
@@ -1770,6 +1783,75 @@ class RideMatcher:
             return False
         return str(trainno) == str(exp.get("connection_train")) and (self.leg == 2 or _stop_key(getattr(self.riding_train, "currentstop", "")) == _stop_key(exp.get("connection_station")))
 
+    def _bare(self, number: object) -> str:
+        text = str(number or "").strip()
+        return re.sub(r"^[A-Za-z]+(?=\d)", "", text).strip() or text
+
+    def _is_locked(self, train: Train) -> bool:
+        """The boarded train, including the other half of a through run."""
+        if not self.locked_train:
+            return False
+        if self._bare(train.trainno) == self._bare(self.locked_train):
+            return True
+        block = str(getattr(train, "block_id", "") or "")
+        return bool(self.lock_block and block and block == self.lock_block)
+
+    def _locked_seen(self, trains: list[Train]) -> Train | None:
+        return next((train for train in trains if self._is_locked(train) and train.trainno not in self._glitch), None)
+
+    def _switch_ready(self, fix: Fix) -> bool:
+        need = self.switch_fixes or self.need_matches
+        if self.switch_count < need:
+            return False
+        if self.switch_min_s > 0 and (self._switch_first is None or fix.ts - self._switch_first < self.switch_min_s):
+            return False
+        return True
+
+    def _note_switch(self, old: str, new: str, fix: Fix, reason: str) -> None:
+        station = self._nearest_stop(fix.lat, fix.lon)
+        if not station and self.riding_train is not None:
+            station = self.riding_train.currentstop or None
+        self.switches.append(
+            {"from": old, "to": new, "station": station, "reason": reason, "ts": fix.ts}
+        )
+        del self.switches[:-5]
+
+    def _arrival_deadline(self, now: float) -> float | None:
+        rows = self.remaining_stops or []
+        train = self.riding_train
+        target = self.alight_station or (None if train is None else train.dest)
+        clock = None
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if target and _same_stop(row.get("station") or row.get("name"), target):
+                clock = row.get("est") or row.get("sched")
+                break
+        if clock is None and rows and isinstance(rows[-1], dict):
+            clock = rows[-1].get("est") or rows[-1].get("sched")
+        if not clock:
+            return None
+        parts = str(clock).strip().lower().replace(".", "").split()
+        if not parts:
+            return None
+        hm = parts[0].split(":")
+        if len(hm) < 2:
+            return None
+        try:
+            hour = int(hm[0])
+            minute = int(hm[1])
+        except ValueError:
+            return None
+        if len(parts) > 1 and parts[1].startswith("p") and hour < 12:
+            hour += 12
+        if len(parts) > 1 and parts[1].startswith("a") and hour == 12:
+            hour = 0
+        when = datetime.fromtimestamp(now, NY)
+        arrival = when.replace(hour=hour % 24, minute=minute, second=0, microsecond=0)
+        if arrival.timestamp() + 12 * 3600 < now:
+            arrival = arrival + timedelta(days=1)
+        return arrival.timestamp() + 15 * 60
+
     def payload(self) -> dict:
         train = self.riding_train
         riding = train is not None
@@ -1812,6 +1894,10 @@ class RideMatcher:
             "skipped_fix_count": self.skipped_fix_count,
             "last_fix_ts": self.last_fix_ts,
             "switch_blocked_reason": self.switch_blocked_reason,
+            "locked_train": self.locked_train,
+            "lock_state": self.lock_state if riding else None,
+            "last_seen_trainview": self.last_seen_trainview,
+            "switches": list(self.switches),
             "riding_train_missing_polls": self.riding_train_missing_polls,
             "riding_train_seen": self.riding_train_seen,
             "boarding_match": self.boarding_match,
@@ -1883,6 +1969,11 @@ class RideMatcher:
             where = self._nearest_stop(fix.lat, fix.lon) or train.currentstop or None
             self.boarded_at = where
             self.boarded_ts = fix.ts
+        if not self.locked_train:
+            self.locked_train = train.trainno
+            self.lock_block = str(getattr(train, "block_id", "") or "") or None
+            self.lock_state = "locked"
+        self.last_seen_trainview = fix.ts
         event = self._event("boarded")
         self.events.append(event)
         return event
@@ -1917,8 +2008,15 @@ class RideMatcher:
         self.misses = 0
         self.switch_train = None
         self.switch_count = 0
+        self._switch_first = None
         self.boarded_at = None
         self.boarded_ts = None
+        if reason != "transfer":
+            self.locked_train = None
+            self.lock_block = None
+            self.lock_state = None
+            self.switches = []
+            self.last_seen_trainview = None
         self.stationary_since = None
         self._slow_since = None
         self._apart_count = 0
@@ -2029,7 +2127,14 @@ class RideMatcher:
         train = self.riding_train
         if train is None:
             return None
-        fresh = next((item for item in trains if item.trainno == train.trainno), train)
+        if self.boarded_ts is not None and fix.ts - self.boarded_ts > self._ride_limit():
+            return "max_duration"
+        if not any(self._is_locked(item) for item in trains) and self.locked_train:
+            self.lock_state = "estimating"
+            self.position_source = "timetable"
+            self.stale_gps = True
+            return None
+        fresh = next((item for item in trains if item.trainno == train.trainno or self._is_locked(item)), train)
         train = fresh
         lat, lon, stale = self._train_point(train, fix.ts)
         dist = haversine_m(fix.lat, fix.lon, lat, lon)
@@ -2106,13 +2211,16 @@ class RideMatcher:
         if not self.riding or self.riding_train is None:
             self.riding_train_seen = None
             return
-        number = self.riding_train.trainno
-        seen = next((train for train in trains if train.trainno == number and train.trainno not in self._glitch), None)
+        seen = self._locked_seen(trains)
         self.riding_train_seen = seen is not None
         if seen is None:
             self.riding_train_missing_polls += 1
+            self.lock_state = "estimating"
             return
         self.riding_train_missing_polls = 0
+        self.last_seen_trainview = fix.ts
+        if self.lock_state != "switched":
+            self.lock_state = "locked"
         lat, lon, _stale = self._train_point(seen, fix.ts)
         if haversine_m(fix.lat, fix.lon, lat, lon) > STICKY_LIMIT_M:
             self._far_count += 1
@@ -2126,10 +2234,13 @@ class RideMatcher:
             return True
         if self.expected and str(self.expected.get("connection_train") or "") == str(new.trainno):
             return True
-        gone = self.riding_train_missing_polls > RIDE_MISSING_POLLS
+        if self._phone_gap or self._match_via in {"corridor", "estimated"}:
+            return False
         far = self._far_count >= self.need_matches
         terminal = self.riding_train is not None and self._is_terminal(self.riding_train)
-        if not (gone or far or terminal):
+        if not (far or terminal):
+            return False
+        if self._match_via == "corridor":
             return False
         return self._transfer_ready
 
@@ -2139,6 +2250,7 @@ class RideMatcher:
         self._expire_expected(self._now)
         self._remember(trains, trains_ts)
         kind, fix = classify_fix(fix, self.last_fix, self._now)
+        self._phone_gap = bool(self.gps_gap)
         self.trainview_age_s = abs(fix.ts - trains_ts)
         self.fix_gap_s = None if self.last_fix is None else fix.ts - self.last_fix.ts
         if fix.acc_m is not None and fix.acc_m > self.max_accuracy_m:
@@ -2227,6 +2339,14 @@ class RideMatcher:
             self.switch_train = None
             self._note(reject or "no_train_in_radius")
             if self.riding:
+                if not self.riding_train_seen:
+                    self.misses = 0
+                    self.lock_state = "estimating"
+                    self.position_source = "timetable"
+                    self.stale_gps = True
+                    self.switch_blocked_reason = "locked_train_missing"
+                    self._note("riding")
+                    return None
                 self.misses += 1
                 if self.misses >= 3:
                     return self._exit(fix.ts, "misses")
@@ -2234,19 +2354,29 @@ class RideMatcher:
         self._hold_miss = 0
         self.misses = 0
         self.distance_m = dist
-        if self.riding and best.trainno == self.riding_train.trainno:
+        if self.riding and (best.trainno == self.riding_train.trainno or self._is_locked(best)):
             self.riding_train = best
             self.switch_count = 0
             self.switch_train = None
+            self._switch_first = None
+            self.last_seen_trainview = fix.ts
+            if self.lock_state != "switched":
+                self.lock_state = "locked"
             self.confidence = "estimated" if self._match_via in {"corridor", "estimated"} else "riding"
             self._maybe_handover()
             self._note("riding")
             return None
         if self.riding and best.trainno != self.riding_train.trainno:
             if not self._switch_allowed(best):
-                self.switch_blocked_reason = "sticky" if self.speed_source != "implausible" else "implausible"
+                if self._phone_gap or self._match_via in {"corridor", "estimated"}:
+                    self.switch_blocked_reason = "stale_gps"
+                elif self._far_count >= self.need_matches and not self._transfer_ready:
+                    self.switch_blocked_reason = "not_at_station"
+                else:
+                    self.switch_blocked_reason = "sticky" if self.speed_source != "implausible" else "implausible"
                 self.switch_train = None
                 self.switch_count = 0
+                self._switch_first = None
                 for row in self.candidates:
                     if row["train"] == best.trainno:
                         row["last_reject_reason"] = "sticky"
@@ -2257,7 +2387,11 @@ class RideMatcher:
             else:
                 self.switch_train = best.trainno
                 self.switch_count = 1
-            if self.switch_count >= self.need_matches:
+                self._switch_first = fix.ts
+            if self._switch_ready(fix):
+                old = self.riding_train.trainno
+                kept_at, kept_ts = self.boarded_at, self.boarded_ts
+                self._note_switch(old, best.trainno, fix, "transfer")
                 if self._same_trip(best.trainno):
                     self.leg = 2
                     self.riding_train = None
@@ -2265,11 +2399,23 @@ class RideMatcher:
                     self.match_count = 0
                     self.switch_count = 0
                     self.switch_train = None
+                    self._switch_first = None
                     self._note("boarded")
-                    return self._board(best, fix, dist)
+                    event = self._board(best, fix, dist)
+                    self.boarded_at = kept_at or self.boarded_at
+                    self.boarded_ts = kept_ts or self.boarded_ts
+                    self.locked_train = best.trainno
+                    self.lock_state = "switched"
+                    return event
                 self._exit(fix.ts, "transfer")
                 self._note("boarded")
-                return self._board(best, fix, dist)
+                event = self._board(best, fix, dist)
+                self.boarded_at = kept_at
+                self.boarded_ts = kept_ts
+                self.locked_train = best.trainno
+                self.lock_block = str(getattr(best, "block_id", "") or "") or self.lock_block
+                self.lock_state = "switched"
+                return event
             self._note("candidate")
             return None
         if self.candidate == best.trainno:
@@ -2302,11 +2448,15 @@ class RideMatcher:
                 return self._exit(now, "terminal")
         else:
             self._terminal_since = None
-        number = self.riding_train.trainno
-        seen = next((train for train in trains if train.trainno == number and train.trainno not in self._glitch), None)
+        number = self.locked_train or self.riding_train.trainno
+        seen = self._locked_seen(trains)
         if seen is not None:
             self.riding_train = seen
-            self._last_seen[number] = trains_ts
+            self._last_seen[seen.trainno] = trains_ts
+            self.last_seen_trainview = trains_ts
+            self.riding_train_missing_polls = 0
+            if self.lock_state != "switched":
+                self.lock_state = "locked"
             self._maybe_handover()
             if self._stop_rows:
                 when = datetime.fromtimestamp(now, NY)
@@ -2328,9 +2478,12 @@ class RideMatcher:
             if seen.late and int(seen.late) > 60 and self.active_expected() == number:
                 return self.clear_expected("delay")
         else:
-            last = self._last_seen.get(number)
-            if last is not None and now - last > 300:
-                return self._exit(now, "train_gone")
+            self.lock_state = "estimating"
+            self.position_source = "timetable"
+            self.stale_gps = True
+            deadline = self._arrival_deadline(now)
+            if deadline is not None and now > deadline:
+                return self._exit(now, "arrived")
         hinted = self.active_expected()
         if hinted:
             seen_hint = self._last_seen.get(hinted)

@@ -1225,3 +1225,67 @@ def test_duplicate_schedule_rows_collapse():
     pending = R.remaining_stops(rows)
     assert [row["station"] for row in pending] == ["Hub", "South End"]
 
+
+def test_a_tunnel_dropout_does_not_board_another_train():
+    boarded = train("5311", 40.0, -75.0, 0, line="Lansdale/Doylestown", current="North Wales")
+    matcher = R.RideMatcher(need_matches=1, min_speed_mps=5, radius_m=300)
+    started = matcher.update(fix(40.0, -75.0, 0, speed=20, course=0), [boarded], 0)
+    assert started is not None and started.kind == "boarded"
+    boarded_at = matcher.boarded_at
+    boarded_ts = matcher.boarded_ts
+    other = train("9714", 40.008, -75.0, 180, dest="Temple U", line="Chestnut Hill East")
+    for index in range(1, 7):
+        matcher.gps_gap = True
+        event = matcher.update(fix(40.0, -75.0, index * 60, speed=20, course=0), [other], index * 60)
+        assert event is None
+        assert matcher.riding_train.trainno == "5311"
+    assert matcher.boarded_at == boarded_at
+    assert matcher.boarded_ts == boarded_ts
+    assert matcher.lock_state == "estimating"
+    assert matcher.locked_train == "5311"
+    assert matcher.position_source == "timetable"
+    assert matcher.switches == []
+    assert all(row.get("heading_source") != "corridor" and (row.get("limit_m") or 0) < 3500 for row in matcher.candidates)
+
+
+def test_a_real_transfer_is_recorded_and_keeps_the_original_boarding():
+    saved = R._GEO
+    R._GEO = {"by_key": {"hub": ("Hub", 40.0, -75.0)}, "by_coord": {}, "lines": {}}
+    try:
+        first = train("111", 40.0, -75.0, 0, line="Lansdale/Doylestown", current="Hub")
+        matcher = R.RideMatcher(need_matches=1, min_speed_mps=5, radius_m=300, switch_fixes=3, switch_min_s=120)
+        matcher.set_stops([{"lat": 40.0, "lon": -75.0, "stopname": "Hub"}])
+        matcher.update(fix(40.0, -75.0, 0, speed=20, course=0), [first], 0)
+        boarded_ts = matcher.boarded_ts
+        matcher._transfer_ready = True
+        far = train("111", 40.03, -75.0, 0, line="Lansdale/Doylestown")
+        nxt = train("222", 40.0, -75.0, 0, line="Media/Wawa", current="Hub")
+        event = None
+        for ts in (200, 270, 340):
+            event = matcher.update(fix(40.0, -75.0, ts, speed=20, course=0), [far, nxt], ts)
+        assert event is not None and event.kind == "boarded"
+        assert matcher.riding_train.trainno == "222"
+        assert matcher.boarded_ts == boarded_ts
+        assert matcher.lock_state == "switched"
+        assert matcher.switches[-1]["from"] == "111"
+        assert matcher.switches[-1]["to"] == "222"
+        assert matcher.switches[-1]["station"] == "Hub"
+    finally:
+        R._GEO = saved
+
+
+def test_the_through_run_segment_is_still_the_same_ride():
+    first = R.Train("5311", 40.0, -75.0, 0, "Doylestown", "Lansdale/Doylestown", "LOCAL", "North Wales", "Fort Washington", 1, ["1"], "", "block-5311")
+    matcher = R.RideMatcher(need_matches=1, min_speed_mps=5, radius_m=300)
+    matcher.update(fix(40.0, -75.0, 0, speed=20, course=0), [first], 0)
+    boarded_ts = matcher.boarded_ts
+    later = R.Train("5311B", 40.001, -75.0, 0, "Wawa", "Media/Wawa", "LOCAL", "Suburban Station", "30th Street Station", 1, ["1"], "", "block-5311")
+    event = matcher.update(fix(40.001, -75.0, 60, speed=20, course=0), [later], 60)
+    assert event is None
+    assert matcher.riding is True
+    assert matcher.locked_train == "5311"
+    assert matcher.boarded_ts == boarded_ts
+    assert matcher.lock_state == "locked"
+    assert matcher.switches == []
+
+
