@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.13.14
+
+### Fixed
+
+- The route line, colour and stop list now appear while riding on existing installs (the route data is downloaded even when the timetable is still current), every remaining stop has coordinates, and the stop you get off at defaults to your home station when the train is heading there (settings were being ignored).
+
 ## 1.13.13
 
 ### Fixed

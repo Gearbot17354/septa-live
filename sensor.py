@@ -748,6 +748,9 @@ class SeptaRailScheduleSensor(_Base):
             "last_success": data.get("last_success"),
             "last_error": data.get("last_error"),
             "days_remaining": data.get("days_remaining"),
+            "shapes_trains": data.get("shapes_trains"),
+            "shapes_built": data.get("shapes_built"),
+            "shapes_error": data.get("shapes_error"),
         }
 
 

@@ -34,7 +34,7 @@ from .const import (
     TRAINVIEW_URL,
 )
 from .coordinator import NY, _LINE_NAMES, cached_schedule
-from .shapes import line_title
+from .shapes import line_title, lookup_train
 from .ride import (
     Fix,
     RideMatcher,
@@ -43,6 +43,12 @@ from .ride import (
     approaching_connection,
     choose_alight,
     through_change,
+    alight_plan,
+    annotate_coords,
+    destination_is_auto,
+    rider_cfg_row,
+    rider_home,
+    _loose_name,
     classify_fix,
     configured_riders,
     dedupe_riders,
@@ -182,6 +188,10 @@ class RiderController:
 
     def attributes(self) -> dict:
         payload = self.matcher.payload()
+        train = self.matcher.riding_train
+        if train is not None:
+            payload["latitude"] = train.lat
+            payload["longitude"] = train.lon
         remaining = list(self._remaining) if self.matcher.riding else []
         payload["remaining_stops"] = remaining
         if self.matcher.riding and remaining:
@@ -414,14 +424,51 @@ class RiderController:
         return raw if isinstance(raw, list) else []
 
     def _home_station(self) -> str:
-        options = self.entry.options if isinstance(self.entry.options, dict) else {}
-        data = self.entry.data if isinstance(self.entry.data, dict) else {}
-        riders = options.get("riders_cfg") if isinstance(options.get("riders_cfg"), dict) else {}
-        mine = riders.get(self.slug) if isinstance(riders.get(self.slug), dict) else {}
-        home = str(mine.get("home_station") or "").strip()
-        if home:
-            return home
-        return str(options.get(CONF_HOME_STATION) or data.get("station") or "").strip()
+        return rider_home(self.entry.options, self.entry.data, self.slug, self.person, self._tracker_hint or self._resolved, self.key)
+
+    def _alight_choice(self, order: list[str], current: str | None) -> tuple[str | None, str, list[dict]]:
+        options = self.entry.options
+        data = self.entry.data
+        mine = rider_cfg_row(options, self.slug, self.person, self._tracker_hint or self._resolved, self.key)
+        board = getattr(self.coordinator, "dynamic", None)
+        manual = getattr(board, "_manual_dest", None) if board is not None else None
+        service = ""
+        if isinstance(manual, dict):
+            service = str(manual.get(self.slug) or manual.get(self.key) or "").strip()
+        entity = str(mine.get("destination_entity") or "").strip()
+        if not entity:
+            from collections.abc import Mapping
+
+            opt = options if isinstance(options, Mapping) else {}
+            entity = str(opt.get("destination_entity") or "").strip()
+        select = ""
+        if entity:
+            state = self.hass.states.get(entity)
+            select = "" if state is None else str(state.state or "").strip()
+        calendar = ""
+        if board is not None:
+            pack = getattr(board, "_current", None)
+            row = pack.get(self.slug) if isinstance(pack, dict) else None
+            if isinstance(row, dict) and str(row.get("destination_source") or "") == "calendar":
+                calendar = str(row.get("destination") or "")
+        default = str(mine.get("default_destination") or "").strip()
+        if not default:
+            from collections.abc import Mapping
+
+            opt = options if isinstance(options, Mapping) else {}
+            raw = data if isinstance(data, Mapping) else {}
+            default = str(opt.get("destination") or raw.get("destination") or "").strip()
+        return alight_plan(
+            order,
+            current,
+            expected=self.matcher.expected,
+            leg=self.matcher.leg,
+            home=self._home_station(),
+            service=service or None,
+            select=select or None,
+            calendar=calendar or None,
+            default=default or None,
+        )
 
     def _route_tables(self) -> tuple[dict, dict]:
         keeper = getattr(self.coordinator, "rail_schedule", None)
@@ -439,29 +486,6 @@ class RiderController:
             return title, text
         return title, None
 
-    def _selected_destination(self) -> tuple[str | None, str | None]:
-        """Destination from the service, a select entity, or the saved option."""
-        board = getattr(self.coordinator, "dynamic", None)
-        manual = getattr(board, "_manual_dest", None) if board is not None else None
-        if isinstance(manual, dict):
-            chosen = str(manual.get(self.slug) or "").strip()
-            if chosen:
-                return chosen, "service"
-        options = self.entry.options if isinstance(self.entry.options, dict) else {}
-        data = self.entry.data if isinstance(self.entry.data, dict) else {}
-        riders = options.get("riders_cfg") if isinstance(options.get("riders_cfg"), dict) else {}
-        mine = riders.get(self.slug) if isinstance(riders.get(self.slug), dict) else {}
-        entity = str(mine.get("destination_entity") or options.get("destination_entity") or "").strip()
-        if entity:
-            state = self.hass.states.get(entity)
-            text = "" if state is None else str(state.state or "").strip()
-            if text and text.casefold() not in {"unknown", "unavailable", "none", ""}:
-                return text, "select"
-        saved = str(mine.get("default_destination") or options.get("destination") or data.get("destination") or "").strip()
-        if saved:
-            return saved, "service"
-        return None, None
-
     def _remember_through(self, train: Train, current: object, nxt: object) -> None:
         full = remaining_from_timetable(cached_schedule(), train.trainno, datetime.now(NY).weekday(), None, None, None, None)
         code, where = through_change(full, current, nxt)
@@ -475,25 +499,35 @@ class RiderController:
         home = self._home_station()
         self.matcher.home_station = home
         self.matcher.delay_min = late
-        selected, selected_source = self._selected_destination()
-        alight, alight_source = choose_alight(
-            self.matcher.expected,
-            self.matcher.leg,
-            home,
-            order,
-            train.currentstop,
-            selected,
-            selected_source,
-        )
+        alight, alight_source, checked = self._alight_choice(order, train.currentstop)
+        if alight_source != getattr(self, "_last_alight_source", None):
+            self._last_alight_source = alight_source
+            _LOGGER.debug("SEPTA alight %s %s", alight_source, checked)
+        self.matcher.alight_checked = checked
         kept = []
         for row in rows:
-            if alight and _stop_key(row.get("station")) == _stop_key(alight):
+            if alight and (_stop_key(row.get("station")) == _stop_key(alight) or _loose_name(row.get("station")) == _loose_name(alight)):
                 kept.append(row)
                 break
             kept.append(row)
         if not alight:
             kept = list(rows)
         delayed = apply_delay(kept, late)
+        keeper = getattr(self.coordinator, "rail_schedule", None)
+        cache = getattr(keeper, "shapes", None) if keeper is not None else None
+        train_stops = []
+        try:
+            info = lookup_train(cache, train.trainno)
+            train_stops = list((info or {}).get("stops") or [])
+        except Exception:  # noqa: BLE001
+            train_stops = []
+        try:
+            from .ride import _load_geo
+
+            geo = _load_geo()
+        except Exception:  # noqa: BLE001
+            geo = {}
+        delayed = annotate_coords(delayed, train_stops, geo)
         self.matcher.alight_station = alight
         self.matcher.alight_source = alight_source
         self.matcher._stop_rows = delayed

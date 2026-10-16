@@ -94,6 +94,7 @@ UNRECORDED_TRAIN_ATTRS: Final = frozenset(
         "skipped",
         "event",
         "updated",
+        "alight_checked",
     }
 )
 ORIGIN_HYSTERESIS_M: Final = 200

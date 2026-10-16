@@ -394,22 +394,35 @@ def _cut_until(rows: list[dict], until: str | None) -> list[dict]:
     return rows
 
 
+def _loose_name(name: object) -> str:
+    try:
+        from .trips import loose_key
+    except ImportError:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("septa_trips_ride", Path(__file__).with_name("trips.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        loose_key = module.loose_key
+    return loose_key(name)
+
+
 def station_is_ahead(order: list[str], current: str | None, target: str | None) -> bool:
     """True when target is after current in this train's stop order."""
-    keys = [_stop_key(name) for name in order]
-    want = _stop_key(target)
-    here = _stop_key(current)
+    keys = [_loose_name(name) or _stop_key(name) for name in order]
+    want = _loose_name(target) or _stop_key(target)
+    here = _loose_name(current) or _stop_key(current)
     if not want or want not in keys or not here or here not in keys:
         return False
     return keys.index(want) > keys.index(here)
 
 
 def _canonical_stop(order: list[str], name: object) -> str | None:
-    want = _stop_key(name)
+    want = _loose_name(name) or _stop_key(name)
     if not want:
         return None
     for stop in order or []:
-        if _stop_key(stop) == want:
+        if (_loose_name(stop) or _stop_key(stop)) == want:
             return str(stop)
     return None
 
@@ -429,9 +442,11 @@ def choose_alight(
         canonical = _canonical_stop(order, name)
         if not canonical:
             return None
-        if not _stop_key(current) or _stop_key(current) not in {_stop_key(stop) for stop in order}:
+        here = _loose_name(current) or _stop_key(current)
+        keys = {_loose_name(stop) or _stop_key(stop) for stop in order}
+        if not here or here not in keys:
             return canonical
-        if station_is_ahead(order, current, canonical) or _stop_key(canonical) == _stop_key(current):
+        if station_is_ahead(order, current, canonical) or here == (_loose_name(canonical) or _stop_key(canonical)):
             return canonical
         return None
 
@@ -453,6 +468,134 @@ def choose_alight(
         if hit:
             return hit, "home"
     return None, "none"
+
+
+_AUTO_DEST = {"auto", "automatic", "none", "unknown", "unavailable", "", "-"}
+
+
+def destination_is_auto(value: object) -> bool:
+    return str(value or "").strip().casefold() in _AUTO_DEST
+
+
+def rider_cfg_row(options: object, slug: object = "", person: object = None, tracker: object = None, key: object = None) -> dict:
+    """Per-rider options. Home Assistant stores these as a mapping, not a dict."""
+    from collections.abc import Mapping
+
+    raw = options if isinstance(options, Mapping) else {}
+    riders = raw.get("riders_cfg") if isinstance(raw.get("riders_cfg"), Mapping) else {}
+    wanted: list[str] = []
+    for ident in (slug, person, tracker, key):
+        text = str(ident or "").strip()
+        if not text:
+            continue
+        wanted.append(text)
+        folded = rider_object_id(text)
+        if folded not in wanted:
+            wanted.append(folded)
+    for ident in wanted:
+        row = riders.get(ident)
+        if isinstance(row, Mapping) and row:
+            return dict(row)
+    return {}
+
+
+def rider_home(options: object, data: object = None, slug: object = "", person: object = None, tracker: object = None, key: object = None) -> str:
+    from collections.abc import Mapping
+
+    options_map = options if isinstance(options, Mapping) else {}
+    data_map = data if isinstance(data, Mapping) else {}
+    mine = rider_cfg_row(options_map, slug, person, tracker, key)
+    home = str(mine.get("home_station") or "").strip()
+    if home:
+        return home
+    return str(options_map.get("home_station") or options_map.get("station") or data_map.get("station") or "").strip()
+
+
+def alight_plan(
+    order: list[str],
+    current: str | None,
+    *,
+    expected: dict | None = None,
+    leg: int = 1,
+    home: str | None = None,
+    service: str | None = None,
+    select: str | None = None,
+    calendar: str | None = None,
+    default: str | None = None,
+) -> tuple[str | None, str, list[dict]]:
+    """Pick the stop the rider gets off. Home counts only when the train is still heading there."""
+    checked: list[dict] = []
+
+    def consider(source: str, value: object) -> str | None:
+        text = str(value or "").strip()
+        if source == "select" and destination_is_auto(text):
+            checked.append({"source": source, "value": text or "Auto", "result": "auto"})
+            return None
+        if not text:
+            return None
+        name, source_hit = choose_alight(None, 1, None, order, current, text, source)
+        if name and source_hit == source:
+            checked.append({"source": source, "value": text, "result": "ahead"})
+            return name
+        on_train = _canonical_stop(order, text) is not None
+        checked.append({"source": source, "value": text, "result": "behind" if on_train else "miss"})
+        return None
+
+    planned = "" if not expected else str(expected.get("destination") or "")
+    hit = consider("planned", planned)
+    if hit:
+        return hit, "planned", checked[:6]
+    for source, value in (
+        ("service", service),
+        ("select", select),
+        ("calendar", calendar),
+        ("home", home),
+        ("service", default),
+    ):
+        hit = consider(source, value)
+        if hit:
+            return hit, source, checked[:6]
+    connection = "" if not expected else str(expected.get("connection_station") or "")
+    if leg == 1 and connection:
+        hit = consider("connection", connection)
+        if hit:
+            return hit, "connection", checked[:6]
+    return None, "none", checked[:6]
+
+
+def annotate_coords(rows: list[dict], train_stops: list | None = None, geo: dict | None = None) -> list[dict]:
+    """Add lat/lon. Shape-cache stops win, then the bundled geo table."""
+    index = {}
+    for stop in train_stops or []:
+        if isinstance(stop, dict):
+            index[_loose_name(stop.get("name"))] = stop
+    table = (geo or {}).get("by_key") if isinstance(geo, dict) else {}
+    if not isinstance(table, dict):
+        table = {}
+    out = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        item = dict(row)
+        name = item.get("station") or item.get("name")
+        hit = index.get(_loose_name(name))
+        if isinstance(hit, dict) and hit.get("lat") is not None and hit.get("lon") is not None:
+            item["lat"] = round(float(hit["lat"]), 5)
+            item["lon"] = round(float(hit["lon"]), 5)
+        else:
+            found = None
+            want = _loose_name(name)
+            for key, value in table.items():
+                if not isinstance(value, (list, tuple)) or len(value) < 3:
+                    continue
+                if _loose_name(key) == want or _loose_name(value[0]) == want or _stop_key(value[0]) == _stop_key(name):
+                    found = value
+                    break
+            if found is not None:
+                item["lat"] = round(float(found[1]), 5)
+                item["lon"] = round(float(found[2]), 5)
+        out.append(item)
+    return out
 
 
 def _passed_index(lat: float, lon: float, points: list[dict], rows: list[dict]) -> int | None:
@@ -1147,6 +1290,7 @@ class RideMatcher:
         self.published_current = None
         self.published_next = None
         self.home_station = ""
+        self.alight_checked: list[dict] = []
         self._slow_since: float | None = None
         self._slow_anchor: tuple[float, float] | None = None
         self._apart_count = 0
@@ -1917,6 +2061,8 @@ class RideMatcher:
             "alight_station": self.alight_station,
             "alight_source": self.alight_source,
             "alight_est": self.alight_est,
+            "alight_checked": list(self.alight_checked or [])[:6],
+            "home_station": self.home_station or None,
             "delay_min": self.delay_min,
             "stop_source": self.stop_source,
             "next_stop_track": None,

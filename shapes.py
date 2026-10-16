@@ -9,7 +9,10 @@ from __future__ import annotations
 import json
 import math
 import zipfile
+from datetime import date
 from pathlib import Path
+
+SHAPES_FORMAT = 2
 
 try:
     from .schedule import _csv, _texts, write_schedule_file
@@ -214,9 +217,27 @@ def simplify_shape(points: list[list[float]], stops: list[dict], max_points: int
     }
 
 
+_LOOSE = None
+
+
+def _loose(value: object) -> str:
+    global _LOOSE
+    if _LOOSE is None:
+        try:
+            from .trips import loose_key
+        except ImportError:
+            import importlib.util
+
+            spec = importlib.util.spec_from_file_location("septa_trips_loose", Path(__file__).with_name("trips.py"))
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            loose_key = module.loose_key
+        _LOOSE = loose_key
+    return _LOOSE(value)
+
+
 def _key_name(value: object) -> str:
-    tokens = [tok for tok in str(value or "").casefold().split() if tok and tok != "station"]
-    return " ".join(tokens)
+    return _loose(value) or " ".join(tok for tok in str(value or "").casefold().split() if tok and tok != "station")
 
 
 def _stop_index(stops: list[dict], name: object) -> int | None:
@@ -229,11 +250,28 @@ def _stop_index(stops: list[dict], name: object) -> int | None:
     return None
 
 
-def mark_stops(stops: list[dict], next_stop: object, alight: object, boarded: object) -> list[dict]:
+def _nearest_stop_index(stops: list[dict], here: tuple | None) -> int | None:
+    if not here or len(here) < 2:
+        return None
+    best = None
+    best_d = None
+    for index, stop in enumerate(stops or []):
+        if stop.get("lat") is None or stop.get("lon") is None:
+            continue
+        dist = haversine_m(float(here[0]), float(here[1]), float(stop["lat"]), float(stop["lon"]))
+        if best_d is None or dist < best_d:
+            best = index
+            best_d = dist
+    return best
+
+
+def mark_stops(stops: list[dict], next_stop: object, alight: object, boarded: object, here: tuple | None = None) -> list[dict]:
     """Passed stops are those before the live next stop. Remaining is the rest."""
     nxt = _stop_index(stops, next_stop)
     board = _stop_index(stops, boarded)
     alight_key = _key_name(alight)
+    if nxt is None and here is not None:
+        nxt = _nearest_stop_index(stops, here)
     if nxt is None:
         nxt = 0
     out = []
@@ -294,9 +332,10 @@ def fit_route(
     boarded,
     byte_limit: int = ATTR_BYTE_LIMIT,
     source: str | None = "gtfs",
+    here: tuple | None = None,
 ) -> tuple[dict, dict]:
     """Stay under the recorder warning. Tighter line, then 4 decimals, then drop pre-board stops."""
-    marked = mark_stops(stops, next_stop, alight, boarded)
+    marked = mark_stops(stops, next_stop, alight, boarded, here)
     limit = max(32, int(byte_limit))
     budgets = [MAX_SHAPE_POINTS, 120, 80, 40, 24, 12, 8]
     stages = [(budget, 5, False) for budget in budgets]
@@ -332,8 +371,8 @@ def _memo_key(shape_id: str, stops: list[dict]) -> tuple:
     return (shape_id, first, last)
 
 
-def _from_memo(cached: dict, stops: list[dict], color, text_color, alight, next_stop, boarded) -> dict:
-    marked = mark_stops(stops, next_stop, alight, boarded)
+def _from_memo(cached: dict, stops: list[dict], color, text_color, alight, next_stop, boarded, here: tuple | None = None) -> dict:
+    marked = mark_stops(stops, next_stop, alight, boarded, here)
     return _pack(
         cached["points"],
         marked,
@@ -521,50 +560,149 @@ def _color_for(info: dict, routes: dict, next_stop: object, current: object) -> 
     return route.get("color"), route.get("text_color")
 
 
-def attach_route(data: dict | None, cache: dict | None, memo: dict | None = None, byte_limit: int = ATTR_BYTE_LIMIT) -> dict:
-    """Route attributes for an active ride. A later update reuses the simplified line."""
+def _ride_here(data: dict) -> tuple | None:
+    lat = _num(data.get("latitude") if data.get("latitude") is not None else data.get("lat"))
+    lon = _num(data.get("longitude") if data.get("longitude") is not None else data.get("lon"))
+    if lat is None or lon is None:
+        return None
+    return (lat, lon)
+
+
+def _geo_stop(name: object, geo: dict | None) -> tuple | None:
+    if not isinstance(geo, dict):
+        return None
+    table = geo.get("by_key") if isinstance(geo.get("by_key"), dict) else {}
+    want = _key_name(name)
+    for key, value in table.items():
+        if not isinstance(value, (list, tuple)) or len(value) < 3:
+            continue
+        if _key_name(key) == want or _key_name(value[0]) == want:
+            lat, lon = _num(value[1]), _num(value[2])
+            if lat is None or lon is None:
+                continue
+            return lat, lon
+    return None
+
+
+def _stops_from_ride(data: dict, geo: dict | None) -> list[dict]:
+    rows = data.get("route_stops") or data.get("full_stops") or data.get("remaining_stops") or []
+    out = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = row.get("name") or row.get("station")
+        lat = _num(row.get("lat"))
+        lon = _num(row.get("lon"))
+        if lat is None or lon is None:
+            found = _geo_stop(name, geo)
+            if found:
+                lat, lon = found
+        if lat is None or lon is None:
+            continue
+        out.append(
+            {
+                "name": name,
+                "lat": round(lat, 5),
+                "lon": round(lon, 5),
+                "sched": row.get("sched"),
+                "est": row.get("est") or row.get("sched"),
+            }
+        )
+    return out
+
+
+def _reason_result(reason: str, source: str, payload: dict | None = None) -> dict:
+    body = dict(payload or cleared_route())
+    body["route_shape_source"] = source
+    body["route_shape_reason"] = reason
+    return body
+
+
+def attach_route(data: dict | None, cache: dict | None, memo: dict | None = None, byte_limit: int = ATTR_BYTE_LIMIT, geo: dict | None = None) -> dict:
+    """Route attributes for an active ride. A later update reuses the simplified line.
+
+    An empty shape cache still draws the stops we know. `route_shape_source` is
+    `none` only when fewer than two stops have coordinates.
+    """
     if not isinstance(data, dict) or not data.get("riding"):
         return cleared_route()
     number = str(data.get("train") or "").strip()
-    info = lookup_train(cache, number)
+    trains = (cache or {}).get("trains") if isinstance(cache, dict) else None
+    reason = None
+    info = None
+    try:
+        if not isinstance(trains, dict) or not trains:
+            reason = "cache_empty"
+        else:
+            info = lookup_train(cache, number)
+            if not info:
+                reason = "train_not_in_cache"
+            elif not (info.get("points") or []):
+                segs = [str(item.get("shape_id") or "") for item in info.get("segments") or []]
+                reason = "shape_id_missing" if not any(segs) else "too_few_points"
+    except Exception:
+        reason = "exception"
+        info = None
+    here = _ride_here(data)
+    alight = data.get("alight_station") or data.get("final_destination") or None
+    if isinstance(alight, str):
+        alight = alight.strip() or None
     if not info:
-        return cleared_route()
+        stops = _stops_from_ride(data, geo)
+        if len(stops) < 2:
+            note_missing_shape(number, reason or "too_few_points", date.today().isoformat())
+            return _reason_result(reason or "too_few_points", "none")
+        points = [[stop["lat"], stop["lon"]] for stop in stops]
+        note_missing_shape(number, reason or "cache_empty", date.today().isoformat())
+        fitted, _meta = fit_route(
+            points,
+            stops,
+            color=None,
+            text_color=None,
+            alight=alight,
+            next_stop=data.get("next_stop"),
+            boarded=data.get("origin"),
+            byte_limit=byte_limit,
+            source="stops",
+            here=here,
+        )
+        return _reason_result(reason or "cache_empty", "stops", fitted)
     points = list(info.get("points") or [])
     source = info.get("source") or "gtfs"
     stops = _overlay_times(info.get("stops") or [], data.get("remaining_stops"))
     if len(points) < 2:
         points = [[stop["lat"], stop["lon"]] for stop in stops if stop.get("lat") is not None and stop.get("lon") is not None]
         source = "stops"
+        reason = reason or "too_few_points"
     if len(points) < 2:
-        return cleared_route()
+        note_missing_shape(number, reason or "too_few_points", date.today().isoformat())
+        return _reason_result(reason or "too_few_points", "none")
     if source == "stops":
-        from datetime import date
-
-        note_missing_shape(number, "shape missing", date.today().isoformat())
+        note_missing_shape(number, reason or "shape missing", date.today().isoformat())
     routes = (cache or {}).get("routes") or {}
     color, text_color = _color_for(info, routes, data.get("next_stop"), data.get("current_stop"))
-    alight = data.get("alight_station") or data.get("final_destination") or None
-    if isinstance(alight, str):
-        alight = alight.strip() or None
     shape_id = str(info.get("shape_id") or number)
     key = _memo_key(shape_id, stops) + (int(byte_limit), source)
     store = memo if isinstance(memo, dict) else None
     if store is not None and isinstance(store.get(key), dict) and store[key].get("points"):
-        return _from_memo(store[key], stops, color, text_color, alight, data.get("next_stop"), data.get("origin"))
-    _fitted, meta = fit_route(
-        points,
-        stops,
-        color=color,
-        text_color=text_color,
-        alight=alight,
-        next_stop=data.get("next_stop"),
-        boarded=data.get("origin"),
-        byte_limit=byte_limit,
-        source=source,
-    )
-    if store is not None:
-        store[key] = meta
-    return _fitted
+        fitted = _from_memo(store[key], stops, color, text_color, alight, data.get("next_stop"), data.get("origin"), here)
+    else:
+        fitted, meta = fit_route(
+            points,
+            stops,
+            color=color,
+            text_color=text_color,
+            alight=alight,
+            next_stop=data.get("next_stop"),
+            boarded=data.get("origin"),
+            byte_limit=byte_limit,
+            source=source,
+            here=here,
+        )
+        if store is not None:
+            store[key] = meta
+    fitted["route_shape_reason"] = None if source == "gtfs" else (reason or "shape missing")
+    return fitted
 
 
 def route_query(cache: dict | None, train: object = None, row: dict | None = None) -> dict:
@@ -645,7 +783,38 @@ def _routes(text: str) -> dict:
     return found
 
 
-def build_shape_cache(zip_bytes: bytes) -> dict:
+def _active_services(files: dict, today: date | None) -> set[str]:
+    """Service ids that run on `today`. Empty means the feed has no calendar."""
+    day = today or date.today()
+    ymd = day.strftime("%Y%m%d")
+    names = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+    today_name = names[day.weekday()]
+    calendar = list(_csv(files.get("calendar") or ""))
+    dates = list(_csv(files.get("calendar_dates") or ""))
+    if not calendar and not dates:
+        return set()
+    active: set[str] = set()
+    for row in calendar:
+        sid = str(row.get("service_id") or "").strip()
+        start = str(row.get("start_date") or "")
+        end = str(row.get("end_date") or "")
+        if not sid or (start and ymd < start) or (end and ymd > end):
+            continue
+        if str(row.get(today_name) or "0").strip() in {"1", "true", "yes"}:
+            active.add(sid)
+    for row in dates:
+        sid = str(row.get("service_id") or "").strip()
+        if str(row.get("date") or "") != ymd or not sid:
+            continue
+        kind = str(row.get("exception_type") or "").strip()
+        if kind == "1":
+            active.add(sid)
+        elif kind == "2":
+            active.discard(sid)
+    return active
+
+
+def build_shape_cache(zip_bytes: bytes, today: date | None = None) -> dict:
     """GTFS zip → `{shapes, trains, routes}`. No shapes file falls back to stop-to-stop lines."""
     if not isinstance(zip_bytes, (bytes, bytearray)) or not zip_bytes:
         raise ValueError("shapes")
@@ -718,6 +887,8 @@ def build_shape_cache(zip_bytes: bytes) -> dict:
             }
         )
     trains: dict[str, dict] = {}
+    chosen: dict[str, bool] = {}
+    active = _active_services(files, today)
     for run in merge_through_runs(collected):
         served = [
             {
@@ -761,17 +932,23 @@ def build_shape_cache(zip_bytes: bytes) -> dict:
             "route_id": str((run.get("segments") or [{}])[0].get("route_id") or ""),
             "stops": served,
             "segments": list(run.get("segments") or []),
+            "service": str(run.get("service") or ""),
         }
         keys = {str(run.get("label") or ""), str(run.get("number") or ""), bare_train(run.get("number"))}
         for source in run.get("sources") or []:
             keys.add(str(source))
             keys.add(bare_train(source))
         for key in keys:
-            if key:
-                trains[key] = info
+            if not key:
+                continue
+            prefer = bool(active) and str(run.get("service") or "") in active
+            if key in chosen and chosen[key] and not prefer:
+                continue
+            chosen[key] = prefer or not active
+            trains[key] = info
     if not trains:
         raise ValueError("shapes")
-    return {"shapes": shapes, "trains": trains, "routes": _routes(files.get("routes") or "")}
+    return {"format": SHAPES_FORMAT, "shapes": shapes, "trains": trains, "routes": _routes(files.get("routes") or "")}
 
 
 def _rider_match(row: dict, rider: object) -> bool:
@@ -842,4 +1019,6 @@ def read_shapes_file(path: Path | str) -> dict | None:
 
 
 def write_shapes_file(path: Path | str, payload: dict) -> None:
-    write_schedule_file(path, payload)
+    body = dict(payload or {})
+    body["format"] = SHAPES_FORMAT
+    write_schedule_file(path, body)

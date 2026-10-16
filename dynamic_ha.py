@@ -78,7 +78,7 @@ from .dynamic import (
     pick_calendar_event,
 )
 from .ids import dynamic_key
-from .ride import configured_riders, dedupe_riders
+from .ride import configured_riders, dedupe_riders, rider_cfg_row
 from .trips import parse_next_to_arrive, station_key
 
 _LOGGER = logging.getLogger(__name__)
@@ -297,9 +297,18 @@ class DynamicBoard:
         return found
 
     def _cfg(self, slug: str, opt: dict) -> dict:
-        raw = (opt["riders_cfg"] or {}).get(slug) or {}
-        if not isinstance(raw, dict):
-            raw = {}
+        spec = {}
+        try:
+            spec = next((item for item in self.specs() if (item.get("slug") or "") == slug), {})
+        except Exception:  # noqa: BLE001
+            spec = {}
+        raw = rider_cfg_row(
+            opt,
+            slug,
+            spec.get("person"),
+            spec.get("tracker") or spec.get("configured"),
+            spec.get("key") or slug,
+        )
 
         def pick(key: str, fallback: str) -> str:
             value = str(raw.get(key) or "").strip()

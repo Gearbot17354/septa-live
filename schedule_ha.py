@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -21,8 +22,8 @@ from .const import (
 )
 from .coordinator import cached_schedule, set_cached_schedule
 from .dynamic import legacy_non_rail, rail_picker_options
-from .schedule import MAX_BYTES, ScheduleBook, build_schedule, read_schedule_file, stamp, write_schedule_file
-from .shapes import absorb_shapes, attach_route, cleared_route, read_shapes_file, write_shapes_file
+from .schedule import MAX_BYTES, ScheduleBook, build_schedule, read_schedule_file, shapes_needed, shapes_retry_unconditional, stamp, write_schedule_file
+from .shapes import SHAPES_FORMAT, absorb_shapes, attach_route, cleared_route, read_shapes_file, write_shapes_file
 
 _LOGGER = logging.getLogger(__name__)
 _KEEPER = "septa_live_rail_schedule"
@@ -53,6 +54,12 @@ class RailSchedule:
         self.shapes_path = Path(hass.config.path(".storage", _SHAPES))
         self.shapes: dict = {"shapes": {}, "trains": {}, "routes": {}}
         self.shape_memo: dict = {}
+        self.shapes_built: str | None = None
+        self.shapes_error: str | None = None
+        self._shapes_after = 0.0
+        self._shapes_fails = 0
+        self._shapes_warn_day = ""
+        self._shapes_logged = False
         self._unsubs: list = []
         self._running = False
 
@@ -81,8 +88,10 @@ class RailSchedule:
         if self.book.schedule.get("stations"):
             set_cached_schedule(self.book.schedule)
         loaded = read_shapes_file(self.shapes_path)
-        self.shapes = loaded or {"shapes": {}, "trains": {}, "routes": {}}
+        self.shapes = loaded or {"shapes": {}, "trains": {}, "routes": {}, "format": 0}
         self.shape_memo = {}
+        if isinstance(loaded, dict) and loaded.get("format"):
+            self.shapes_built = loaded.get("built")
 
     async def _kick(self, _now) -> None:
         await self.async_refresh(force=False)
@@ -110,19 +119,31 @@ class RailSchedule:
             today = datetime.now(NY).date()
         except Exception:  # noqa: BLE001
             pass
-        if not self.book.should_fetch(today, SCHEDULE_REFRESH_DAYS, force=force):
+        want_timetable = self.book.should_fetch(today, SCHEDULE_REFRESH_DAYS, force=force)
+        want_shapes = shapes_needed(self.shapes, SHAPES_FORMAT)
+        if want_shapes and not want_timetable and not force and time.time() < self._shapes_after:
+            return
+        if not want_timetable and not want_shapes and not force:
             return
         self._running = True
         now = datetime.now().astimezone().isoformat()
         try:
-            fetched = await self._download(self._url())
-            if fetched.get("status") == 304:
+            fetched = await self._download(self._url(), conditional=not want_shapes)
+            if shapes_retry_unconditional(fetched.get("status"), self.shapes, SHAPES_FORMAT):
+                fetched = await self._download(self._url(), conditional=False)
+            if fetched.get("status") == 304 and not want_shapes:
                 self.book.note_not_modified(now)
                 if fetched.get("etag"):
                     self.book.etag = fetched.get("etag")
                 return
             if fetched.get("error") or not fetched.get("body"):
-                self.book.fail(now, fetched.get("error") or "download")
+                if want_timetable:
+                    self.book.fail(now, fetched.get("error") or "download")
+                if want_shapes:
+                    self._shapes_fail(fetched.get("error") or "download")
+                return
+            await self._store_shapes(fetched["body"], now)
+            if not want_timetable and not force:
                 return
             try:
                 built = await self.hass.async_add_executor_job(build_schedule, fetched["body"])
@@ -141,31 +162,56 @@ class RailSchedule:
             }
             await self.hass.async_add_executor_job(write_schedule_file, self.path, payload)
             set_cached_schedule(self.book.schedule)
-            shapes, err = await self.hass.async_add_executor_job(absorb_shapes, self.shapes, fetched["body"])
-            if err:
-                self.book.last_error = err
-            else:
-                self.shapes = shapes or {"shapes": {}, "trains": {}, "routes": {}}
-                self.shape_memo = {}
-                try:
-                    await self.hass.async_add_executor_job(write_shapes_file, self.shapes_path, self.shapes)
-                except Exception:  # noqa: BLE001
-                    _LOGGER.warning("SEPTA route shape cache was not saved")
-                    self.book.last_error = "shapes"
             await self._publish()
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("SEPTA timetable refresh failed: %s", err)
             self.book.fail(now, "download")
+            if want_shapes:
+                self._shapes_fail("download")
         finally:
             self._running = False
             self._sync_issue()
 
-    async def _download(self, url: str) -> dict:
+    async def _store_shapes(self, blob: bytes, now: str) -> None:
+        shapes, err = await self.hass.async_add_executor_job(absorb_shapes, self.shapes, blob)
+        if err or not isinstance(shapes, dict) or not (shapes.get("trains") or {}):
+            self._shapes_fail(err or "shapes")
+            return
+        shapes = dict(shapes)
+        shapes["format"] = SHAPES_FORMAT
+        shapes["built"] = now
+        self.shapes = shapes
+        self.shape_memo = {}
+        self.shapes_built = now
+        self.shapes_error = None
+        self._shapes_fails = 0
+        self._shapes_after = 0.0
+        count = len(shapes.get("trains") or {})
+        if not self._shapes_logged:
+            self._shapes_logged = True
+            _LOGGER.info("SEPTA route shapes ready: %s trains", count)
+        try:
+            await self.hass.async_add_executor_job(write_shapes_file, self.shapes_path, self.shapes)
+        except Exception:  # noqa: BLE001
+            _LOGGER.warning("SEPTA route shape cache was not saved")
+            self.shapes_error = "shapes"
+
+    def _shapes_fail(self, reason: str) -> None:
+        self.shapes_error = str(reason or "shapes")
+        self._shapes_fails += 1
+        delay = 30 * 60 if self._shapes_fails <= 1 else 24 * 3600
+        self._shapes_after = time.time() + delay
+        today = date.today().isoformat()
+        if self._shapes_warn_day != today:
+            self._shapes_warn_day = today
+            _LOGGER.warning("SEPTA route shapes were not built: %s", self.shapes_error)
+
+    async def _download(self, url: str, conditional: bool = True) -> dict:
         session = async_get_clientsession(self.hass)
         headers = {"User-Agent": "septa-live"}
-        if self.book.etag:
+        if conditional and self.book.etag:
             headers["If-None-Match"] = self.book.etag
-        if self.book.modified:
+        if conditional and self.book.modified:
             headers["If-Modified-Since"] = self.book.modified
         try:
             async with session.get(url, headers=headers, timeout=60) as resp:
@@ -244,10 +290,19 @@ class RailSchedule:
         try:
             if not isinstance(self.shape_memo, dict):
                 self.shape_memo = {}
-            return attach_route(data if isinstance(data, dict) else {}, self.shapes or {}, self.shape_memo)
+            try:
+                from .ride import _load_geo
+
+                geo = _load_geo()
+            except Exception:  # noqa: BLE001
+                geo = {}
+            return attach_route(data if isinstance(data, dict) else {}, self.shapes or {}, self.shape_memo, geo=geo)
         except Exception:  # noqa: BLE001
             _LOGGER.debug("SEPTA route shape skipped", exc_info=True)
-            return cleared_route()
+            missed = cleared_route()
+            missed["route_shape_reason"] = "exception"
+            missed["route_shape_source"] = "none"
+            return missed
 
     def status(self) -> dict:
         try:
@@ -259,6 +314,9 @@ class RailSchedule:
         payload = self.book.sensor(today)
         for key in ("last_check", "last_success"):
             payload[key] = stamp(payload.get(key))
+        payload["shapes_trains"] = len((self.shapes or {}).get("trains") or {})
+        payload["shapes_built"] = self.shapes_built
+        payload["shapes_error"] = self.shapes_error
         return payload
 
 

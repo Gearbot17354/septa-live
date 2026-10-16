@@ -54,6 +54,7 @@ def loose_key(name: object) -> str:
     """Matching key. Abbreviations and 'station' do not change the station."""
     text = re.sub(r"[^a-z0-9]+", " ", str(name or "").lower())
     text = re.sub(r"\bstation\b", " ", text)
+    text = re.sub(r"\bt c\b", "tc", text)
     text = _CENTER.sub(" center ", text)
     tokens = [_LOOSE_WORD.get(token, token) for token in text.split()]
     return " ".join(token for token in tokens if token).strip()
@@ -175,6 +176,7 @@ def _collapse_run(number: str, chain: list[dict]) -> dict:
         "stops": stops,
         "segments": segments,
         "through": len(segments) > 1,
+        "service": str(chain[0].get("service") or ""),
     }
 
 

@@ -351,6 +351,34 @@ class ScheduleBook:
         }
 
 
+def shapes_needed(shapes: dict | None, fmt: object) -> bool:
+    """True when the route-line cache is missing, empty, or from an older writer.
+
+    Timetable freshness is irrelevant. A saved schedule that is still valid does
+    not mean the shape file was ever built.
+    """
+    if not isinstance(shapes, dict) or not isinstance(shapes.get("trains"), dict) or not shapes.get("trains"):
+        return True
+    try:
+        have = int(shapes.get("format") or 0)
+    except (TypeError, ValueError):
+        have = 0
+    try:
+        want = int(fmt)
+    except (TypeError, ValueError):
+        want = 2
+    return have < want
+
+
+def shapes_retry_unconditional(status: object, shapes: dict | None, fmt: object = 2) -> bool:
+    """A 304 against an empty shape cache needs one download without validators."""
+    try:
+        code = int(status or 0)
+    except (TypeError, ValueError):
+        code = 0
+    return code == 304 and shapes_needed(shapes, fmt)
+
+
 def stamp(value) -> str | None:
     if value is None:
         return None
