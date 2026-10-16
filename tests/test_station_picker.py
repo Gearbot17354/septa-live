@@ -70,3 +70,34 @@ def test_a_legacy_other_mode_value_is_reported_and_not_rewritten():
     assert metro_only in bad
     assert "North End" not in bad
     assert saved == [metro_only, "North End"]
+
+
+def test_a_renamed_gtfs_station_matches_every_old_spelling():
+    bundled = ["30th Street Station", "Fern Rock Transportation Center", "Lansdale"]
+    refreshed = ["Gray 30th St Station", "Fern Rock Transit Center", "Lansdale"]
+    asked = [
+        "30th Street",
+        "30th St",
+        "30th Street Station",
+        "Gray 30th Street",
+        "William H. Gray III 30th Street Station",
+        "Gray 30th St Station",
+    ]
+    for names, expected in ((bundled, "30th Street Station"), (refreshed, "Gray 30th St Station")):
+        for text in asked:
+            assert D.match_station(text, names) == expected
+    assert D.match_station("Fern Rock Transit Center", bundled) == "Fern Rock Transportation Center"
+    assert D.match_station("Fern Rock Transportation Center", refreshed) == "Fern Rock Transit Center"
+    assert D.match_station("Jefferson", ["North End"]) is None
+    assert D.match_station("End", ["North End", "South End"]) is None
+    assert D.short_station("Gray 30th St Station") == "Gray 30th Street"
+
+
+def test_version_lookup_does_not_open_the_manifest():
+    text = (ROOT / "const.py").read_text()
+    init = (ROOT / "__init__.py").read_text()
+    assert "manifest.json" not in text
+    assert "read_text" not in text
+    assert "async_get_integration" in init
+    assert "source.exists()" not in init
+    assert "septa_live/stations" in (ROOT / "schema.py").read_text()

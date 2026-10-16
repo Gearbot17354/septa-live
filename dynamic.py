@@ -6,6 +6,7 @@ import csv
 import io
 import math
 import re
+from collections import OrderedDict
 from datetime import date, datetime, timedelta
 
 try:
@@ -15,6 +16,7 @@ try:
         _iso,
         _parse_iso,
         bare_train,
+        loose_key,
         station_key,
         train_paths,
     )
@@ -30,6 +32,7 @@ except ImportError:
     _iso = _trips._iso
     _parse_iso = _trips._parse_iso
     bare_train = _trips.bare_train
+    loose_key = _trips.loose_key
     station_key = _trips.station_key
     train_paths = _trips.train_paths
 
@@ -476,23 +479,101 @@ def cap_trains(rows: list | None, limit: int = 60) -> tuple[list, int]:
     return items[:kept], total
 
 
-def match_station(text: object, names: list[str]) -> str | None:
-    raw = str(text or "").strip()
-    if not raw:
-        return None
-    key = station_key(raw)
-    alias = _NTA_ALIASES.get(key)
-    wanted = station_key(alias) if alias else key
-    for name in names:
-        if station_key(name) == wanted:
-            return name
-    if alias:
-        return alias
-    for name in names:
-        got = station_key(name)
-        if key and (key in got or got in key):
-            return name
+_MATCH_CACHE: OrderedDict = OrderedDict()
+_MATCH_CACHE_MAX = 256
+
+
+def _match_quality(query_key: str, query_loose: str, query_tokens: list[str], name: str) -> int | None:
+    got = station_key(name)
+    loose = loose_key(name)
+    if query_key and got == query_key:
+        return 0
+    if query_loose and loose == query_loose:
+        return 1
+    tokens = loose.split() if loose else []
+    if query_tokens and tokens and all(token in tokens for token in query_tokens):
+        return 2
+    if query_tokens and len(tokens) >= 2 and all(token in query_tokens for token in tokens):
+        return 3
+    if query_loose and loose and (query_loose in loose or loose in query_loose):
+        return 3
+    if query_key and got and (query_key in got or got in query_key):
+        return 3
     return None
+
+
+def match_station(text: object, names: list[str], prefer: list[str] | None = None) -> str | None:
+    """Return a name from ``names``. An alias that is not in the list is never returned."""
+    raw = str(text or "").strip()
+    pool = [str(name).strip() for name in names or [] if str(name or "").strip()]
+    if not raw or not pool:
+        return None
+    prefer_keys = tuple(sorted({station_key(name) for name in prefer or [] if station_key(name)}))
+    cache_key = (loose_key(raw), tuple(pool), prefer_keys)
+    if cache_key in _MATCH_CACHE:
+        _MATCH_CACHE.move_to_end(cache_key)
+        return _MATCH_CACHE[cache_key]
+    query_key = station_key(raw)
+    query_loose = loose_key(raw)
+    query_tokens = query_loose.split() if query_loose else []
+    ranked: list[tuple] = []
+    for name in pool:
+        quality = _match_quality(query_key, query_loose, query_tokens, name)
+        if quality is None:
+            continue
+        preferred = 0 if station_key(name) in prefer_keys else 1
+        ranked.append((preferred, quality, len(name), name.casefold(), name))
+    found = None
+    if ranked:
+        ranked.sort()
+        best = ranked[0]
+        tied = [item for item in ranked if item[:3] == best[:3]]
+        if len(tied) == 1:
+            found = tied[0][4]
+    _MATCH_CACHE[cache_key] = found
+    while len(_MATCH_CACHE) > _MATCH_CACHE_MAX:
+        _MATCH_CACHE.popitem(last=False)
+    return found
+
+
+_SHORT_WORD = {
+    "st": "Street",
+    "ave": "Avenue",
+    "ln": "Lane",
+    "rd": "Road",
+    "blvd": "Boulevard",
+    "dr": "Drive",
+    "tc": "Transit Center",
+}
+
+
+def short_station(name: object) -> str:
+    """Display name. A trailing Station is dropped and abbreviations are expanded."""
+    text = re.sub(r"\s+station$", "", str(name or "").strip(), flags=re.IGNORECASE)
+    parts = []
+    for token in text.split():
+        bare = re.sub(r"[^A-Za-z0-9]", "", token).lower()
+        parts.append(_SHORT_WORD.get(bare, token))
+    return " ".join(parts).strip()
+
+
+def station_catalog(schedule: dict | None) -> list[dict]:
+    """Schedule stations for a picker. Names are the timetable's, not a guess."""
+    stations = (schedule or {}).get("stations") if isinstance(schedule, dict) else None
+    if not isinstance(stations, dict):
+        return []
+    lines = line_index(schedule)
+    rows = []
+    for name in sorted((str(item) for item in stations), key=str.casefold):
+        rows.append(
+            {
+                "name": name,
+                "key": station_key(name),
+                "short": short_station(name),
+                "lines": sorted(lines.get(station_key(name)) or []),
+            }
+        )
+    return rows
 
 
 def _event_start(event: dict | None) -> datetime | None:
@@ -1005,7 +1086,11 @@ def overlay_live(rows: list[dict], live_rows: list[dict], now: datetime, window_
             if live.get("track_changed") is not None:
                 copy["track_changed"] = live.get("track_changed")
             if isinstance(live.get("connection"), dict):
-                copy["connection"] = live["connection"]
+                merged = dict(copy.get("connection") or {})
+                for key, value in live["connection"].items():
+                    if value not in (None, ""):
+                        merged[key] = value
+                copy["connection"] = merged
                 copy["direct"] = False
             copy["live"] = True
         else:
@@ -1157,9 +1242,9 @@ def parse_plan_time(value: object, now: datetime | None = None) -> datetime | No
 
 
 def _compact_plan_row(row: dict, now: datetime | None) -> dict:
-    link = row.get("connection") if isinstance(row.get("connection"), dict) else None
-    if link is None and isinstance(row.get("transfer"), dict):
-        link = row["transfer"]
+    link = row.get("transfer") if isinstance(row.get("transfer"), dict) else None
+    if link is None and isinstance(row.get("connection"), dict):
+        link = row["connection"]
     direct = bool(row.get("direct", link is None))
     depart = row.get("depart_est") or row.get("depart_sched")
     arrive = row.get("arrive_est") or row.get("arrive_sched")
@@ -1209,6 +1294,115 @@ def _compact_plan_row(row: dict, now: datetime | None) -> dict:
     }
 
 
+def _index_for(schedule, day):
+    return _itinerary_fn().__globals__["index_for"](schedule, day)
+
+
+def _leg2_calls_at_origin(idx, origin_key: str, link: dict, after: datetime | None) -> bool:
+    train = str(link.get("train") or "")
+    if not train or not origin_key:
+        return False
+    names = []
+    if train in getattr(idx, "trains", {}):
+        names.append(train)
+    for other in idx.by_number.get(bare_train(train), []):
+        if other not in names:
+            names.append(other)
+    for name in names:
+        pos = (idx.pos.get(name) or {}).get(origin_key)
+        if pos is None:
+            continue
+        when = idx.trains[name][pos]["when"]
+        if after is None or when >= after:
+            return True
+    return False
+
+
+def _via_is_behind(idx, origin_key: str, dest_key: str, via_key: str) -> bool:
+    if not via_key or via_key in {origin_key, dest_key}:
+        return False
+    ahead = False
+    behind = False
+    for pos in idx.pos.values():
+        origin = pos.get(origin_key)
+        dest = pos.get(dest_key)
+        via = pos.get(via_key)
+        if origin is None or dest is None or via is None or dest <= origin:
+            continue
+        if origin < via < dest:
+            ahead = True
+        elif via < origin:
+            behind = True
+    return behind and not ahead
+
+
+def _drop_dominated(rows: list[dict]) -> list[dict]:
+    parsed = []
+    for row in rows:
+        depart = _parse_iso(row.get("depart_sched") or row.get("depart_est"))
+        arrive = _parse_iso(row.get("arrive_sched") or row.get("arrive_est"))
+        parsed.append((depart, arrive, row))
+    drop: set[int] = set()
+    for index, (depart, arrive, row) in enumerate(parsed):
+        if depart is None or arrive is None:
+            continue
+        for other_index, (other_depart, other_arrive, other) in enumerate(parsed):
+            if index == other_index or other_depart is None or other_arrive is None:
+                continue
+            if other_depart < depart or other_arrive > arrive:
+                continue
+            same = other_depart == depart and other_arrive == arrive
+            if same:
+                if other.get("direct") and not row.get("direct"):
+                    drop.add(index)
+                elif row.get("direct") and not other.get("direct"):
+                    drop.add(other_index)
+                elif index > other_index:
+                    drop.add(index)
+                continue
+            if other_arrive == arrive:
+                continue
+            drop.add(index)
+            break
+    return [row for index, row in enumerate(rows) if index not in drop]
+
+
+def prune_itineraries(
+    rows: list[dict],
+    schedule: dict | None,
+    origin: str,
+    destination: str,
+    day,
+    after: datetime | None = None,
+) -> list[dict]:
+    """Drop transfers a rider would not take, before the result is cut to count."""
+    if not rows:
+        return []
+    idx = None
+    if isinstance(schedule, dict) and schedule.get("stations") and day is not None:
+        try:
+            idx = _index_for(schedule, day)
+        except Exception:
+            idx = None
+    origin_key = station_key(origin)
+    dest_key = station_key(destination)
+    kept = []
+    for row in rows:
+        link = row.get("connection") if isinstance(row.get("connection"), dict) else None
+        if link is None and isinstance(row.get("transfer"), dict):
+            link = row.get("transfer")
+        direct = bool(row.get("direct")) or bool(row.get("through")) or not isinstance(link, dict)
+        if not direct and idx is not None and after is not None:
+            if _leg2_calls_at_origin(idx, origin_key, link, after):
+                continue
+            if _via_is_behind(idx, origin_key, dest_key, station_key(link.get("station"))):
+                continue
+        kept.append(row)
+    kept = _drop_dominated(kept)
+    kept.sort(key=lambda item: (item.get("depart_sched") or "", 0 if item.get("direct") else 1))
+    return kept
+
+
 def plan_trips(
     schedule: dict | None,
     origin: str,
@@ -1239,6 +1433,7 @@ def plan_trips(
             day = datetime.now(NY).date()
 
     def on(one_day: date, depart_after: datetime | None = None, capped: bool = False) -> list[dict]:
+        wide = None if not capped else max(limit * 4, 16)
         return build_itineraries(
             schedule,
             origin,
@@ -1247,29 +1442,30 @@ def plan_trips(
             transfer_min=transfer_min,
             now=depart_after,
             window="rest_of_day" if depart_after is not None else "today",
-            limit=limit if capped else None,
+            limit=wide,
             by_depart=capped,
         )
+
+    def useful(rows: list[dict], one_day: date, depart_after: datetime | None) -> list[dict]:
+        return prune_itineraries(rows, schedule, origin, destination, one_day, depart_after)
 
     chosen = day
     rows: list[dict] = []
     if after is not None:
         base = after.astimezone(NY) if after.tzinfo else after.replace(tzinfo=NY)
-        rows = on(chosen, base, True)
-        kept = list(rows)
-        if not kept:
+        rows = useful(on(chosen, base, True), chosen, base)
+        if not rows:
             for offset in range(1, 8):
                 trial_day = day + timedelta(days=offset)
-                trial = on(trial_day, capped=True)
+                trial = useful(on(trial_day, capped=True), trial_day, None)
                 if trial:
                     chosen = trial_day
-                    kept = trial
+                    rows = trial
                     break
-        kept.sort(key=lambda item: item.get("depart_sched") or "")
-        rows = kept[:limit]
+        rows = rows[:limit]
     elif arrive_by is not None:
         base = arrive_by.astimezone(NY) if arrive_by.tzinfo else arrive_by.replace(tzinfo=NY)
-        rows = on(chosen)
+        rows = useful(on(chosen), chosen, None)
         kept = []
         for row in rows:
             arrive = _parse_iso(row.get("arrive_est") or row.get("arrive_sched"))
@@ -1280,7 +1476,7 @@ def plan_trips(
         if rows:
             rows[0] = dict(rows[0], suggested=True)
     else:
-        rows = list(on(chosen, capped=True))[:limit]
+        rows = useful(on(chosen, capped=True), chosen, None)[:limit]
     if live_rows is not None and now is not None:
         marked = {str(row.get("train")): bool(row.get("suggested")) for row in rows}
         overlaid = overlay_live(rows, live_rows, now, LIVE_WINDOW_MIN)
@@ -1301,6 +1497,22 @@ def plan_trips(
     }
 
 
+def _planning_names(schedule: dict | None, names: list[str] | None) -> tuple[list[str], list[str]]:
+    stations: list[str] = []
+    pack = (schedule or {}).get("stations") if isinstance(schedule, dict) else None
+    if isinstance(pack, dict):
+        stations = [str(name) for name in pack if str(name or "").strip()]
+    pool: list[str] = []
+    seen: set[str] = set()
+    for name in stations + list(names or []):
+        text = str(name or "").strip()
+        key = station_key(text)
+        if text and key and key not in seen:
+            seen.add(key)
+            pool.append(text)
+    return pool, stations
+
+
 def plan_query(
     schedule: dict | None,
     names: list[str],
@@ -1316,16 +1528,19 @@ def plan_query(
     live_rows: list[dict] | None = None,
 ) -> dict:
     """Match station names and plan. Does not write rider state."""
-    matched = match_station(origin, names)
+    pool, schedule_names = _planning_names(schedule, names)
+    matched = match_station(origin, pool, schedule_names)
     if not matched:
         return {"error": "not_found"}
     dest_name = None
     if str(destination or "").strip():
-        dest_name = match_station(destination, names)
+        dest_name = match_station(destination, pool, schedule_names)
         if not dest_name:
             return {"error": "not_found"}
     else:
-        dest_name = match_station(home, names) or (str(home).strip() if str(home or "").strip() else None)
+        dest_name = match_station(home, pool, schedule_names) or (
+            str(home).strip() if str(home or "").strip() else None
+        )
     if not dest_name:
         return {"error": "not_found"}
     after_at = parse_plan_time(after, now)
@@ -1343,6 +1558,10 @@ def plan_query(
     )
     planned["after"] = None if after_at is None else after_at.isoformat()
     planned["arrive_by"] = None if arrive_at is None else arrive_at.isoformat()
+    planned["matched_origin"] = matched
+    planned["matched_destination"] = dest_name
+    planned["origin"] = matched
+    planned["destination"] = dest_name
     return planned
 
 

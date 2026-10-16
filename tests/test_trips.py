@@ -69,6 +69,10 @@ def test_30th_street_aliases():
     assert T.nta_station("Gray 30th Street") == "30th Street Station"
     assert T.nta_station("30th Street Gray") == "30th Street Station"
     assert T.nta_station("gray-30th street station") == "30th Street Station"
+    assert T.nta_station("Gray 30th St Station") == "30th Street Station"
+    assert T.nta_station("30th St") == "30th Street Station"
+    assert T.nta_station("Gray 30th Street") == "30th Street Station"
+    assert T.nta_station("Fern Rock Transit Center") == "Fern Rock Transportation Center"
     assert T.nta_station("Lansdale") == "Lansdale"
 
 

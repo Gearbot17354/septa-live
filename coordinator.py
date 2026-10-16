@@ -1116,7 +1116,9 @@ class SeptaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if fails >= 3:
                 self._nta_hold[key] = now_ts + 300
             message = str(err) or err.__class__.__name__
-            warn = f"{origin}|{dest}"
+            day = datetime.now(NY).date().isoformat()
+            asked = f"{nta_station(origin)}|{nta_station(dest)}"
+            warn = f"{day}|{asked}"
             if warn not in self._trip_warned:
                 self._trip_warned.add(warn)
                 _LOGGER.warning("SEPTA NextToArrive rejected %s to %s: %s", origin, dest, message)

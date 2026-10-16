@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.13.10
+
+### Fixed
+
+- Stations renamed by SEPTA's GTFS feed (e.g. 30th Street → Gray 30th St Station) are found again by the planner, origin/destination services and Going Home.
+- NextToArrive receives the name it accepts for a renamed station, so live times, delays and tracks come back.
+- A plan no longer prefers a transfer that leaves earlier and arrives later than a direct train, or a change whose second train also stops at the origin.
+- Plan rows keep the transfer train's line and departure after a live update.
+- Startup no longer reads `manifest.json` on the event loop.
+
 ## 1.13.9
 
 ### Fixed

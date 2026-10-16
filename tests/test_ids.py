@@ -222,7 +222,11 @@ def test_integration_version_matches_manifest():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     manifest = json.loads((ROOT / "manifest.json").read_text())
-    assert module.integration_version() == manifest["version"] == "1.13.9"
+    assert module.integration_version() == ""
+    module.set_integration_version(manifest["version"])
+    assert module.integration_version() == manifest["version"] == "1.13.10"
+    assert "manifest.json" not in (ROOT / "const.py").read_text()
+    assert "async_get_integration" in (ROOT / "__init__.py").read_text()
 
 
 def test_leave_in_is_never_negative():

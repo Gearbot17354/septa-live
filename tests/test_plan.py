@@ -211,3 +211,89 @@ def test_plan_defaults_to_home_and_does_not_touch_origin():
     socket = vol.Schema(S.WEBSOCKET_PLAN)({"type": "septa_live/plan", "origin": "Stop A", "rider": " alpha ", "count": "2"})
     assert socket["rider"] == "alpha" and socket["count"] == 2
     assert S.all_bare_leaves() == []
+
+
+def _rename(schedule, old, new):
+    stations = dict(schedule["stations"])
+    stations[new] = stations.pop(old)
+    renamed = dict(schedule)
+    renamed["stations"] = stations
+    renamed["feed"] = new
+    return renamed
+
+
+def test_renamed_origin_plans_on_both_spellings():
+    base = _schedule()
+    asked = [
+        "30th Street",
+        "30th St",
+        "30th Street Station",
+        "Gray 30th Street",
+        "William H. Gray III 30th Street Station",
+        "Gray 30th St Station",
+    ]
+    for label in ("30th Street Station", "Gray 30th St Station"):
+        schedule = _rename(base, "Stop A", label)
+        for origin in asked:
+            planned = D.plan_query(schedule, ["Stop F"], origin=origin, destination="Stop F", after="09:00", count=2, now=FRIDAY)
+            assert planned.get("rows"), origin
+            assert planned["matched_origin"] == label
+            assert planned["matched_destination"] == "Stop F"
+
+
+def test_live_overlay_keeps_the_transfer_leg():
+    now = datetime(2026, 10, 16, 6, 0, tzinfo=NY)
+    raw = {
+        "train": "101",
+        "line": "L1",
+        "direct": False,
+        "depart_sched": "2026-10-16T07:00:00-04:00",
+        "arrive_sched": "2026-10-16T08:00:00-04:00",
+        "connection": {
+            "station": "Stop C",
+            "train": "202",
+            "train_number": "202",
+            "line": "L2",
+            "depart_sched": "2026-10-16T07:20:00-04:00",
+            "arrive_sched": "2026-10-16T07:15:00-04:00",
+            "arrive_final_sched": "2026-10-16T08:00:00-04:00",
+            "wait_min": 5,
+            "at_risk": False,
+        },
+    }
+    overlaid = D.overlay_live([raw], [{"train": "101", "delay_min": 2}], now)
+    compact = D._compact_plan_row(overlaid[0], now)
+    assert compact["transfer"]["line"] == "L2"
+    assert "07:20" in compact["transfer"]["depart_sched"]
+    assert compact["legs"][1]["depart"].startswith("2026-10-16T07:20")
+    assert compact["legs"][1]["train"] == "202"
+
+
+def test_a_later_direct_beats_an_earlier_transfer():
+    path = ROOT / "rail-schedule.json"
+    if not path.is_file():
+        return
+    import json
+
+    schedule = json.loads(path.read_text())
+    if "Suburban Station" not in schedule.get("stations", {}) or "Lansdale" not in schedule.get("stations", {}):
+        return
+    now = datetime(2026, 10, 15, 14, 0, tzinfo=NY)
+    planned = D.plan_query(
+        schedule,
+        ["Suburban Station", "Lansdale"],
+        origin="Suburban",
+        home="Lansdale",
+        after="15:00",
+        count=6,
+        now=now,
+    )
+    rows = planned["rows"]
+    assert rows
+    assert rows[0]["direct"] is True
+    assert str(rows[0].get("train_number") or rows[0]["train"]).endswith("3540")
+    assert str(rows[0]["depart"]).startswith("2026-10-15T15:")
+    for earlier in rows:
+        for later in rows:
+            if str(later["depart"]) > str(earlier["depart"]):
+                assert str(later["arrive"]) >= str(earlier["arrive"])

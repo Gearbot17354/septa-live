@@ -38,6 +38,37 @@ def station_key(name: object) -> str:
 
 
 _TRAIN_PREFIX = re.compile(r"^[A-Za-z]+(?=\d)")
+_LOOSE_WORD = {
+    "st": "street",
+    "ave": "avenue",
+    "ln": "lane",
+    "rd": "road",
+    "blvd": "boulevard",
+    "dr": "drive",
+}
+_CENTER = re.compile(r"\b(?:transit center|transportation center|tc)\b")
+
+
+@lru_cache(maxsize=8192)
+def loose_key(name: object) -> str:
+    """Matching key. Abbreviations and 'station' do not change the station."""
+    text = re.sub(r"[^a-z0-9]+", " ", str(name or "").lower())
+    text = re.sub(r"\bstation\b", " ", text)
+    text = _CENTER.sub(" center ", text)
+    tokens = [_LOOSE_WORD.get(token, token) for token in text.split()]
+    return " ".join(token for token in tokens if token).strip()
+
+
+def _nta_table() -> dict[str, str]:
+    table: dict[str, str] = {}
+    for key, value in _NTA_ALIASES.items():
+        table[key] = value
+        table[loose_key(key)] = value
+        table[loose_key(value)] = value
+    return table
+
+
+_NTA_LOOSE = _nta_table()
 
 
 def bare_train(value: object) -> str:
@@ -72,9 +103,11 @@ def clock_on(day, clock: str) -> datetime | None:
 def nta_station(name: object) -> str:
     """Name NextToArrive will accept. Unknown names are sent through unchanged."""
     raw = str(name or "").strip()
-    key = station_key(raw)
-    if key in _NTA_ALIASES:
-        return _NTA_ALIASES[key]
+    if not raw:
+        return raw
+    found = _NTA_LOOSE.get(loose_key(raw))
+    if found:
+        return found
     return raw
 
 

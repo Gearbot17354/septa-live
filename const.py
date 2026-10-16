@@ -2,24 +2,22 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import Final
 
 _VERSION: str | None = None
 
 
-def integration_version() -> str:
-    """Manifest version, read once. Riding sensors expose this."""
+def set_integration_version(version: str | None) -> None:
+    """Remember the version Home Assistant already loaded. Does not read a file."""
     global _VERSION
-    if _VERSION:
-        return _VERSION
-    path = Path(__file__).with_name("manifest.json")
-    try:
-        _VERSION = str(json.loads(path.read_text()).get("version") or "")
-    except (OSError, ValueError):
-        _VERSION = ""
-    return _VERSION
+    text = str(version or "").strip()
+    if text:
+        _VERSION = text
+
+
+def integration_version() -> str:
+    """Version captured at setup. Empty until Home Assistant loads the integration."""
+    return _VERSION or ""
 
 DOMAIN: Final = "septa_live"
 PLATFORMS: Final = ["sensor", "binary_sensor", "device_tracker"]

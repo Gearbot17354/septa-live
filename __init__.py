@@ -62,6 +62,7 @@ from .schema import (
     WEBSOCKET_OPTIONS,
     WEBSOCKET_PANEL,
     WEBSOCKET_PLAN,
+    WEBSOCKET_STATIONS,
     WEBSOCKET_DAY,
     WEBSOCKET_ROUTE,
 )
@@ -71,12 +72,26 @@ _FRONTEND = f"{DOMAIN}_frontend_registered"
 _CARD_JS = "septa-live-card.js"
 _PANEL_JS = "septa-live-panel.js"
 _PANEL_PATH = "septa-live"
-_CARD_VERSION = "1.13.9"
+_CARD_VERSION = "1.13.10"
 _PANEL_SIG: tuple | None = None
 _RELOADING: set[str] = set()
 
 
+async def _async_remember_version(hass: HomeAssistant) -> None:
+    """Version comes from the integration loader. The manifest file stays closed."""
+    try:
+        from homeassistant.loader import async_get_integration
+
+        from .const import set_integration_version
+
+        integration = await async_get_integration(hass, DOMAIN)
+        set_integration_version(getattr(integration, "version", "") or "")
+    except Exception:  # noqa: BLE001
+        return
+
+
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    await _async_remember_version(hass)
     await _async_register_lovelace_cards(hass)
     websocket_api.async_register_command(hass, websocket_board)
     websocket_api.async_register_command(hass, websocket_panel)
@@ -84,6 +99,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     websocket_api.async_register_command(hass, websocket_bus_picker)
     websocket_api.async_register_command(hass, websocket_route)
     websocket_api.async_register_command(hass, websocket_plan)
+    websocket_api.async_register_command(hass, websocket_stations)
     websocket_api.async_register_command(hass, websocket_day_trains)
     _register_simulate(hass)
     return True
@@ -388,6 +404,7 @@ async def _async_migrate_entity_ids(hass: HomeAssistant, entry: ConfigEntry) -> 
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    await _async_remember_version(hass)
     await _async_migrate_entity_ids(hass, entry)
     from .ride import async_preload
 
@@ -439,11 +456,10 @@ def _card_source() -> Path:
 
 async def _async_register_lovelace_cards(hass: HomeAssistant) -> None:
     source = _card_source()
-    if not source.exists():
+    installed = await hass.async_add_executor_job(_install_local_card, hass, source)
+    if installed is False:
         _LOGGER.warning("SEPTA Transit card file missing at %s", source)
         return
-
-    await hass.async_add_executor_job(_install_local_card, hass, source)
 
     url_local = f"/local/{_CARD_JS}?v={_CARD_VERSION}"
     url_int = f"/{DOMAIN}/{_CARD_JS}?v={_CARD_VERSION}"
@@ -769,6 +785,24 @@ async def websocket_plan(
     )
 
 
+@websocket_api.websocket_command(WEBSOCKET_STATIONS)
+@websocket_api.async_response
+async def websocket_stations(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict,
+) -> None:
+    """Regional Rail stations from the active timetable."""
+    from .coordinator import cached_schedule
+    from .dynamic import station_catalog
+    from .schedule_ha import active_schedule
+
+    schedule = active_schedule(hass)
+    if not (isinstance(schedule, dict) and schedule.get("stations")):
+        schedule = cached_schedule()
+    connection.send_result(msg["id"], {"stations": station_catalog(schedule)})
+
+
 @websocket_api.websocket_command(WEBSOCKET_DAY)
 @websocket_api.async_response
 async def websocket_day_trains(
@@ -946,11 +980,14 @@ async def _async_sync_panel(hass: HomeAssistant) -> None:
         _LOGGER.warning("SEPTA Transit could not register the sidebar app: %s", err)
 
 
-def _install_local_card(hass: HomeAssistant, source: Path) -> None:
+def _install_local_card(hass: HomeAssistant, source: Path):
+    if not source.is_file():
+        return False
     dest_dir = Path(hass.config.path("www"))
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / _CARD_JS
     dest.write_bytes(source.read_bytes())
+    return True
 
 
 async def _async_ensure_lovelace_resource(hass: HomeAssistant, url: str) -> bool:
