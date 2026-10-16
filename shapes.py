@@ -215,7 +215,8 @@ def simplify_shape(points: list[list[float]], stops: list[dict], max_points: int
 
 
 def _key_name(value: object) -> str:
-    return " ".join(str(value or "").casefold().split())
+    tokens = [tok for tok in str(value or "").casefold().split() if tok and tok != "station"]
+    return " ".join(tokens)
 
 
 def _stop_index(stops: list[dict], name: object) -> int | None:
@@ -242,6 +243,8 @@ def mark_stops(stops: list[dict], next_stop: object, alight: object, boarded: ob
             "name": stop.get("name"),
             "lat": stop.get("lat"),
             "lon": stop.get("lon"),
+            "sched": stop.get("sched"),
+            "est": stop.get("est") or stop.get("sched"),
             "passed": passed,
             "remaining": not passed,
             "alight": bool(alight_key) and _key_name(stop.get("name")) == alight_key,
@@ -256,7 +259,7 @@ def _size(payload: dict) -> int:
     return len(json.dumps(payload))
 
 
-def _pack(points: list[list[float]], stops: list[dict], color, text_color, alight, digits: int, drop_before: bool) -> dict:
+def _pack(points: list[list[float]], stops: list[dict], color, text_color, alight, digits: int, drop_before: bool, source: str | None) -> dict:
     shaped = [_round_pt(point[0], point[1], digits) for point in points]
     rows = []
     for stop in stops:
@@ -276,6 +279,7 @@ def _pack(points: list[list[float]], stops: list[dict], color, text_color, aligh
         "alight_station": alight,
         "route_shape_simplified": True,
         "route_shape_points": len(shaped),
+        "route_shape_source": source,
     }
 
 
@@ -289,6 +293,7 @@ def fit_route(
     next_stop,
     boarded,
     byte_limit: int = ATTR_BYTE_LIMIT,
+    source: str | None = "gtfs",
 ) -> tuple[dict, dict]:
     """Stay under the recorder warning. Tighter line, then 4 decimals, then drop pre-board stops."""
     marked = mark_stops(stops, next_stop, alight, boarded)
@@ -297,13 +302,13 @@ def fit_route(
     stages = [(budget, 5, False) for budget in budgets]
     stages += [(budget, 4, False) for budget in budgets]
     stages += [(budget, 4, True) for budget in budgets]
-    best = _pack(points[:1] or points, marked, color, text_color, alight, 5, False)
-    meta = {"digits": 5, "drop": False}
+    best = _pack(points[:1] or points, marked, color, text_color, alight, 5, False, source)
+    meta = {"digits": 5, "drop": False, "source": source}
     for budget, digits, drop_before in stages:
         simplified = simplify_shape(points, stops, budget)["points"]
-        packed = _pack(simplified, marked, color, text_color, alight, digits, drop_before)
+        packed = _pack(simplified, marked, color, text_color, alight, digits, drop_before, source)
         best = packed
-        meta = {"digits": digits, "drop": drop_before, "points": packed["route_shape"]}
+        meta = {"digits": digits, "drop": drop_before, "points": packed["route_shape"], "source": source}
         if _size(packed) < limit:
             return packed, meta
     return best, meta
@@ -317,6 +322,7 @@ def cleared_route() -> dict:
         "stops": None,
         "route_shape_simplified": None,
         "route_shape_points": None,
+        "route_shape_source": None,
     }
 
 
@@ -328,7 +334,191 @@ def _memo_key(shape_id: str, stops: list[dict]) -> tuple:
 
 def _from_memo(cached: dict, stops: list[dict], color, text_color, alight, next_stop, boarded) -> dict:
     marked = mark_stops(stops, next_stop, alight, boarded)
-    return _pack(cached["points"], marked, color, text_color, alight, int(cached.get("digits") or 5), bool(cached.get("drop")))
+    return _pack(
+        cached["points"],
+        marked,
+        color,
+        text_color,
+        alight,
+        int(cached.get("digits") or 5),
+        bool(cached.get("drop")),
+        cached.get("source") or "gtfs",
+    )
+
+
+_MISSED_SHAPE: set[tuple] = set()
+
+
+def _bare_number(value: object) -> str:
+    text = str(value or "").strip()
+    digits = "".join(ch for ch in text if ch.isdigit())
+    return digits or text
+
+
+def line_title(code: object, routes: dict | None = None, names: dict | None = None) -> str | None:
+    """Full line name. A route code uses routes.txt, then the same table TrainView uses."""
+    text = str(code or "").strip()
+    if not text:
+        return None
+    table = routes if isinstance(routes, dict) else {}
+    route = table.get(text) or table.get(text.upper()) or {}
+    if isinstance(route, dict) and route.get("name"):
+        return str(route["name"])
+    known = names if isinstance(names, dict) else {}
+    if text in known and known[text]:
+        return str(known[text])
+    if text.upper() in known and known[text.upper()]:
+        return str(known[text.upper()])
+    return text
+
+
+def note_missing_shape(train: object, reason: str, day: object) -> None:
+    key = (str(train or ""), str(day or ""))
+    if not key[0] or key in _MISSED_SHAPE:
+        return
+    _MISSED_SHAPE.add(key)
+    import logging
+
+    logging.getLogger(__name__).warning("SEPTA route shape for train %s used stop coordinates: %s", train, reason)
+
+
+def _overlay_times(stops: list[dict], rows: list | None) -> list[dict]:
+    by = {}
+    for row in rows or []:
+        if isinstance(row, dict):
+            by[_key_name(row.get("station") or row.get("name"))] = row
+    out = []
+    for stop in stops:
+        item = dict(stop)
+        live = by.get(_key_name(stop.get("name")))
+        if isinstance(live, dict):
+            if live.get("sched"):
+                item["sched"] = live.get("sched")
+            if live.get("est"):
+                item["est"] = live.get("est")
+        item.setdefault("est", item.get("sched"))
+        out.append(item)
+    return out
+
+
+def _same_stop(left: object, right: object) -> bool:
+    return bool(_key_name(left)) and _key_name(left) == _key_name(right)
+
+
+def _join_records(records: list[dict], shapes: dict) -> dict | None:
+    """One ride, even when an older cache stored each half under LAN5311 and MED5311."""
+    unique: list[dict] = []
+    seen: set[int] = set()
+    for record in records:
+        if not isinstance(record, dict) or not record.get("stops"):
+            continue
+        if id(record) in seen:
+            continue
+        seen.add(id(record))
+        unique.append(record)
+    if not unique:
+        return None
+    used: set[int] = set()
+    chain: list[dict] = []
+    for record in unique:
+        if id(record) in used:
+            continue
+        first = str((record.get("stops") or [{}])[0].get("name") or "")
+        if any(_same_stop(first, (other.get("stops") or [{}])[-1].get("name")) for other in unique if other is not record):
+            continue
+        used.add(id(record))
+        chain.append(record)
+        break
+    if not chain:
+        chain.append(unique[0])
+        used.add(id(unique[0]))
+    grew = True
+    while grew:
+        grew = False
+        last = str((chain[-1].get("stops") or [{}])[-1].get("name") or "")
+        for record in unique:
+            if id(record) in used:
+                continue
+            first = str((record.get("stops") or [{}])[0].get("name") or "")
+            if _same_stop(first, last):
+                used.add(id(record))
+                chain.append(record)
+                grew = True
+                break
+    stops: list[dict] = []
+    points: list = []
+    segments: list[dict] = []
+    used_shape = False
+    for record in chain:
+        part = [dict(stop) for stop in record.get("stops") or []]
+        route_id = str(record.get("route_id") or "")
+        for stop in part:
+            stop.setdefault("route_id", route_id)
+        if stops and part and _same_stop(part[0].get("name"), stops[-1].get("name")):
+            part = part[1:]
+        if record.get("stops"):
+            segments.append(
+                {
+                    "route_id": route_id,
+                    "line": route_id,
+                    "shape_id": str(record.get("shape_id") or ""),
+                    "first": record["stops"][0].get("name"),
+                    "last": record["stops"][-1].get("name"),
+                }
+            )
+        stops.extend(part)
+        shape_id = str(record.get("shape_id") or "")
+        line = shapes.get(shape_id) if shape_id else None
+        if line and len(line) >= 2 and not str(shape_id).startswith("stops:"):
+            if points and line[0] == points[-1]:
+                line = line[1:]
+            points.extend(line)
+            used_shape = True
+        else:
+            extra = [[stop["lat"], stop["lon"]] for stop in part if stop.get("lat") is not None and stop.get("lon") is not None]
+            points.extend(extra)
+    if len(stops) < 1:
+        return None
+    source = "gtfs" if used_shape and len(points) >= 2 else "stops"
+    if len(points) < 2:
+        points = [[stop["lat"], stop["lon"]] for stop in stops if stop.get("lat") is not None and stop.get("lon") is not None]
+        source = "stops"
+    return {
+        "shape_id": "+".join(str(item.get("shape_id") or "") for item in chain if item.get("shape_id")),
+        "route_id": str(chain[0].get("route_id") or ""),
+        "stops": stops,
+        "segments": segments,
+        "points": points,
+        "source": source if len(points) >= 2 else "stops",
+    }
+
+
+def lookup_train(cache: dict | None, number: object) -> dict | None:
+    """Train number 5311 matches LAN5311 and MED5311. The halves are one line."""
+    trains = (cache or {}).get("trains") if isinstance(cache, dict) else None
+    if not isinstance(trains, dict) or not number:
+        return None
+    want = _bare_number(number)
+    exact = str(number).strip()
+    records = []
+    for key, info in trains.items():
+        if key == exact or _bare_number(key) == want:
+            records.append(info)
+    if not records:
+        return None
+    return _join_records(records, (cache or {}).get("shapes") or {})
+
+
+def _color_for(info: dict, routes: dict, next_stop: object, current: object) -> tuple:
+    route_id = str(info.get("route_id") or "")
+    here = _key_name(next_stop or current)
+    if here:
+        for stop in info.get("stops") or []:
+            if _key_name(stop.get("name")) == here and stop.get("route_id"):
+                route_id = str(stop["route_id"])
+                break
+    route = routes.get(route_id) or {}
+    return route.get("color"), route.get("text_color")
 
 
 def attach_route(data: dict | None, cache: dict | None, memo: dict | None = None, byte_limit: int = ATTR_BYTE_LIMIT) -> dict:
@@ -336,24 +526,29 @@ def attach_route(data: dict | None, cache: dict | None, memo: dict | None = None
     if not isinstance(data, dict) or not data.get("riding"):
         return cleared_route()
     number = str(data.get("train") or "").strip()
-    trains = (cache or {}).get("trains") if isinstance(cache, dict) else None
-    info = trains.get(number) if isinstance(trains, dict) else None
+    info = lookup_train(cache, number)
     if not info:
         return cleared_route()
-    shape_id = str(info.get("shape_id") or "")
-    points = ((cache or {}).get("shapes") or {}).get(shape_id) or []
+    points = list(info.get("points") or [])
+    source = info.get("source") or "gtfs"
+    stops = _overlay_times(info.get("stops") or [], data.get("remaining_stops"))
+    if len(points) < 2:
+        points = [[stop["lat"], stop["lon"]] for stop in stops if stop.get("lat") is not None and stop.get("lon") is not None]
+        source = "stops"
     if len(points) < 2:
         return cleared_route()
-    stops = [dict(stop) for stop in info.get("stops") or [] if isinstance(stop, dict)]
-    route_id = info.get("route_id")
-    route = ((cache or {}).get("routes") or {}).get(route_id) or {}
+    if source == "stops":
+        from datetime import date
+
+        note_missing_shape(number, "shape missing", date.today().isoformat())
+    routes = (cache or {}).get("routes") or {}
+    color, text_color = _color_for(info, routes, data.get("next_stop"), data.get("current_stop"))
     alight = data.get("alight_station") or data.get("final_destination") or None
     if isinstance(alight, str):
         alight = alight.strip() or None
-    key = _memo_key(shape_id, stops) + (int(byte_limit),)
+    shape_id = str(info.get("shape_id") or number)
+    key = _memo_key(shape_id, stops) + (int(byte_limit), source)
     store = memo if isinstance(memo, dict) else None
-    color = route.get("color")
-    text_color = route.get("text_color")
     if store is not None and isinstance(store.get(key), dict) and store[key].get("points"):
         return _from_memo(store[key], stops, color, text_color, alight, data.get("next_stop"), data.get("origin"))
     _fitted, meta = fit_route(
@@ -365,6 +560,7 @@ def attach_route(data: dict | None, cache: dict | None, memo: dict | None = None
         next_stop=data.get("next_stop"),
         boarded=data.get("origin"),
         byte_limit=byte_limit,
+        source=source,
     )
     if store is not None:
         store[key] = meta
@@ -385,14 +581,14 @@ def route_query(cache: dict | None, train: object = None, row: dict | None = Non
     if not number and isinstance(row, dict) and row.get("riding"):
         number = str(row.get("train") or "").strip() or None
     trains = (cache or {}).get("trains") if isinstance(cache, dict) else None
-    info = trains.get(number) if isinstance(trains, dict) and number else None
+    info = lookup_train(cache, number) if number else None
     if not info:
         return {"error": "not_found"}
-    shape = ((cache or {}).get("shapes") or {}).get(info.get("shape_id")) or []
+    shape = info.get("points") or []
     if len(shape) < 2:
         return {"error": "not_found"}
     route = ((cache or {}).get("routes") or {}).get(info.get("route_id")) or {}
-    detail = row if isinstance(row, dict) and str(row.get("train") or "") == number else {}
+    detail = row if isinstance(row, dict) and (_bare_number(row.get("train")) == _bare_number(number)) else {}
     return {
         "train": number,
         "route_id": info.get("route_id"),
@@ -441,7 +637,11 @@ def _routes(text: str) -> dict:
         rid = str(row.get("route_id") or "").strip()
         if not rid:
             continue
-        found[rid] = {"color": _color(row.get("route_color")), "text_color": _color(row.get("route_text_color"))}
+        found[rid] = {
+            "color": _color(row.get("route_color")),
+            "text_color": _color(row.get("route_text_color")),
+            "name": str(row.get("route_long_name") or row.get("route_short_name") or "").strip() or None,
+        }
     return found
 
 
@@ -505,7 +705,14 @@ def build_shape_cache(zip_bytes: bytes) -> dict:
                 "block": str(trip.get("block_id") or "").strip(),
                 "shape": str(trip.get("shape_id") or "").strip(),
                 "stops": [
-                    {"name": item[2]["name"], "seq": item[0], "minutes": item[1], "lat": item[2]["lat"], "lon": item[2]["lon"]}
+                    {
+                        "name": item[2]["name"],
+                        "seq": item[0],
+                        "minutes": item[1],
+                        "lat": item[2]["lat"],
+                        "lon": item[2]["lon"],
+                        "sched": f"{(int(item[1]) // 60) % 24:02d}:{int(item[1]) % 60:02d}",
+                    }
                     for item in rows
                 ],
             }
@@ -513,7 +720,13 @@ def build_shape_cache(zip_bytes: bytes) -> dict:
     trains: dict[str, dict] = {}
     for run in merge_through_runs(collected):
         served = [
-            {"name": stop["name"], "lat": stop.get("lat"), "lon": stop.get("lon")}
+            {
+                "name": stop["name"],
+                "lat": stop.get("lat"),
+                "lon": stop.get("lon"),
+                "sched": stop.get("sched"),
+                "route_id": str(stop.get("line") or ""),
+            }
             for stop in run.get("stops") or []
             if stop.get("lat") is not None
         ]
@@ -540,7 +753,9 @@ def build_shape_cache(zip_bytes: bytes) -> dict:
         shape_id = "+".join(shape_ids) if len(shape_ids) > 1 else (shape_ids[0] if shape_ids else "")
         if not shape_id:
             shape_id = "stops:" + str(run.get("number") or run.get("label") or "")
-        shapes[shape_id] = pieces
+            shapes[shape_id] = pieces
+        elif len(shape_ids) > 1:
+            shapes[shape_id] = pieces
         info = {
             "shape_id": shape_id,
             "route_id": str((run.get("segments") or [{}])[0].get("route_id") or ""),

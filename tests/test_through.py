@@ -181,3 +181,105 @@ def test_missing_next_stop_is_logged_once():
         logging.getLogger("septa_through_ride").removeHandler(handler)
     assert len(logs) == 1
     assert "Not A Stop" in logs[0]
+
+
+def test_a_prefixed_shape_cache_still_draws_the_whole_ride():
+    cache = {
+        "shapes": {
+            "sh1": [[40.0, -75.3], [40.05, -75.2], [39.95, -75.16]],
+            "sh2": [[39.95, -75.16], [39.94, -75.2], [39.9, -75.4]],
+        },
+        "routes": {
+            "LAN": {"color": "#4E87A0", "name": "Lansdale/Doylestown"},
+            "MED": {"color": "#6D2077", "name": "Media/Wawa"},
+        },
+        "trains": {
+            "LAN5311": {
+                "shape_id": "sh1",
+                "route_id": "LAN",
+                "stops": [
+                    {"name": "Stop A", "lat": 40.0, "lon": -75.3, "sched": "07:41", "route_id": "LAN"},
+                    {"name": "Stop B", "lat": 40.05, "lon": -75.2, "sched": "08:00", "route_id": "LAN"},
+                    {"name": "Hub", "lat": 39.95, "lon": -75.16, "sched": "08:20", "route_id": "LAN"},
+                ],
+            },
+            "MED5311": {
+                "shape_id": "sh2",
+                "route_id": "MED",
+                "stops": [
+                    {"name": "Hub", "lat": 39.95, "lon": -75.16, "sched": "08:25", "route_id": "MED"},
+                    {"name": "Stop C", "lat": 39.94, "lon": -75.2, "sched": "08:40", "route_id": "MED"},
+                    {"name": "Penn Medicine Station", "lat": 39.9, "lon": -75.4, "sched": "09:00", "route_id": "MED"},
+                ],
+            },
+        },
+    }
+    ride = {
+        "riding": True,
+        "train": "5311",
+        "next_stop": "Stop B",
+        "current_stop": "Stop A",
+        "alight_station": "Penn Medicine",
+        "origin": "Stop A",
+        "remaining_stops": [{"station": "Stop B", "sched": "08:00", "est": "08:04"}],
+    }
+    H._MISSED_SHAPE.clear()
+    route = H.attach_route(ride, cache, {})
+    assert route["route_shape_source"] == "gtfs"
+    assert route["route_color"] == "#4E87A0"
+    assert route["route_shape"][0] == [40.0, -75.3]
+    assert route["route_shape"][-1] == [39.9, -75.4]
+    assert [row["name"] for row in route["stops"]] == ["Stop A", "Stop B", "Hub", "Stop C", "Penn Medicine Station"]
+    assert [row["name"] for row in route["stops"] if row["passed"]] == ["Stop A"]
+    assert route["stops"][1]["est"] == "08:04"
+    assert route["stops"][-1]["alight"] is True
+    later = H.attach_route({**ride, "next_stop": "Stop C"}, cache, {})
+    assert [row["name"] for row in later["stops"] if row["passed"]] == ["Stop A", "Stop B", "Hub"]
+    assert later["route_color"] == "#6D2077"
+    assert H.line_title("MED", cache["routes"], {"MED": "Media/Wawa"}) == "Media/Wawa"
+
+
+def test_missing_shape_falls_back_to_the_stops():
+    cache = {
+        "shapes": {},
+        "routes": {"LAN": {"color": "#111111", "name": "Lansdale/Doylestown"}},
+        "trains": {
+            "LAN5311": {
+                "shape_id": "missing",
+                "route_id": "LAN",
+                "stops": [
+                    {"name": "Stop A", "lat": 40.0, "lon": -75.3, "route_id": "LAN"},
+                    {"name": "Stop B", "lat": 40.05, "lon": -75.2, "route_id": "LAN"},
+                ],
+            }
+        },
+    }
+    H._MISSED_SHAPE.clear()
+    logs = []
+
+    class Grab(logging.Handler):
+        def emit(self, record):
+            logs.append(record.getMessage())
+
+    handler = Grab()
+    logging.getLogger("septa_through_shapes").addHandler(handler)
+    try:
+        ride = {"riding": True, "train": "5311", "next_stop": "Stop B", "origin": "Stop A"}
+        route = H.attach_route(ride, cache, {})
+        H.attach_route(ride, cache, {})
+    finally:
+        logging.getLogger("septa_through_shapes").removeHandler(handler)
+    assert route["route_shape_source"] == "stops"
+    assert route["route_shape"] == [[40.0, -75.3], [40.05, -75.2]]
+    assert route["route_color"] == "#111111"
+    assert len(logs) == 1
+
+
+def test_loose_destination_is_the_canonical_alight_stop():
+    order = ["Stop A", "Hub", "Penn Medicine Station"]
+    name, source = R.choose_alight(None, 1, None, order, "Stop A", "Penn Medicine", "service")
+    assert name == "Penn Medicine Station"
+    assert source == "service"
+    selected, source = R.choose_alight(None, 1, "Hub", order, "Stop A", "nowhere", "select")
+    assert selected == "Hub" and source == "home"
+

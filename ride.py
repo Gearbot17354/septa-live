@@ -402,22 +402,54 @@ def station_is_ahead(order: list[str], current: str | None, target: str | None) 
     return keys.index(want) > keys.index(here)
 
 
+def _canonical_stop(order: list[str], name: object) -> str | None:
+    want = _stop_key(name)
+    if not want:
+        return None
+    for stop in order or []:
+        if _stop_key(stop) == want:
+            return str(stop)
+    return None
+
+
 def choose_alight(
     expected: dict | None,
     leg: int,
     home: str | None,
     order: list[str],
     current: str | None,
+    selected: str | None = None,
+    selected_source: str | None = None,
 ) -> tuple[str | None, str]:
-    """Where this rider gets off: planned stop, connection, or home if it is still ahead."""
+    """Where this rider gets off: planned stop, selected destination, connection, or home."""
+
+    def ahead(name: object) -> str | None:
+        canonical = _canonical_stop(order, name)
+        if not canonical:
+            return None
+        if not _stop_key(current) or _stop_key(current) not in {_stop_key(stop) for stop in order}:
+            return canonical
+        if station_is_ahead(order, current, canonical) or _stop_key(canonical) == _stop_key(current):
+            return canonical
+        return None
+
     dest = "" if not expected else str(expected.get("destination") or "").strip()
-    if dest:
-        return dest, "planned"
+    hit = ahead(dest)
+    if hit:
+        return hit, "planned"
+    if str(selected or "").strip():
+        hit = ahead(selected)
+        if hit:
+            return hit, selected_source or "service"
     connection = "" if not expected else str(expected.get("connection_station") or "").strip()
     if leg == 1 and connection:
-        return connection, "connection"
-    if home and station_is_ahead(order, current, home):
-        return str(home).strip(), "home"
+        hit = ahead(connection)
+        if hit:
+            return hit, "connection"
+    if home:
+        hit = ahead(home)
+        if hit:
+            return hit, "home"
     return None, "none"
 
 
@@ -1102,6 +1134,7 @@ class RideMatcher:
         self.alight_source = "none"
         self.alight_est = None
         self.through_line = None
+        self.through_line_code = None
         self.through_at = None
         self.stop_source = None
         self.delay_min = None
@@ -1787,6 +1820,7 @@ class RideMatcher:
             "planned_trip": self.planned_trip(),
             "transfer_next": False,
             "through_line": self.through_line,
+            "through_line_code": self.through_line_code,
             "through_at": self.through_at,
             "leg": self.leg if self.expected else 1,
             "final_destination": (

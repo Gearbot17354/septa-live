@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.13.12
+
+### Fixed
+
+- Rider train trackers now include the train's route line, colour and stops while riding (it was always empty), the continuing line is shown by name, and the stop you're getting off at is filled in.
+
 ## 1.13.11
 
 ### Fixed

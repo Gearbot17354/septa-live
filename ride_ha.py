@@ -34,6 +34,7 @@ from .const import (
     TRAINVIEW_URL,
 )
 from .coordinator import NY, _LINE_NAMES, cached_schedule
+from .shapes import line_title
 from .ride import (
     Fix,
     RideMatcher,
@@ -188,6 +189,7 @@ class RiderController:
         station = None if not self.matcher.expected else self.matcher.expected.get("connection_station")
         payload["transfer_next"] = approaching_connection(remaining, station)
         payload["through_line"] = self.matcher.through_line
+        payload["through_line_code"] = self.matcher.through_line_code
         payload["through_at"] = self.matcher.through_at
         payload["remaining_source"] = self._remaining_source if self.matcher.riding else None
         payload["delay_min"] = self.matcher.delay_min
@@ -421,12 +423,68 @@ class RiderController:
             return home
         return str(options.get(CONF_HOME_STATION) or data.get("station") or "").strip()
 
+    def _route_tables(self) -> tuple[dict, dict]:
+        keeper = getattr(self.coordinator, "rail_schedule", None)
+        shapes = getattr(keeper, "shapes", None) if keeper is not None else None
+        routes = shapes.get("routes") if isinstance(shapes, dict) else {}
+        return routes if isinstance(routes, dict) else {}, _LINE_NAMES
+
+    def _name_line(self, code: object) -> tuple[str | None, str | None]:
+        text = str(code or "").strip()
+        if not text:
+            return None, None
+        routes, names = self._route_tables()
+        title = line_title(text, routes, names)
+        if title and title != text:
+            return title, text
+        return title, None
+
+    def _selected_destination(self) -> tuple[str | None, str | None]:
+        """Destination from the service, a select entity, or the saved option."""
+        board = getattr(self.coordinator, "dynamic", None)
+        manual = getattr(board, "_manual_dest", None) if board is not None else None
+        if isinstance(manual, dict):
+            chosen = str(manual.get(self.slug) or "").strip()
+            if chosen:
+                return chosen, "service"
+        options = self.entry.options if isinstance(self.entry.options, dict) else {}
+        data = self.entry.data if isinstance(self.entry.data, dict) else {}
+        riders = options.get("riders_cfg") if isinstance(options.get("riders_cfg"), dict) else {}
+        mine = riders.get(self.slug) if isinstance(riders.get(self.slug), dict) else {}
+        entity = str(mine.get("destination_entity") or options.get("destination_entity") or "").strip()
+        if entity:
+            state = self.hass.states.get(entity)
+            text = "" if state is None else str(state.state or "").strip()
+            if text and text.casefold() not in {"unknown", "unavailable", "none", ""}:
+                return text, "select"
+        saved = str(mine.get("default_destination") or options.get("destination") or data.get("destination") or "").strip()
+        if saved:
+            return saved, "service"
+        return None, None
+
+    def _remember_through(self, train: Train, current: object, nxt: object) -> None:
+        full = remaining_from_timetable(cached_schedule(), train.trainno, datetime.now(NY).weekday(), None, None, None, None)
+        code, where = through_change(full, current, nxt)
+        title, short = self._name_line(code)
+        self.matcher.through_line = title
+        self.matcher.through_line_code = short
+        self.matcher.through_at = where
+
     def _publish_stops(self, rows: list[dict], train: Train, source: str, order: list[str]) -> None:
         late = int(train.late or 0)
         home = self._home_station()
         self.matcher.home_station = home
         self.matcher.delay_min = late
-        alight, alight_source = choose_alight(self.matcher.expected, self.matcher.leg, home, order, train.currentstop)
+        selected, selected_source = self._selected_destination()
+        alight, alight_source = choose_alight(
+            self.matcher.expected,
+            self.matcher.leg,
+            home,
+            order,
+            train.currentstop,
+            selected,
+            selected_source,
+        )
         kept = []
         for row in rows:
             if alight and _stop_key(row.get("station")) == _stop_key(alight):
@@ -505,15 +563,16 @@ class RiderController:
         if self._rr_raw:
             order = [str(row.get("station") or "") for row in self._rr_raw]
             rows = remaining_stops(self._rr_raw, train.currentstop, train.nextstop, None)
-            self.matcher.through_line = None
-            self.matcher.through_at = None
+            self._remember_through(train, train.currentstop, train.nextstop)
             self._publish_stops(rows, train, "rrschedules", order)
             return
         now_ny = datetime.now(NY)
         minutes = now_ny.hour * 60 + now_ny.minute
         full = remaining_from_timetable(cached_schedule(), train.trainno, now_ny.weekday(), None, None, None, None)
-        line, where = through_change(full, train.currentstop, train.nextstop)
-        self.matcher.through_line = line
+        code, where = through_change(full, train.currentstop, train.nextstop)
+        title, short = self._name_line(code)
+        self.matcher.through_line = title
+        self.matcher.through_line_code = short
         self.matcher.through_at = where
         rows = remaining_from_timetable(
             cached_schedule(),
