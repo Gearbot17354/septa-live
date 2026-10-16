@@ -154,10 +154,11 @@ class TimetableIndex:
                             "dest": str(row.get("d") or ""),
                             "direction": direction,
                             "clock": str(row.get("t") or "")[:5],
+                            "seq": int(row.get("seq") or 0),
                         }
                     )
         for train, stops in list(self.trains.items()):
-            stops.sort(key=lambda item: item["when"])
+            stops.sort(key=lambda item: (item["when"], item.get("seq") or 0))
             seen: set[str] = set()
             unique: list[dict] = []
             for stop in stops:
@@ -166,6 +167,8 @@ class TimetableIndex:
                 seen.add(stop["key"])
                 unique.append(stop)
             self.trains[train] = unique
+        self._chain_through()
+        for train, unique in self.trains.items():
             self.pos[train] = {stop["key"]: index for index, stop in enumerate(unique)}
             self.by_number.setdefault(bare_train(train), []).append(train)
             if unique:
@@ -200,6 +203,72 @@ class TimetableIndex:
             self.full_skipped[train] = missing
         for rows in self.calling.values():
             rows.sort(key=lambda item: item[0])
+
+    def _chain_through(self) -> None:
+        """Join trips that share a train number and continue end to end. Already one path is left alone."""
+        groups: dict[str, list[str]] = {}
+        for name in list(self.trains):
+            if self.trains.get(name):
+                groups.setdefault(bare_train(name), []).append(name)
+        for names in groups.values():
+            if len(names) < 2:
+                continue
+            names.sort(key=lambda name: self.trains[name][0]["when"])
+            used: set[str] = set()
+            for name in names:
+                if name in used:
+                    continue
+                used.add(name)
+                while True:
+                    path = self.trains.get(name) or []
+                    if not path:
+                        break
+                    end = path[-1]
+                    nxt = None
+                    for other in names:
+                        if other in used or not self.trains.get(other):
+                            continue
+                        start = self.trains[other][0]
+                        gap = (start["when"] - end["when"]).total_seconds()
+                        if gap < 0 or gap > 20 * 60:
+                            continue
+                        same = start["key"] == end["key"]
+                        follows = start["key"] not in {stop["key"] for stop in path}
+                        if not same and not follows:
+                            continue
+                        nxt = other
+                        break
+                    if nxt is None:
+                        break
+                    used.add(nxt)
+                    extra = self.trains.pop(nxt) or []
+                    if extra and extra[0]["key"] == end["key"]:
+                        extra = extra[1:]
+                    path.extend(extra)
+
+    def _crosses_line(self, path: list[dict], start: int, finish: int) -> bool:
+        lines = {str(path[index].get("line") or "") for index in range(start, finish + 1)}
+        lines.discard("")
+        return len(lines) > 1
+
+    def segments_for(self, trainno: str) -> list[dict]:
+        path = self.stops_for_number(trainno)
+        if not path:
+            return []
+        segments: list[dict] = []
+        start = 0
+        for index in range(1, len(path) + 1):
+            if index == len(path) or str(path[index].get("line") or "") != str(path[start].get("line") or ""):
+                segments.append(
+                    {
+                        "line": str(path[start].get("line") or ""),
+                        "route_id": str(path[start].get("line") or ""),
+                        "first": path[start]["station"],
+                        "last": path[index - 1]["station"],
+                    }
+                )
+                start = index
+        return segments
 
     def itineraries(
         self,
@@ -246,7 +315,8 @@ class TimetableIndex:
             terminal = str(path[-1].get("dest") or path[-1]["station"])
             finish = self.pos.get(train, {}).get(dest_key)
             if finish is not None and finish > start:
-                directs.append(self._direct_row(train, path, start, finish, line, terminal, through=False))
+                through = self._crosses_line(path, start, finish)
+                directs.append(self._direct_row(train, path, start, finish, line, terminal, through=through))
                 continue
             merged = self._through_row(train, path, start, dest_key, line, terminal) if through else None
             if merged is not None:
@@ -558,7 +628,16 @@ class TimetableIndex:
         path = self.trains.get(trains[0]) if trains else None
         if not path:
             return []
-        return [{"station": stop["station"], "when": stop["when"], "key": stop["key"], "clock": stop.get("clock")} for stop in path]
+        return [
+            {
+                "station": stop["station"],
+                "when": stop["when"],
+                "key": stop["key"],
+                "clock": stop.get("clock"),
+                "line": stop.get("line") or "",
+            }
+            for stop in path
+        ]
 
 
 def cached_itineraries(

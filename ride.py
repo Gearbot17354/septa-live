@@ -581,6 +581,47 @@ def approaching_connection(remaining: list[dict], station: str | None) -> bool:
     return False
 
 
+_MISSED_NEXT: set[tuple] = set()
+
+
+def note_missing_next(trainno: object, nextstop: object, day: object) -> None:
+    """TrainView named a stop that is not on this train. Once per train, stop and day."""
+    key = (str(trainno or ""), _stop_key(nextstop), str(day or ""))
+    if not key[0] or not key[1] or key in _MISSED_NEXT:
+        return
+    _MISSED_NEXT.add(key)
+    _LOGGER.warning("SEPTA next stop %s is not on the timetable for train %s", nextstop, trainno)
+
+
+def through_change(rows: list[dict] | None, current: object = None, nxt: object = None) -> tuple[str | None, str | None]:
+    """Next segment's line and the station where this train changes line. Not a transfer."""
+    segments: list[dict] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        line = str(row.get("line") or "")
+        station = str(row.get("station") or "")
+        if not station:
+            continue
+        if not segments or segments[-1]["line"] != line:
+            segments.append({"line": line, "last": station, "stops": [station]})
+        else:
+            segments[-1]["last"] = station
+            segments[-1]["stops"].append(station)
+    if len([item for item in segments if item["line"]]) < 2:
+        return None, None
+    here = _stop_key(nxt or current)
+    index = 0
+    if here:
+        for at, segment in enumerate(segments):
+            if any(_stop_key(name) == here for name in segment["stops"]):
+                index = at
+                break
+    if index + 1 >= len(segments):
+        return None, None
+    return segments[index + 1]["line"] or None, segments[index]["last"] or None
+
+
 def weekday_bit(weekday: int) -> int:
     """Sunday is bit 0. Python weekday is Monday=0."""
     return 1 << ((weekday + 1) % 7)
@@ -591,7 +632,16 @@ def _indexed_stops(schedule: dict | None, trainno: str, weekday: int):
     try:
         from .index import index_for
     except ImportError:
-        return None
+        try:
+            import importlib.util
+            from pathlib import Path
+
+            spec = importlib.util.spec_from_file_location("septa_index_ride", Path(__file__).with_name("index.py"))
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            index_for = module.index_for
+        except Exception:
+            return None
     today = datetime.now(NY).date()
     delta = (int(weekday) - today.weekday()) % 7
     day = today + timedelta(days=delta)
@@ -611,7 +661,7 @@ def _indexed_stops(schedule: dict | None, trainno: str, weekday: int):
             mins = int(parts[0]) * 60 + int(parts[1])
         except ValueError:
             continue
-        found.append((mins, str(stop["station"]), clock))
+        found.append((mins, str(stop["station"]), clock, str(stop.get("line") or "")))
     return found
 
 
@@ -629,12 +679,26 @@ def remaining_from_timetable(
     if not isinstance(stations, dict):
         return []
     bit = weekday_bit(weekday)
-    found: list[tuple[int, str, str]] = []
+    found: list[tuple] = []
     want = str(trainno)
+    try:
+        from .trips import bare_train
+    except ImportError:
+        try:
+            import importlib.util
+            from pathlib import Path
+
+            spec = importlib.util.spec_from_file_location("septa_trips_ride", Path(__file__).with_name("trips.py"))
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            bare_train = module.bare_train
+        except Exception:
+            bare_train = lambda value: str(value or "")
     indexed = _indexed_stops(schedule, want, weekday)
     if indexed is not None:
         found = indexed
     else:
+        wanted = bare_train(want)
         for name, dirs in stations.items():
             if not isinstance(dirs, dict):
                 continue
@@ -643,7 +707,10 @@ def remaining_from_timetable(
                 if not isinstance(rows, list):
                     continue
                 for row in rows:
-                    if not isinstance(row, dict) or str(row.get("n") or "") != want:
+                    if not isinstance(row, dict):
+                        continue
+                    stored = str(row.get("n") or "")
+                    if stored != want and bare_train(stored) != wanted:
                         continue
                     days = int(row.get("days") or 0)
                     if days and not (days & bit):
@@ -654,17 +721,19 @@ def remaining_from_timetable(
                         mins = int(hour) * 60 + int(minute)
                     except ValueError:
                         continue
-                    found.append((mins, str(name), clock))
+                    found.append((mins, str(name), clock, str(row.get("line") or "")))
     found.sort()
-    unique: list[tuple[int, str, str]] = []
+    unique: list[tuple] = []
     seen: set[tuple[str, str]] = set()
-    for mins, name, clock in found:
+    for mins, name, clock, line in found:
         key = (_stop_key(name), clock)
         if key in seen:
             continue
         seen.add(key)
-        unique.append((mins, name, clock))
+        unique.append((mins, name, clock, line))
     found = unique
+    if nextstop and not any(_stop_key(row[1]) == _stop_key(nextstop) for row in found):
+        note_missing_next(want, nextstop, weekday)
     matched = False
     if _stop_key(currentstop):
         needle = _stop_key(currentstop)
@@ -675,7 +744,7 @@ def remaining_from_timetable(
                 break
     if not matched and after_minutes is not None:
         found = [row for row in found if row[0] >= after_minutes]
-    pending = [{"station": name, "sched": clock, "est": clock} for _, name, clock in found]
+    pending = [{"station": name, "sched": clock, "est": clock, "line": line} for _, name, clock, line in found]
     pending = align_remaining(pending, nextstop)
     return _cut_until(pending, until)
 
@@ -1032,6 +1101,8 @@ class RideMatcher:
         self.alight_station = None
         self.alight_source = "none"
         self.alight_est = None
+        self.through_line = None
+        self.through_at = None
         self.stop_source = None
         self.delay_min = None
         self.published_current = None
@@ -1715,6 +1786,8 @@ class RideMatcher:
             "expected_train": self.active_expected(),
             "planned_trip": self.planned_trip(),
             "transfer_next": False,
+            "through_line": self.through_line,
+            "through_at": self.through_at,
             "leg": self.leg if self.expected else 1,
             "final_destination": (
                 None

@@ -88,6 +88,102 @@ def _texts(blob: bytes) -> dict[str, str]:
     return found
 
 
+def collect_runs(files: dict[str, str]) -> list[dict]:
+    """GTFS text tables → one run per physical train, through-routed trips joined."""
+    try:
+        from .trips import merge_through_runs
+    except ImportError:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("septa_trips_sched", Path(__file__).with_name("trips.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        merge_through_runs = module.merge_through_runs
+    stops = {row.get("stop_id"): row.get("stop_name") or row.get("stop_id") for row in _csv(files.get("stops") or "")}
+    services = {row.get("service_id"): _day_mask(row) for row in _csv(files.get("calendar") or "")}
+    by_id = {row.get("trip_id"): row for row in _csv(files.get("trips") or "")}
+    buckets: dict[str, list] = {}
+    for row in _csv(files.get("stop_times") or ""):
+        trip_id = row.get("trip_id") or ""
+        trip = by_id.get(trip_id)
+        if not trip:
+            continue
+        name = stops.get(row.get("stop_id") or "")
+        clock = str(row.get("arrival_time") or row.get("departure_time") or "")
+        parts = clock.split(":")
+        if not name or len(parts) < 2:
+            continue
+        try:
+            hour, minute = int(parts[0]), int(parts[1])
+            seq = int(row.get("stop_sequence") or 0)
+        except ValueError:
+            continue
+        extra = hour // 24
+        minutes = hour * 60 + minute
+        hour %= 24
+        buckets.setdefault(trip_id, []).append(
+            {
+                "name": str(name),
+                "seq": seq + extra * 10000,
+                "minutes": minutes,
+                "clock": f"{hour:02d}:{minute:02d}",
+            }
+        )
+    trips = []
+    for trip_id, rows in buckets.items():
+        trip = by_id.get(trip_id) or {}
+        rows.sort(key=lambda item: (item["seq"], item["minutes"]))
+        service = str(trip.get("service_id") or "")
+        trips.append(
+            {
+                "id": trip_id,
+                "route_id": str(trip.get("route_id") or ""),
+                "service": service,
+                "days": services.get(service, 127),
+                "headsign": str(trip.get("trip_headsign") or ""),
+                "number": str(trip.get("trip_short_name") or trip_id).strip(),
+                "direction": str(trip.get("direction_id") or "0").strip(),
+                "block": str(trip.get("block_id") or "").strip(),
+                "shape": str(trip.get("shape_id") or "").strip(),
+                "stops": rows,
+            }
+        )
+    return merge_through_runs(trips)
+
+
+def stations_from_runs(runs: list[dict], *, use_direction: bool) -> tuple[dict, dict]:
+    """Station timetable plus segment metadata for trains that run through."""
+    stations: dict[str, dict] = {}
+    trains: dict[str, dict] = {}
+    for run in runs:
+        number = str(run.get("label") or run.get("number") or "")
+        if not number:
+            continue
+        direction = "N" if use_direction and str(run.get("direction") or "0") == "1" else "S"
+        destination = str(run.get("destination") or run.get("headsign") or "")
+        if run.get("through"):
+            trains[str(run.get("number") or number)] = {
+                "destination": destination,
+                "segments": list(run.get("segments") or []),
+            }
+        for stop in run.get("stops") or []:
+            name = str(stop.get("name") or "")
+            if not name:
+                continue
+            pack = stations.setdefault(name, {"N": [], "S": []})
+            pack[direction].append(
+                {
+                    "t": stop.get("clock"),
+                    "d": destination,
+                    "n": number,
+                    "line": str(stop.get("line") or ""),
+                    "days": int(run.get("days") or 127),
+                    "seq": int(stop.get("seq") or 0),
+                }
+            )
+    return stations, trains
+
+
 def build_schedule(zip_bytes: bytes) -> dict:
     """GTFS zip (or gtfs_public.zip containing google_rail.zip) → rail-schedule.json shape."""
     if not isinstance(zip_bytes, (bytes, bytearray)) or not zip_bytes:
@@ -100,39 +196,8 @@ def build_schedule(zip_bytes: bytes) -> dict:
         raise ValueError("parse") from err
     if "stops" not in files or "stop_times" not in files or "trips" not in files:
         raise ValueError("parse")
-    stops = {row.get("stop_id"): row.get("stop_name") or row.get("stop_id") for row in _csv(files.get("stops") or "")}
-    services = {row.get("service_id"): _day_mask(row) for row in _csv(files.get("calendar") or "")}
-    trips = {row.get("trip_id"): row for row in _csv(files.get("trips") or "")}
-    stations: dict[str, dict] = {}
-    for row in _csv(files.get("stop_times") or ""):
-        trip = trips.get(row.get("trip_id") or "")
-        if not trip:
-            continue
-        name = stops.get(row.get("stop_id") or "")
-        clock = str(row.get("arrival_time") or row.get("departure_time") or "")
-        parts = clock.split(":")
-        if not name or len(parts) < 2:
-            continue
-        try:
-            hour, minute = int(parts[0]), int(parts[1])
-        except ValueError:
-            continue
-        extra = hour // 24
-        hour %= 24
-        stamp = f"{hour:02d}:{minute:02d}"
-        train = str(trip.get("trip_short_name") or trip.get("trip_id") or "").strip()
-        direction = "N" if str(trip.get("direction_id") or "0").strip() == "1" else "S"
-        pack = stations.setdefault(str(name), {"N": [], "S": []})
-        pack[direction].append(
-            {
-                "t": stamp,
-                "d": str(trip.get("trip_headsign") or ""),
-                "n": train,
-                "line": str(trip.get("route_id") or ""),
-                "days": services.get(trip.get("service_id") or "", 127),
-                "seq": int(row.get("stop_sequence") or 0) + extra * 10000,
-            }
-        )
+    runs = collect_runs(files)
+    stations, trains = stations_from_runs(runs, use_direction=True)
     dates: list[str] = []
     for row in _csv(files.get("calendar") or ""):
         stamp = _yyyymmdd(row.get("end_date"))
@@ -154,7 +219,10 @@ def build_schedule(zip_bytes: bytes) -> dict:
                 dates.append(stamp)
     if not feed:
         feed = hashlib.sha256(bytes(zip_bytes)).hexdigest()[:16]
-    return {"feed": feed, "validUntil": max(dates) if dates else "", "stations": stations}
+    payload = {"feed": feed, "validUntil": max(dates) if dates else "", "stations": stations}
+    if trains:
+        payload["trains"] = trains
+    return payload
 
 
 def read_schedule_file(path: Path | str) -> dict | None:

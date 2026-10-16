@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.13.11
+
+### Fixed
+
+- Trains that run through Center City (e.g. Lansdale/Doylestown continuing to Media/Wawa) now show every stop, the correct next stop and the full route, instead of only the stops after Center City.
+
 ## 1.13.10
 
 ### Fixed

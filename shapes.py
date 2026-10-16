@@ -471,25 +471,89 @@ def build_shape_cache(zip_bytes: bytes) -> dict:
         if not trip_id or not stop or stop.get("lat") is None:
             continue
         seq = _num(row.get("stop_sequence"))
-        order.setdefault(trip_id, []).append((0 if seq is None else seq, dict(stop)))
-    trains: dict[str, dict] = {}
+        clock = str(row.get("arrival_time") or row.get("departure_time") or "")
+        parts = clock.split(":")
+        minutes = 0
+        if len(parts) >= 2:
+            try:
+                minutes = int(parts[0]) * 60 + int(parts[1])
+            except ValueError:
+                minutes = 0
+        order.setdefault(trip_id, []).append((0 if seq is None else seq, minutes, dict(stop)))
+    try:
+        from .trips import bare_train, merge_through_runs
+    except ImportError:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("septa_trips_shapes", Path(__file__).with_name("trips.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        bare_train = module.bare_train
+        merge_through_runs = module.merge_through_runs
+    collected = []
     for trip_id, rows in order.items():
         trip = trips.get(trip_id) or {}
-        number = str(trip.get("trip_short_name") or trip_id).strip()
-        if not number:
+        rows.sort(key=lambda item: (item[0], item[1]))
+        collected.append(
+            {
+                "id": trip_id,
+                "route_id": str(trip.get("route_id") or ""),
+                "service": str(trip.get("service_id") or ""),
+                "headsign": str(trip.get("trip_headsign") or ""),
+                "number": str(trip.get("trip_short_name") or trip_id).strip(),
+                "direction": str(trip.get("direction_id") or "0"),
+                "block": str(trip.get("block_id") or "").strip(),
+                "shape": str(trip.get("shape_id") or "").strip(),
+                "stops": [
+                    {"name": item[2]["name"], "seq": item[0], "minutes": item[1], "lat": item[2]["lat"], "lon": item[2]["lon"]}
+                    for item in rows
+                ],
+            }
+        )
+    trains: dict[str, dict] = {}
+    for run in merge_through_runs(collected):
+        served = [
+            {"name": stop["name"], "lat": stop.get("lat"), "lon": stop.get("lon")}
+            for stop in run.get("stops") or []
+            if stop.get("lat") is not None
+        ]
+        if len(served) < 2 and not run.get("through"):
+            if len(served) < 1:
+                continue
+        pieces = []
+        shape_ids = []
+        for segment in run.get("segments") or []:
+            shape_id = str(segment.get("shape_id") or "")
+            line = shapes.get(shape_id) if shape_id else None
+            if line and len(line) >= 2:
+                if pieces and line and pieces[-1] == line[0]:
+                    line = line[1:]
+                pieces.extend(line)
+                shape_ids.append(shape_id)
+        if len(pieces) < 2:
+            pieces = [[stop["lat"], stop["lon"]] for stop in served]
+            if len(pieces) == 1:
+                pieces = [pieces[0], pieces[0]]
+            shape_ids = []
+        if len(pieces) < 2:
             continue
-        served = [item[1] for item in sorted(rows, key=lambda item: item[0])]
-        shape_id = str(trip.get("shape_id") or "").strip()
-        line = shapes.get(shape_id) if shape_id else None
-        if not line or len(line) < 2:
-            line = [[stop["lat"], stop["lon"]] for stop in served]
-            if len(line) == 1:
-                line = [line[0], line[0]]
-            shape_id = f"stops:{number}"
-            shapes[shape_id] = line
-        if len(line) < 2:
-            continue
-        trains[number] = {"shape_id": shape_id, "route_id": str(trip.get("route_id") or ""), "stops": served}
+        shape_id = "+".join(shape_ids) if len(shape_ids) > 1 else (shape_ids[0] if shape_ids else "")
+        if not shape_id:
+            shape_id = "stops:" + str(run.get("number") or run.get("label") or "")
+        shapes[shape_id] = pieces
+        info = {
+            "shape_id": shape_id,
+            "route_id": str((run.get("segments") or [{}])[0].get("route_id") or ""),
+            "stops": served,
+            "segments": list(run.get("segments") or []),
+        }
+        keys = {str(run.get("label") or ""), str(run.get("number") or ""), bare_train(run.get("number"))}
+        for source in run.get("sources") or []:
+            keys.add(str(source))
+            keys.add(bare_train(source))
+        for key in keys:
+            if key:
+                trains[key] = info
     if not trains:
         raise ValueError("shapes")
     return {"shapes": shapes, "trains": trains, "routes": _routes(files.get("routes") or "")}

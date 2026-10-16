@@ -41,6 +41,7 @@ from .ride import (
     apply_delay,
     approaching_connection,
     choose_alight,
+    through_change,
     classify_fix,
     configured_riders,
     dedupe_riders,
@@ -186,6 +187,8 @@ class RiderController:
             payload["next_stop"] = remaining[0].get("station") or payload.get("next_stop")
         station = None if not self.matcher.expected else self.matcher.expected.get("connection_station")
         payload["transfer_next"] = approaching_connection(remaining, station)
+        payload["through_line"] = self.matcher.through_line
+        payload["through_at"] = self.matcher.through_at
         payload["remaining_source"] = self._remaining_source if self.matcher.riding else None
         payload["delay_min"] = self.matcher.delay_min
         payload["alight_station"] = self.matcher.alight_station
@@ -502,11 +505,16 @@ class RiderController:
         if self._rr_raw:
             order = [str(row.get("station") or "") for row in self._rr_raw]
             rows = remaining_stops(self._rr_raw, train.currentstop, train.nextstop, None)
+            self.matcher.through_line = None
+            self.matcher.through_at = None
             self._publish_stops(rows, train, "rrschedules", order)
             return
         now_ny = datetime.now(NY)
         minutes = now_ny.hour * 60 + now_ny.minute
         full = remaining_from_timetable(cached_schedule(), train.trainno, now_ny.weekday(), None, None, None, None)
+        line, where = through_change(full, train.currentstop, train.nextstop)
+        self.matcher.through_line = line
+        self.matcher.through_at = where
         rows = remaining_from_timetable(
             cached_schedule(),
             train.trainno,

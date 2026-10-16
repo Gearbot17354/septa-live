@@ -1612,40 +1612,24 @@ def _calendar_mask(row: dict) -> int:
 
 def gtfs_tables_to_schedule(files: dict[str, str]) -> dict:
     """Turn the rail GTFS text files into the bundled timetable shape."""
-    stops = {row.get("stop_id"): row.get("stop_name") or row.get("stop_id") for row in _csv(files.get("stops") or "")}
-    services = {row.get("service_id"): _calendar_mask(row) for row in _csv(files.get("calendar") or "")}
-    trips = {row.get("trip_id"): row for row in _csv(files.get("trips") or "")}
-    stations: dict[str, dict] = {}
-    for row in _csv(files.get("stop_times") or ""):
-        trip = trips.get(row.get("trip_id") or "")
-        if not trip:
-            continue
-        name = stops.get(row.get("stop_id") or "")
-        clock = str(row.get("arrival_time") or row.get("departure_time") or "")
-        parts = clock.split(":")
-        if not name or len(parts) < 2:
-            continue
-        try:
-            hour, minute = int(parts[0]), int(parts[1])
-        except ValueError:
-            continue
-        extra = hour // 24
-        hour %= 24
-        stamp = f"{hour:02d}:{minute:02d}"
-        train = str(trip.get("trip_short_name") or trip.get("trip_id") or "").strip()
-        pack = stations.setdefault(str(name), {"N": [], "S": []})
-        pack["S"].append(
-            {
-                "t": stamp,
-                "d": str(trip.get("trip_headsign") or ""),
-                "n": train,
-                "line": str(trip.get("route_id") or ""),
-                "days": services.get(trip.get("service_id") or "", 127),
-                "seq": int(row.get("stop_sequence") or 0) + extra * 10000,
-            }
-        )
+    try:
+        from .schedule import collect_runs, stations_from_runs
+    except ImportError:
+        import importlib.util
+        from pathlib import Path
+
+        spec = importlib.util.spec_from_file_location("septa_schedule_dyn", Path(__file__).with_name("schedule.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        collect_runs = module.collect_runs
+        stations_from_runs = module.stations_from_runs
+    runs = collect_runs(files)
+    stations, trains = stations_from_runs(runs, use_direction=False)
     until = ""
     info = _csv(files.get("feed_info") or "")
     if info:
         until = re.sub(r"\D", "", str(info[0].get("feed_end_date") or ""))[:8]
-    return {"feed": "gtfs", "validUntil": until, "stations": stations}
+    payload = {"feed": "gtfs", "validUntil": until, "stations": stations}
+    if trains:
+        payload["trains"] = trains
+    return payload

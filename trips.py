@@ -80,6 +80,104 @@ def bare_train(value: object) -> str:
     return stripped or text
 
 
+def merge_through_runs(trips: list[dict]) -> list[dict]:
+    """Join GTFS trips that are one physical train.
+
+    A trip needs ``stops`` in running order. Stops use ``name``, ``minutes`` and ``seq``.
+    Trips chain when they share a service and train number (or block), the same ``block_id``,
+    and the next one starts at or after the previous one ends.
+    """
+    groups: dict[tuple, list] = {}
+    for trip in trips:
+        stops = trip.get("stops") or []
+        if not stops:
+            continue
+        number = bare_train(trip.get("number") or "") or bare_train(trip.get("block") or "") or str(trip.get("id") or "")
+        service = str(trip.get("service") or "")
+        groups.setdefault((service, number), []).append(trip)
+    merged: list[dict] = []
+    for (_service, number), items in groups.items():
+        items.sort(key=lambda item: (item["stops"][0].get("minutes") or 0, item["stops"][0].get("seq") or 0, str(item.get("id") or "")))
+        used = [False] * len(items)
+        for index, trip in enumerate(items):
+            if used[index]:
+                continue
+            used[index] = True
+            chain = [trip]
+            while True:
+                nxt = None
+                nxt_index = None
+                for other_index, cand in enumerate(items):
+                    if used[other_index] or not _trip_follows(chain[-1], cand):
+                        continue
+                    nxt = cand
+                    nxt_index = other_index
+                    break
+                if nxt is None:
+                    break
+                used[nxt_index] = True
+                chain.append(nxt)
+            merged.append(_collapse_run(number, chain))
+    return merged
+
+
+def _trip_follows(left: dict, right: dict) -> bool:
+    block = str(left.get("block") or "")
+    if not block or block != str(right.get("block") or ""):
+        return False
+    left_stops = left.get("stops") or []
+    right_stops = right.get("stops") or []
+    if not left_stops or not right_stops:
+        return False
+    if int(right_stops[0].get("minutes") or 0) < int(left_stops[-1].get("minutes") or 0):
+        return False
+    same = station_key(right_stops[0].get("name")) == station_key(left_stops[-1].get("name"))
+    later = int(right_stops[0].get("seq") or 0) > int(left_stops[-1].get("seq") or 0)
+    return same or later
+
+
+def _collapse_run(number: str, chain: list[dict]) -> dict:
+    stops: list[dict] = []
+    segments: list[dict] = []
+    for trip in chain:
+        part = [dict(stop) for stop in trip.get("stops") or []]
+        if stops and part and station_key(part[0].get("name")) == station_key(stops[-1].get("name")):
+            part = part[1:]
+        raw = trip.get("stops") or []
+        if raw:
+            segments.append(
+                {
+                    "route_id": str(trip.get("route_id") or ""),
+                    "line": str(trip.get("route_id") or ""),
+                    "headsign": str(trip.get("headsign") or ""),
+                    "shape_id": str(trip.get("shape") or ""),
+                    "first": str(raw[0].get("name") or ""),
+                    "last": str(raw[-1].get("name") or ""),
+                }
+            )
+        for stop in part:
+            stop["line"] = str(trip.get("route_id") or "")
+            stop["shape"] = str(trip.get("shape") or "")
+            stops.append(stop)
+    destination = str(stops[-1].get("name") or "") if stops else ""
+    headsign = str(chain[-1].get("headsign") or destination)
+    label = str(chain[0].get("number") or number)
+    if len(chain) > 1:
+        label = number or label
+    return {
+        "number": number or label,
+        "label": label,
+        "sources": [str(trip.get("number") or "") for trip in chain if trip.get("number")],
+        "days": chain[0].get("days") if chain[0].get("days") not in (None, "") else 127,
+        "direction": str(chain[0].get("direction") or "0"),
+        "destination": destination if len(chain) > 1 else (headsign or destination),
+        "headsign": headsign,
+        "stops": stops,
+        "segments": segments,
+        "through": len(segments) > 1,
+    }
+
+
 def clock_on(day, clock: str) -> datetime | None:
     """Clock on a service day. 24:27 is 00:27 the next calendar day."""
     parts = str(clock or "").split(":")
