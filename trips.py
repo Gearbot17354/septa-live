@@ -45,8 +45,40 @@ _LOOSE_WORD = {
     "rd": "road",
     "blvd": "boulevard",
     "dr": "drive",
+    "sq": "square",
+    "pk": "park",
+    "hts": "heights",
+    "jct": "junction",
+    "ctr": "center",
+    "mt": "mount",
+    "ft": "fort",
+    "n": "north",
+    "s": "south",
+    "e": "east",
+    "w": "west",
+}
+_DROP_WORD = {"station", "stn", "the", "and"}
+_GENERIC_WORD = _DROP_WORD | {
+    "street",
+    "avenue",
+    "road",
+    "lane",
+    "boulevard",
+    "drive",
+    "square",
+    "park",
+    "heights",
+    "junction",
+    "center",
+    "mount",
+    "fort",
+    "north",
+    "south",
+    "east",
+    "west",
 }
 _CENTER = re.compile(r"\b(?:transit center|transportation center|tc)\b")
+_AMBIGUOUS: set[str] = set()
 
 
 @lru_cache(maxsize=8192)
@@ -57,7 +89,111 @@ def loose_key(name: object) -> str:
     text = re.sub(r"\bt c\b", "tc", text)
     text = _CENTER.sub(" center ", text)
     tokens = [_LOOSE_WORD.get(token, token) for token in text.split()]
-    return " ".join(token for token in tokens if token).strip()
+    return " ".join(token for token in tokens if token and token not in _DROP_WORD).strip()
+
+
+def _loose_forms(name: object) -> set[str]:
+    """Loose keys for a name, including a NextToArrive alias when one exists."""
+    forms: set[str] = set()
+    raw = loose_key(name)
+    if raw:
+        forms.add(raw)
+    alias = _NTA_LOOSE.get(raw) if raw else None
+    if alias:
+        other = loose_key(alias)
+        if other:
+            forms.add(other)
+    return forms
+
+
+def _token_sets(name: object) -> set[frozenset]:
+    found: set[frozenset] = set()
+    for form in _loose_forms(name):
+        tokens = frozenset(form.split())
+        if tokens:
+            found.add(tokens)
+    return found
+
+
+def _note_ambiguous(name: object, hits: list[str]) -> None:
+    key = loose_key(name) or str(name or "")
+    if not key or key in _AMBIGUOUS:
+        return
+    _AMBIGUOUS.add(key)
+    import logging
+
+    logging.getLogger(__name__).debug("SEPTA station %s matches more than one stop: %s", name, ", ".join(hits))
+
+
+def _labels(order: object) -> list[str]:
+    labels: list[str] = []
+    for item in order or []:
+        if isinstance(item, dict):
+            text = str(item.get("station") or item.get("name") or "").strip()
+        else:
+            text = str(item or "").strip()
+        if text:
+            labels.append(text)
+    return labels
+
+
+def match_in(order: object, name: object) -> str | None:
+    """Canonical stop from ``order``. Equal keys win. A shorter unique name may too.
+
+    ``30th Street`` matches ``Gray 30th St Station`` only when that is the only stop
+    containing those words. Two candidates, or a name that is only generic words, do not match.
+    """
+    labels = _labels(order)
+    query = _token_sets(name)
+    if not labels or not query:
+        return None
+    exact: list[str] = []
+    seen: set[str] = set()
+    for label in labels:
+        if label in seen:
+            continue
+        if query & _token_sets(label):
+            seen.add(label)
+            exact.append(label)
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
+        _note_ambiguous(name, exact)
+        return None
+    hits: list[str] = []
+    seen.clear()
+    for label in labels:
+        if label in seen:
+            continue
+        pool: set[str] = set()
+        for group in _token_sets(label):
+            pool.update(group)
+        for group in query:
+            distinctive = group - _GENERIC_WORD
+            if not distinctive or not group <= pool:
+                continue
+            seen.add(label)
+            hits.append(label)
+            break
+    if len(hits) == 1:
+        return hits[0]
+    if len(hits) > 1:
+        _note_ambiguous(name, hits)
+        return None
+    return None
+
+
+def same_station(left: object, right: object, candidates: object = None) -> bool:
+    """True when two spellings are the same stop. Containment needs ``candidates``."""
+    if not str(left or "").strip() or not str(right or "").strip():
+        return False
+    if _token_sets(left) & _token_sets(right):
+        return True
+    if not candidates:
+        return False
+    found_left = match_in(candidates, left)
+    found_right = match_in(candidates, right)
+    return bool(found_left) and found_left == found_right
 
 
 def _nta_table() -> dict[str, str]:

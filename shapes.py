@@ -218,22 +218,47 @@ def simplify_shape(points: list[list[float]], stops: list[dict], max_points: int
 
 
 _LOOSE = None
+_MATCH = None
+_SAME = None
+
+
+def _bind_names() -> None:
+    global _LOOSE, _MATCH, _SAME
+    if _LOOSE is not None:
+        return
+    try:
+        from .trips import loose_key, match_in, same_station
+    except ImportError:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("septa_trips_loose", Path(__file__).with_name("trips.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        loose_key = module.loose_key
+        match_in = module.match_in
+        same_station = module.same_station
+    _LOOSE = loose_key
+    _MATCH = match_in
+    _SAME = same_station
 
 
 def _loose(value: object) -> str:
-    global _LOOSE
-    if _LOOSE is None:
-        try:
-            from .trips import loose_key
-        except ImportError:
-            import importlib.util
-
-            spec = importlib.util.spec_from_file_location("septa_trips_loose", Path(__file__).with_name("trips.py"))
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            loose_key = module.loose_key
-        _LOOSE = loose_key
+    _bind_names()
     return _LOOSE(value)
+
+
+def _match_name(order: list, name: object) -> str | None:
+    _bind_names()
+    if _MATCH is None:
+        return None
+    return _MATCH(order, name)
+
+
+def _same_stop(left: object, right: object) -> bool:
+    _bind_names()
+    if _SAME is None:
+        return bool(_key_name(left)) and _key_name(left) == _key_name(right)
+    return _SAME(left, right)
 
 
 def _key_name(value: object) -> str:
@@ -241,11 +266,12 @@ def _key_name(value: object) -> str:
 
 
 def _stop_index(stops: list[dict], name: object) -> int | None:
-    want = _key_name(name)
-    if not want:
+    labels = [stop.get("name") for stop in stops or []]
+    found = _match_name(labels, name)
+    if not found:
         return None
     for index, stop in enumerate(stops):
-        if _key_name(stop.get("name")) == want:
+        if stop.get("name") == found:
             return index
     return None
 
@@ -269,7 +295,8 @@ def mark_stops(stops: list[dict], next_stop: object, alight: object, boarded: ob
     """Passed stops are those before the live next stop. Remaining is the rest."""
     nxt = _stop_index(stops, next_stop)
     board = _stop_index(stops, boarded)
-    alight_key = _key_name(alight)
+    names = [stop.get("name") for stop in stops or []]
+    alight_name = _match_name(names, alight)
     if nxt is None and here is not None:
         nxt = _nearest_stop_index(stops, here)
     if nxt is None:
@@ -285,7 +312,7 @@ def mark_stops(stops: list[dict], next_stop: object, alight: object, boarded: ob
             "est": stop.get("est") or stop.get("sched"),
             "passed": passed,
             "remaining": not passed,
-            "alight": bool(alight_key) and _key_name(stop.get("name")) == alight_key,
+            "alight": bool(alight_name) and stop.get("name") == alight_name,
         }
         if board is not None and index < board:
             row["before_board"] = True
@@ -422,14 +449,19 @@ def note_missing_shape(train: object, reason: str, day: object) -> None:
 
 
 def _overlay_times(stops: list[dict], rows: list | None) -> list[dict]:
+    labels = []
     by = {}
     for row in rows or []:
-        if isinstance(row, dict):
-            by[_key_name(row.get("station") or row.get("name"))] = row
+        if not isinstance(row, dict):
+            continue
+        label = str(row.get("station") or row.get("name") or "")
+        labels.append(label)
+        by[label] = row
     out = []
     for stop in stops:
         item = dict(stop)
-        live = by.get(_key_name(stop.get("name")))
+        found = _match_name(labels, stop.get("name"))
+        live = by.get(found) if found else None
         if isinstance(live, dict):
             if live.get("sched"):
                 item["sched"] = live.get("sched")
@@ -438,10 +470,6 @@ def _overlay_times(stops: list[dict], rows: list | None) -> list[dict]:
         item.setdefault("est", item.get("sched"))
         out.append(item)
     return out
-
-
-def _same_stop(left: object, right: object) -> bool:
-    return bool(_key_name(left)) and _key_name(left) == _key_name(right)
 
 
 def _join_records(records: list[dict], shapes: dict) -> dict | None:

@@ -138,7 +138,7 @@ class DynamicBoard:
         self.results: dict[str, dict] = {}
         self._current: dict[str, str] = {}
         self._manual_origin: dict[str, str] = {}
-        self._manual_dest: dict[str, str] = {}
+        self._manual_dest: dict[str, object] = {}
         self._last_origin: dict[str, str] = {}
         self._last_seen_at: dict[str, float] = {}
         self._geo_cache: dict[str, tuple[float, float] | None] = {}
@@ -214,7 +214,15 @@ class DynamicBoard:
         if not isinstance(saved, dict):
             return
         self._manual_origin = {str(k): str(v) for k, v in (saved.get("origin") or {}).items() if v}
-        self._manual_dest = {str(k): str(v) for k, v in (saved.get("destination") or {}).items() if v}
+        from .ride import dest_parts
+
+        loaded: dict[str, object] = {}
+        for key, value in (saved.get("destination") or {}).items():
+            station, at = dest_parts(value)
+            if not station:
+                continue
+            loaded[str(key)] = value if isinstance(value, dict) else station
+        self._manual_dest = loaded
         self._last_origin = {str(k): str(v) for k, v in (saved.get("last") or {}).items() if v}
 
     async def _save_store(self) -> None:
@@ -766,8 +774,11 @@ class DynamicBoard:
         if cfg["destination_entity"]:
             state = self.hass.states.get(cfg["destination_entity"])
             entity_state = "" if state is None else str(state.state)
+        from .ride import dest_parts
+
+        manual_station, _manual_at = dest_parts(self._manual_dest.get(slug))
         dest = resolve_destination(
-            manual=self._manual_dest.get(slug),
+            manual=manual_station,
             entity_state=entity_state,
             event=event,
             default_station=cfg["default_destination"],
@@ -905,11 +916,27 @@ class DynamicBoard:
         await self.async_refresh(force=True, only_slug=slug)
 
     async def set_destination(self, slug: str, station: str | None) -> None:
+        from .ride import dest_record
+
         if station:
-            self._manual_dest[slug] = station
+            self._manual_dest[slug] = dest_record(station, time.time())
         else:
             self._manual_dest.pop(slug, None)
         await self.async_refresh(force=True, only_slug=slug)
+        await self._refresh_ride(slug)
+
+    async def _refresh_ride(self, slug: str) -> None:
+        ride = getattr(self.coordinator, "ride", None)
+        if ride is None or not hasattr(ride, "rider_for"):
+            return
+        rider = ride.rider_for(slug)
+        refresh = getattr(rider, "async_refresh_alight", None)
+        if refresh is None:
+            return
+        try:
+            await refresh()
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("SEPTA ride did not refresh after a destination change")
 
     def slug_for(self, name: str | None) -> str:
         ride = getattr(self.coordinator, "ride", None)

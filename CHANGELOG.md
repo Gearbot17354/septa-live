@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.13.15
+
+### Fixed
+
+- A stop you choose while riding (destination selector or the set_destination action) now overrides the planned stop, station names like "30th Street" match "Gray 30th St Station", and the remaining stops list keeps every later stop on the train with the stop you get off at marked (`is_alight`), so you can switch to any later stop.
+
+### Changed
+
+- `remaining_stops` now runs past the alight stop. Dashboards that counted rows to get "stops left" should use `stops_to_alight`. New attributes: `alight_index` and `stops_to_alight`.
+
 ## 1.13.14
 
 ### Fixed

@@ -41,13 +41,15 @@ from .ride import (
     TrainCache,
     apply_delay,
     approaching_connection,
-    choose_alight,
     through_change,
     alight_plan,
     annotate_coords,
     destination_is_auto,
     rider_cfg_row,
     rider_home,
+    finish_remaining,
+    dest_parts,
+    should_republish_destination,
     _loose_name,
     classify_fix,
     configured_riders,
@@ -111,6 +113,7 @@ class RiderController:
         self._rr_train = ""
         self._rr_ts = 0.0
         self._rr_raw: list[dict] | None = None
+        self._dest_entity = ""
         self.apply_tuning()
 
     def signal(self) -> str:
@@ -193,11 +196,16 @@ class RiderController:
             payload["latitude"] = train.lat
             payload["longitude"] = train.lon
         remaining = list(self._remaining) if self.matcher.riding else []
-        payload["remaining_stops"] = remaining
-        if self.matcher.riding and remaining:
-            payload["next_stop"] = remaining[0].get("station") or payload.get("next_stop")
+        marked = finish_remaining(remaining, self.matcher.alight_station)
+        payload["remaining_stops"] = marked["rows"]
+        payload["alight_index"] = marked["alight_index"]
+        payload["stops_to_alight"] = marked["stops_to_alight"]
+        if marked["alight_est"] is not None:
+            payload["alight_est"] = marked["alight_est"]
+        if self.matcher.riding and marked["rows"]:
+            payload["next_stop"] = marked["rows"][0].get("station") or payload.get("next_stop")
         station = None if not self.matcher.expected else self.matcher.expected.get("connection_station")
-        payload["transfer_next"] = approaching_connection(remaining, station)
+        payload["transfer_next"] = approaching_connection(marked["rows"], station)
         payload["through_line"] = self.matcher.through_line
         payload["through_line_code"] = self.matcher.through_line_code
         payload["through_at"] = self.matcher.through_at
@@ -251,6 +259,7 @@ class RiderController:
             return
         self._subscribed = self._configured
         self._watch(self._configured)
+        self._watch_destination()
         try:
             state = self.hass.states.get(self._configured)
         except Exception:  # noqa: BLE001
@@ -280,8 +289,47 @@ class RiderController:
     async def async_reconfigure(self) -> None:
         """Retune this rider without dropping a ride that is already in progress."""
         self.apply_tuning()
+        self._watch_destination()
         self._push()
         self._sync_fast()
+
+    def _destination_entity(self) -> str:
+        mine = rider_cfg_row(self.entry.options, self.slug, self.person, self._tracker_hint or self._resolved, self.key)
+        entity = str(mine.get("destination_entity") or "").strip()
+        if entity:
+            return entity
+        from collections.abc import Mapping
+
+        opt = self.entry.options if isinstance(self.entry.options, Mapping) else {}
+        return str(opt.get("destination_entity") or "").strip()
+
+    def _watch_destination(self) -> None:
+        entity = self._destination_entity()
+        if not entity or entity == self._dest_entity or entity in self._watched:
+            self._dest_entity = entity or self._dest_entity
+            return
+        self._dest_entity = entity
+        self._watched.add(entity)
+        self._unsubs.append(async_track_state_change_event(self.hass, [entity], self._on_destination))
+
+    @callback
+    def _on_destination(self, event) -> None:
+        old = event.data.get("old_state")
+        new = event.data.get("new_state")
+        previous = "" if old is None else getattr(old, "state", "")
+        current = "" if new is None else getattr(new, "state", "")
+        if not should_republish_destination(bool(self.matcher.riding), previous, current):
+            return
+        self.hass.async_create_task(self.async_refresh_alight())
+
+    async def async_refresh_alight(self) -> None:
+        """Recompute the stop the rider gets off and publish it."""
+        try:
+            if self.matcher.riding:
+                await self._refresh_remaining(force=True)
+            self._emit()
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("SEPTA alight refresh failed")
 
     def _watch(self, entity_id: str) -> None:
         if not entity_id or entity_id in self._watched:
@@ -458,6 +506,19 @@ class RiderController:
             opt = options if isinstance(options, Mapping) else {}
             raw = data if isinstance(data, Mapping) else {}
             default = str(opt.get("destination") or raw.get("destination") or "").strip()
+        service_at = None
+        if isinstance(manual, dict):
+            service, service_at = dest_parts(manual.get(self.slug) or manual.get(self.key))
+        select_at = None
+        if entity:
+            state = self.hass.states.get(entity)
+            select = "" if state is None else str(state.state or "").strip()
+            changed = None if state is None else getattr(state, "last_changed", None)
+            if changed is not None:
+                try:
+                    select_at = changed.timestamp()
+                except (AttributeError, OSError, ValueError):
+                    select_at = None
         return alight_plan(
             order,
             current,
@@ -468,6 +529,9 @@ class RiderController:
             select=select or None,
             calendar=calendar or None,
             default=default or None,
+            service_at=service_at,
+            select_at=select_at,
+            boarded_ts=self.matcher.boarded_ts,
         )
 
     def _route_tables(self) -> tuple[dict, dict]:
@@ -504,15 +568,7 @@ class RiderController:
             self._last_alight_source = alight_source
             _LOGGER.debug("SEPTA alight %s %s", alight_source, checked)
         self.matcher.alight_checked = checked
-        kept = []
-        for row in rows:
-            if alight and (_stop_key(row.get("station")) == _stop_key(alight) or _loose_name(row.get("station")) == _loose_name(alight)):
-                kept.append(row)
-                break
-            kept.append(row)
-        if not alight:
-            kept = list(rows)
-        delayed = apply_delay(kept, late)
+        delayed = apply_delay(list(rows), late)
         keeper = getattr(self.coordinator, "rail_schedule", None)
         cache = getattr(keeper, "shapes", None) if keeper is not None else None
         train_stops = []
@@ -528,8 +584,11 @@ class RiderController:
         except Exception:  # noqa: BLE001
             geo = {}
         delayed = annotate_coords(delayed, train_stops, geo)
+        marked = finish_remaining(delayed, alight)
+        delayed = marked["rows"]
         self.matcher.alight_station = alight
         self.matcher.alight_source = alight_source
+        self.matcher.alight_est = marked["alight_est"]
         self.matcher._stop_rows = delayed
         now_ny = datetime.now(NY)
         fresh = not position_is_stale(train, self.matcher._trace.get(train.trainno))
@@ -547,12 +606,10 @@ class RiderController:
         self.matcher.stop_source = trimmed["stop_source"]
         self.matcher.published_current = trimmed["current_stop"]
         self.matcher.published_next = trimmed["next_stop"]
-        self.matcher.alight_est = None
-        if alight:
-            for row in delayed:
-                if _stop_key(row.get("station")) == _stop_key(alight):
-                    self.matcher.alight_est = row.get("est")
-                    break
+        published = finish_remaining(trimmed["remaining"], alight)
+        self._remaining = published["rows"]
+        self.matcher.remaining_stops = self._remaining
+        self.matcher.alight_est = published["alight_est"] if published["alight_est"] is not None else self.matcher.alight_est
         self._remaining_source = source
         self._remaining_late = late
 
@@ -668,9 +725,14 @@ class RiderController:
             data = dict(event.payload)
             if isinstance(data.get("boarded_time"), (int, float)):
                 data["boarded_time"] = _iso(data["boarded_time"])
-            data["remaining_stops"] = list(self._remaining)
-            if self._remaining:
-                data["next_stop"] = self._remaining[0].get("station") or data.get("next_stop")
+            marked = finish_remaining(self._remaining, self.matcher.alight_station)
+            data["remaining_stops"] = marked["rows"]
+            data["alight_index"] = marked["alight_index"]
+            data["stops_to_alight"] = marked["stops_to_alight"]
+            if marked["alight_est"] is not None:
+                data["alight_est"] = marked["alight_est"]
+            if marked["rows"]:
+                data["next_stop"] = marked["rows"][0].get("station") or data.get("next_stop")
             data["remaining_source"] = self._remaining_source or None
             data["tracker"] = self._resolved or self._tracker_hint or self._configured or None
             data["rider"] = self.slug

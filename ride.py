@@ -384,47 +384,115 @@ def _collapse_stops(rows: list[dict]) -> list[dict]:
     return out
 
 
+def _find_row(rows: list, name: object) -> int | None:
+    """Index of ``name`` in a stop list, using the shared station matcher."""
+    if not str(name or "").strip():
+        return None
+    labels: list[str] = []
+    for row in rows or []:
+        if isinstance(row, dict):
+            labels.append(str(row.get("station") or row.get("name") or ""))
+        else:
+            labels.append(str(row or ""))
+    found = _match_stop(labels, name)
+    if not found:
+        return None
+    for index, label in enumerate(labels):
+        if label == found:
+            return index
+    return None
+
+
 def _cut_until(rows: list[dict], until: str | None) -> list[dict]:
-    want = _stop_key(until)
-    if not want:
+    index = _find_row(rows, until)
+    if index is None:
         return rows
-    for index, row in enumerate(rows):
-        if _stop_key(row.get("station")) == want:
-            return rows[: index + 1]
-    return rows
+    return rows[: index + 1]
 
 
-def _loose_name(name: object) -> str:
+_TRIPS = None
+
+
+def _trips():
+    global _TRIPS
+    if _TRIPS is not None:
+        return _TRIPS
     try:
-        from .trips import loose_key
+        from . import trips as module
     except ImportError:
         import importlib.util
 
         spec = importlib.util.spec_from_file_location("septa_trips_ride", Path(__file__).with_name("trips.py"))
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        loose_key = module.loose_key
-    return loose_key(name)
+    _TRIPS = module
+    return module
+
+
+def _loose_name(name: object) -> str:
+    return _trips().loose_key(name)
+
+
+def _match_stop(order: object, name: object) -> str | None:
+    return _trips().match_in(order, name)
+
+
+def _same_station(left: object, right: object, candidates: object = None) -> bool:
+    return _trips().same_station(left, right, candidates)
+
+
+EXPLICIT_DEST_GRACE_S = 120
+
+
+def choice_is_explicit(changed: float | None, boarded: float | None, grace: float = EXPLICIT_DEST_GRACE_S) -> bool:
+    """A destination counts as chosen during this ride when it was set after boarding, minus grace."""
+    if changed is None or boarded is None:
+        return False
+    try:
+        return float(changed) >= float(boarded) - float(grace)
+    except (TypeError, ValueError):
+        return False
+
+
+def should_republish_destination(riding: bool, previous: object, current: object) -> bool:
+    """True when a riding rider's destination select changed and the alight stop should be republished."""
+    if not riding:
+        return False
+    return str(previous or "").strip() != str(current or "").strip()
+
+
+def dest_parts(value: object) -> tuple[str, float | None]:
+    """Stored destination. A plain string is an older save and has no timestamp."""
+    if isinstance(value, dict):
+        station = str(value.get("station") or "").strip()
+        raw = value.get("at")
+        try:
+            at = None if raw is None or raw == "" else float(raw)
+        except (TypeError, ValueError):
+            at = None
+        return station, at
+    return str(value or "").strip(), None
+
+
+def dest_record(station: object, at: float | None) -> dict:
+    return {"station": str(station or "").strip(), "at": at}
 
 
 def station_is_ahead(order: list[str], current: str | None, target: str | None) -> bool:
     """True when target is after current in this train's stop order."""
-    keys = [_loose_name(name) or _stop_key(name) for name in order]
-    want = _loose_name(target) or _stop_key(target)
-    here = _loose_name(current) or _stop_key(current)
-    if not want or want not in keys or not here or here not in keys:
+    here = _match_stop(order, current)
+    want = _match_stop(order, target)
+    if not here or not want:
         return False
-    return keys.index(want) > keys.index(here)
+    labels = [str(stop) for stop in order]
+    try:
+        return labels.index(want) > labels.index(here)
+    except ValueError:
+        return False
 
 
 def _canonical_stop(order: list[str], name: object) -> str | None:
-    want = _loose_name(name) or _stop_key(name)
-    if not want:
-        return None
-    for stop in order or []:
-        if (_loose_name(stop) or _stop_key(stop)) == want:
-            return str(stop)
-    return None
+    return _match_stop(order, name)
 
 
 def choose_alight(
@@ -442,11 +510,10 @@ def choose_alight(
         canonical = _canonical_stop(order, name)
         if not canonical:
             return None
-        here = _loose_name(current) or _stop_key(current)
-        keys = {_loose_name(stop) or _stop_key(stop) for stop in order}
-        if not here or here not in keys:
+        here = _canonical_stop(order, current)
+        if here is None:
             return canonical
-        if station_is_ahead(order, current, canonical) or here == (_loose_name(canonical) or _stop_key(canonical)):
+        if station_is_ahead(order, current, canonical) or here == canonical:
             return canonical
         return None
 
@@ -522,45 +589,109 @@ def alight_plan(
     select: str | None = None,
     calendar: str | None = None,
     default: str | None = None,
+    service_explicit: bool | None = None,
+    select_explicit: bool | None = None,
+    service_at: float | None = None,
+    select_at: float | None = None,
+    boarded_ts: float | None = None,
 ) -> tuple[str | None, str, list[dict]]:
-    """Pick the stop the rider gets off. Home counts only when the train is still heading there."""
-    checked: list[dict] = []
+    """Pick the stop the rider gets off.
 
-    def consider(source: str, value: object) -> str | None:
+    A destination set during the ride (service, then the select) beats the planned stop.
+    An older value stays after the plan. Home counts only when the train is still heading there.
+    """
+    checked: list[dict] = []
+    if service_explicit is None:
+        service_explicit = choice_is_explicit(service_at, boarded_ts)
+    if select_explicit is None:
+        select_explicit = choice_is_explicit(select_at, boarded_ts)
+
+    def consider(source: str, value: object, explicit: bool) -> str | None:
         text = str(value or "").strip()
         if source == "select" and destination_is_auto(text):
-            checked.append({"source": source, "value": text or "Auto", "result": "auto"})
+            checked.append({"source": source, "value": text or "Auto", "result": "auto", "explicit": False})
             return None
         if not text:
             return None
-        name, source_hit = choose_alight(None, 1, None, order, current, text, source)
-        if name and source_hit == source:
-            checked.append({"source": source, "value": text, "result": "ahead"})
-            return name
-        on_train = _canonical_stop(order, text) is not None
-        checked.append({"source": source, "value": text, "result": "behind" if on_train else "miss"})
-        return None
+        canonical = _canonical_stop(order, text)
+        if not canonical:
+            checked.append({"source": source, "value": text, "result": "miss", "explicit": bool(explicit)})
+            return None
+        here = _canonical_stop(order, current)
+        behind = False
+        if here is not None and here != canonical and not station_is_ahead(order, current, canonical):
+            behind = True
+        if behind:
+            checked.append({"source": source, "value": text, "result": "behind", "explicit": bool(explicit)})
+            return None
+        checked.append({"source": source, "value": text, "result": "ahead", "explicit": bool(explicit)})
+        return canonical
 
     planned = "" if not expected else str(expected.get("destination") or "")
-    hit = consider("planned", planned)
-    if hit:
-        return hit, "planned", checked[:6]
-    for source, value in (
-        ("service", service),
-        ("select", select),
-        ("calendar", calendar),
-        ("home", home),
-        ("service", default),
-    ):
-        hit = consider(source, value)
+    service_text = str(service or "").strip()
+    select_text = str(select or "").strip()
+    select_auto = destination_is_auto(select_text)
+    deferred: list[tuple[str, str]] = []
+    if service_text and not service_explicit:
+        deferred.append(("service", service_text))
+    if select_text and not select_explicit and not select_auto:
+        deferred.append(("select", select_text))
+    steps: list[tuple[str, object, bool]] = []
+    if service_text and service_explicit:
+        steps.append(("service", service_text, True))
+    if select_text and select_explicit and not select_auto:
+        steps.append(("select", select_text, True))
+    if select_auto:
+        steps.append(("select", select_text, False))
+    steps.append(("planned", planned, False))
+    if service_text and not service_explicit:
+        steps.append(("service", service_text, False))
+    if select_text and not select_explicit and not select_auto:
+        steps.append(("select", select_text, False))
+    steps.append(("calendar", calendar, False))
+    steps.append(("home", home, False))
+    steps.append(("service", default, False))
+    if int(leg or 1) == 1 and expected:
+        steps.append(("connection", expected.get("connection_station"), False))
+
+    def note_deferred() -> None:
+        present = {(str(row.get("source") or ""), str(row.get("value") or "")) for row in checked}
+        for source, value in deferred:
+            if (source, value) in present:
+                continue
+            checked.append({"source": source, "value": value, "result": "stale", "explicit": False})
+
+    for source, value, explicit in steps:
+        if source == "service" and not str(value or "").strip():
+            continue
+        hit = consider(source, value, explicit)
         if hit:
+            if explicit or source not in {"service", "select"}:
+                note_deferred()
             return hit, source, checked[:6]
-    connection = "" if not expected else str(expected.get("connection_station") or "")
-    if leg == 1 and connection:
-        hit = consider("connection", connection)
-        if hit:
-            return hit, "connection", checked[:6]
     return None, "none", checked[:6]
+
+
+def finish_remaining(rows: list | None, alight: object) -> dict:
+    """Keep every later stop. Mark the one the rider gets off at."""
+    items = [dict(row) for row in (rows or []) if isinstance(row, dict)]
+    labels = [str(row.get("station") or row.get("name") or "") for row in items]
+    found = _match_stop(labels, alight) if str(alight or "").strip() else None
+    index = None
+    est = None
+    for pos, row in enumerate(items):
+        label = labels[pos]
+        hit = bool(found) and (label == found or _same_station(label, found, labels))
+        row["is_alight"] = bool(hit and index is None)
+        if row["is_alight"]:
+            index = pos
+            est = row.get("est") or row.get("sched")
+    return {
+        "rows": items,
+        "alight_index": index,
+        "stops_to_alight": None if index is None else index + 1,
+        "alight_est": est,
+    }
 
 
 def annotate_coords(rows: list[dict], train_stops: list | None = None, geo: dict | None = None) -> list[dict]:
@@ -620,9 +751,9 @@ def _passed_index(lat: float, lon: float, points: list[dict], rows: list[dict]) 
             last_name = point.get("station") or point.get("n")
     if not last_name:
         return None
-    want = _stop_key(last_name)
+    want = _match_stop([row.get("station") for row in rows], last_name) or last_name
     for index, row in enumerate(rows):
-        if _stop_key(row.get("station")) == want:
+        if _same_station(row.get("station"), want, [item.get("station") for item in rows]):
             return index
     return None
 
@@ -649,18 +780,12 @@ def trim_passed(
             source = "train_position"
     if source != "train_position":
         if currentstop:
-            for index, row in enumerate(items):
-                if _stop_key(row.get("station")) == _stop_key(currentstop):
-                    dropped.extend(items[: index + 1])
-                    items = items[index + 1 :]
-                    source = source or "trainview"
-                    break
-        anchor = None
-        if nextstop:
-            for index, row in enumerate(items):
-                if _stop_key(row.get("station")) == _stop_key(nextstop):
-                    anchor = index
-                    break
+            found = _find_row(items, currentstop)
+            if found is not None:
+                dropped.extend(items[: found + 1])
+                items = items[found + 1 :]
+                source = source or "trainview"
+        anchor = _find_row(items, nextstop) if nextstop else None
         if anchor is not None:
             dropped.extend(items[:anchor])
             items = items[anchor:]
@@ -698,11 +823,9 @@ def _pack_stop(row: dict) -> dict:
 
 def _cut_index(rows: list[dict], currentstop: str | None) -> int | None:
     """Last stop the train has already reached. None means it has not departed."""
-    want = _stop_key(currentstop)
-    if want:
-        for index, row in enumerate(rows):
-            if _stop_key(row.get("station")) == want:
-                return index
+    found = _find_row(rows, currentstop)
+    if found is not None:
+        return found
     last = None
     for index, row in enumerate(rows):
         if _passed_act(row.get("act_tm")):
@@ -712,13 +835,10 @@ def _cut_index(rows: list[dict], currentstop: str | None) -> int | None:
 
 def align_remaining(rows: list[dict], nextstop: str | None) -> list[dict]:
     """Start the list at TrainView's next stop when that stop is still ahead."""
-    want = _stop_key(nextstop)
-    if not want:
+    found = _find_row(rows, nextstop)
+    if found is None:
         return rows
-    for index, row in enumerate(rows):
-        if _stop_key(row.get("station")) == want:
-            return rows[index:]
-    return rows
+    return rows[found:]
 
 
 def remaining_stops(
@@ -740,22 +860,16 @@ def remaining_stops(
     pending = [_pack_stop(row) for row in clean[start:]]
     pending = _collapse_stops(pending)
     pending = align_remaining(pending, nextstop)
-    if until and _stop_key(until):
-        want = _stop_key(until)
-        for index, row in enumerate(pending):
-            if _stop_key(row.get("station")) == want:
-                return pending[: index + 1]
+    if until and str(until).strip():
+        found = _find_row(pending, until)
+        if found is not None:
+            return pending[: found + 1]
     return pending
 
 
 def approaching_connection(remaining: list[dict], station: str | None) -> bool:
-    want = _stop_key(station)
-    if not want:
-        return False
-    for row in list(remaining or [])[:2]:
-        if _stop_key(row.get("station")) == want:
-            return True
-    return False
+    found = _find_row(list(remaining or [])[:2], station)
+    return found is not None
 
 
 _MISSED_NEXT: set[tuple] = set()
@@ -909,16 +1023,14 @@ def remaining_from_timetable(
         seen.add(key)
         unique.append((mins, name, clock, line))
     found = unique
-    if nextstop and not any(_stop_key(row[1]) == _stop_key(nextstop) for row in found):
+    if nextstop and _find_row([{"station": row[1]} for row in found], nextstop) is None:
         note_missing_next(want, nextstop, weekday)
     matched = False
-    if _stop_key(currentstop):
-        needle = _stop_key(currentstop)
-        for index, row in enumerate(found):
-            if _stop_key(row[1]) == needle:
-                found = found[index + 1 :]
-                matched = True
-                break
+    if str(currentstop or "").strip():
+        found_index = _find_row([{"station": row[1]} for row in found], currentstop)
+        if found_index is not None:
+            found = found[found_index + 1 :]
+            matched = True
     if not matched and after_minutes is not None:
         found = [row for row in found if row[0] >= after_minutes]
     pending = [{"station": name, "sched": clock, "est": clock, "line": line} for _, name, clock, line in found]
@@ -1022,10 +1134,7 @@ async def async_preload(hass) -> None:
 
 
 def _same_stop(left: object, right: object) -> bool:
-    a, b = _stop_key(left), _stop_key(right)
-    if not a or not b:
-        return False
-    return a == b or a in b or b in a
+    return _same_station(left, right)
 
 
 def _coord_station(lat: float, lon: float) -> str | None:
@@ -1918,14 +2027,14 @@ class RideMatcher:
         station = exp.get("connection_station")
         if not station or not exp.get("connection_train"):
             return
-        if _stop_key(self.riding_train.currentstop) == _stop_key(station):
+        if _same_stop(self.riding_train.currentstop, station):
             self.leg = 2
 
     def _same_trip(self, trainno: str) -> bool:
         exp = self.expected
         if not exp or not exp.get("connection_train"):
             return False
-        return str(trainno) == str(exp.get("connection_train")) and (self.leg == 2 or _stop_key(getattr(self.riding_train, "currentstop", "")) == _stop_key(exp.get("connection_station")))
+        return str(trainno) == str(exp.get("connection_train")) and (self.leg == 2 or _same_stop(getattr(self.riding_train, "currentstop", ""), exp.get("connection_station")))
 
     def _bare(self, number: object) -> str:
         text = str(number or "").strip()
@@ -1961,14 +2070,13 @@ class RideMatcher:
         del self.switches[:-5]
 
     def _arrival_deadline(self, now: float) -> float | None:
-        rows = self.remaining_stops or []
+        rows = [row for row in (self.remaining_stops or []) if isinstance(row, dict)]
         train = self.riding_train
         target = self.alight_station or (None if train is None else train.dest)
         clock = None
+        names = [row.get("station") or row.get("name") for row in rows]
         for row in rows:
-            if not isinstance(row, dict):
-                continue
-            if target and _same_stop(row.get("station") or row.get("name"), target):
+            if target and _same_station(row.get("station") or row.get("name"), target, names):
                 clock = row.get("est") or row.get("sched")
                 break
         if clock is None and rows and isinstance(rows[-1], dict):
@@ -2000,6 +2108,7 @@ class RideMatcher:
         train = self.riding_train
         riding = train is not None
         consist = list(train.consist) if train else []
+        marked = finish_remaining(self.remaining_stops or [], self.alight_station)
         return {
             "riding": riding,
             "train": train.trainno if train else None,
@@ -2061,6 +2170,8 @@ class RideMatcher:
             "alight_station": self.alight_station,
             "alight_source": self.alight_source,
             "alight_est": self.alight_est,
+            "alight_index": marked["alight_index"],
+            "stops_to_alight": marked["stops_to_alight"],
             "alight_checked": list(self.alight_checked or [])[:6],
             "home_station": self.home_station or None,
             "delay_min": self.delay_min,
@@ -2246,15 +2357,30 @@ class RideMatcher:
         return None
 
     def _is_terminal(self, train: Train) -> bool:
+        """The train's real last stop, not the stop this rider gets off."""
         current = str(train.currentstop or "").strip()
         if not current:
             return False
-        remaining = self.remaining_stops
+        remaining = [row for row in (self.remaining_stops or []) if isinstance(row, dict)]
         if remaining:
             last = str(remaining[-1].get("station") or "")
-            return bool(last) and _same_stop(current, last)
+            names = [row.get("station") for row in remaining]
+            return bool(last) and _same_station(current, last, names)
         dest = str(train.dest or "").strip()
-        return bool(dest) and _same_stop(current, dest)
+        return bool(dest) and _same_station(current, dest)
+
+    def _at_alight(self, train: Train) -> bool:
+        """Current stop is where this rider gets off, and the train still continues."""
+        current = str(train.currentstop or "").strip()
+        alight = str(self.alight_station or "").strip()
+        if not current or not alight or self._is_terminal(train):
+            return False
+        names = [row.get("station") for row in (self.remaining_stops or []) if isinstance(row, dict)]
+        names.extend([current, alight])
+        return _same_station(current, alight, names)
+
+    def _end_of_ride_stop(self, train: Train) -> bool:
+        return self._is_terminal(train) or self._at_alight(train)
 
     def _ride_limit(self) -> float:
         limit = self.max_ride_seconds
@@ -2327,7 +2453,7 @@ class RideMatcher:
             self._off_count += 1
             if self._off_count >= self.apart_fixes:
                 return "left_corridor"
-        if self._is_terminal(train):
+        if self._end_of_ride_stop(train):
             if self._terminal_since is None:
                 self._terminal_since = fix.ts
             elif fix.ts > self._terminal_since:
@@ -2383,7 +2509,7 @@ class RideMatcher:
         if self._phone_gap or self._match_via in {"corridor", "estimated"}:
             return False
         far = self._far_count >= self.need_matches
-        terminal = self.riding_train is not None and self._is_terminal(self.riding_train)
+        terminal = self.riding_train is not None and self._end_of_ride_stop(self.riding_train)
         if not (far or terminal):
             return False
         if self._match_via == "corridor":
@@ -2587,7 +2713,7 @@ class RideMatcher:
             return None
         if self.boarded_ts is not None and now - self.boarded_ts > self._ride_limit():
             return self._exit(now, "max_duration")
-        if self._is_terminal(self.riding_train):
+        if self._end_of_ride_stop(self.riding_train):
             if self._terminal_since is None:
                 self._terminal_since = now
             elif now - self._terminal_since >= TERMINAL_GRACE_S or now > self._terminal_since:

@@ -89,7 +89,11 @@ The train lists stay on the live sensors for dashboards and are left out of Home
 Services:
 
 - `septa_live.set_origin_station` holds the Going Home origin. Leave the station blank to go back to automatic. Getting home clears it too.
-- `septa_live.set_destination` holds the day-trains destination. Blank clears it.
+- `septa_live.set_destination` holds the day-trains destination. Blank clears it. While you are riding, a destination set with this action, or with the destination selector after you boarded, overrides the stop from the trip you picked. Auto, or clearing it, goes back to the planned stop.
+
+While riding, the stop you get off at is chosen in this order: a destination set during the ride (`set_destination`, then the destination selector), the planned stop, a calendar destination, home when the train is still heading there, the saved default destination, then a connection. A selector value left over from before the ride does not override today's plan.
+
+`remaining_stops` lists every stop still ahead, not only up to where you get off. The row you get off at has `is_alight: true`. `alight_index` is that row's position (starting at 0) and `stops_to_alight` is how many stops that is, including the one you get off at. Both are null when no stop is chosen. Station names match across the usual spellings, so "30th Street" is "Gray 30th St Station" when that is the only such stop on the train.
 
 A minimal card binds to `trains`:
 

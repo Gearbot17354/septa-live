@@ -2295,7 +2295,8 @@ const RAIL_STATIONS = [
     const nextName = a.next_stop || next.station || "";
     const nextEst = next.est || next.sched || "";
     const stops = Array.isArray(a.remaining_stops) ? a.remaining_stops : [];
-    const shown = stops.slice(0, 6);
+    const alightAt = stops.findIndex((row) => row && row.is_alight);
+    const shown = alightAt >= 0 ? stops.slice(0, alightAt + 1) : stops.slice(0, 6);
     const more = stops.length - shown.length;
     const cars = Number(a.cars || 0);
     const boardedClock = a.boarded_time ? new Date(a.boarded_time) : null;
@@ -2304,10 +2305,11 @@ const RAIL_STATIONS = [
         ? boardedClock.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
         : "";
     const stopRows = shown
-      .map(
-        (row) =>
-          `<li><span>${esc(row.station)}</span><span>${esc(row.est || row.sched || "")}</span></li>`,
-      )
+      .map((row) => {
+        const off = row && row.is_alight ? " · get off" : "";
+        const weight = row && row.is_alight ? "font-weight:700" : "";
+        return `<li style="${weight}"><span>${esc(row.station)}${esc(off)}</span><span>${esc(row.est || row.sched || "")}</span></li>`;
+      })
       .join("");
     return `
       <div class="kicker-row"><div class="avatars">${avatars}</div>${modeIcon("rail")}<div class="kicker">On board</div>${railBadge(a.line || a.line_code || "")}</div>
