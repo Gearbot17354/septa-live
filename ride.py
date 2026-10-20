@@ -44,6 +44,15 @@ try:
         MIN_DERIVED_DT_S,
         STICKY_LIMIT_M,
         TERMINAL_GRACE_S,
+        GOOD_ACCURACY_M,
+        GOOD_FIX_AGE_S,
+        HOLD_EXIT_GOOD_FIXES,
+        HOLD_EXIT_S,
+        SWITCH_GOOD_FIXES,
+        SWITCH_GOOD_S,
+        CORRIDOR_CHORD_M,
+        RECOVER_S,
+        UNDERGROUND_LEARN_RIDES,
     )
 except ImportError:
     ARRIVAL_RADIUS_M = 250
@@ -64,6 +73,15 @@ except ImportError:
     MAX_PLAUSIBLE_MPH = 90
     MIN_DERIVED_DT_S = 20
     STICKY_LIMIT_M = 2000
+    GOOD_ACCURACY_M = 50
+    GOOD_FIX_AGE_S = 90
+    HOLD_EXIT_GOOD_FIXES = 3
+    HOLD_EXIT_S = 60
+    SWITCH_GOOD_FIXES = 4
+    SWITCH_GOOD_S = 90
+    CORRIDOR_CHORD_M = 600
+    RECOVER_S = 300
+    UNDERGROUND_LEARN_RIDES = 3
 
 
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -1265,13 +1283,25 @@ def estimate_position(train: Train, when: datetime) -> tuple[float, float, float
     return _point_along(span, fraction)
 
 
-def _corridor_gap(lat: float, lon: float, line: str) -> tuple[float, float] | None:
-    stops = _line_stops(line)
-    points = [(float(item["lat"]), float(item["lon"])) for item in stops if "lat" in item and "lon" in item]
-    if len(points) < 2:
+def _polyline_gap(lat: float, lon: float, points: list) -> tuple[float, float] | None:
+    """Distance and track bearing of the nearest segment. Points are (lat, lon) or [lat, lon]."""
+    cleaned: list[tuple[float, float]] = []
+    for item in points or []:
+        if isinstance(item, dict):
+            plat = item.get("lat")
+            plon = item.get("lon") if item.get("lon") is not None else item.get("lng")
+        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+            plat, plon = item[0], item[1]
+        else:
+            continue
+        try:
+            cleaned.append((float(plat), float(plon)))
+        except (TypeError, ValueError):
+            continue
+    if len(cleaned) < 2:
         return None
     best = None
-    for left, right in zip(points, points[1:]):
+    for left, right in zip(cleaned, cleaned[1:]):
         scale = METERS_PER_DEG_LAT * max(0.2, math.cos(math.radians(left[0])))
         bx = (right[1] - left[1]) * scale
         by = (right[0] - left[0]) * METERS_PER_DEG_LAT
@@ -1285,6 +1315,52 @@ def _corridor_gap(lat: float, lon: float, line: str) -> tuple[float, float] | No
         if best is None or cross < best[0]:
             best = (cross, bearing_deg(left[0], left[1], right[0], right[1]))
     return best
+
+
+def _corridor_gap(
+    lat: float,
+    lon: float,
+    line: str,
+    shape: list | None = None,
+    line_shape: list | None = None,
+    chord_m: float = CORRIDOR_CHORD_M,
+) -> tuple[float, float, str] | None:
+    """Gap to the real track, then the line's shapes, then stop-to-stop chords.
+
+    The third value is ``shape``, ``line_shape`` or ``chord``. ``chord_m`` is
+    the wider tolerance used by callers; this function only measures the gap.
+    """
+    del chord_m
+    for source, points in (("shape", shape), ("line_shape", line_shape)):
+        gap = _polyline_gap(lat, lon, points or [])
+        if gap is not None:
+            return gap[0], gap[1], source
+    stops = _line_stops(line)
+    chord = _polyline_gap(lat, lon, [(item.get("lat"), item.get("lon")) for item in stops])
+    if chord is None:
+        return None
+    return chord[0], chord[1], "chord"
+
+
+def corridor_limit(source: str, chord_m: float = CORRIDOR_CHORD_M) -> float:
+    return CORRIDOR_M if source in {"shape", "line_shape"} else float(chord_m)
+
+
+def _shape_points(points: list | None) -> list[tuple[float, float]]:
+    cleaned: list[tuple[float, float]] = []
+    for item in points or []:
+        if isinstance(item, dict):
+            plat = item.get("lat")
+            plon = item.get("lon") if item.get("lon") is not None else item.get("lng")
+        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+            plat, plon = item[0], item[1]
+        else:
+            continue
+        try:
+            cleaned.append((float(plat), float(plon)))
+        except (TypeError, ValueError):
+            continue
+    return cleaned
 
 
 class RideMatcher:
@@ -1309,6 +1385,15 @@ class RideMatcher:
         reboard_cooldown_s: float = REBOARD_COOLDOWN_S,
         switch_fixes: int | None = None,
         switch_min_s: float = 0,
+        good_accuracy_m: float = GOOD_ACCURACY_M,
+        good_fix_age_s: float = GOOD_FIX_AGE_S,
+        hold_exit_fixes: int = HOLD_EXIT_GOOD_FIXES,
+        hold_exit_s: float = HOLD_EXIT_S,
+        switch_good_fixes: int = SWITCH_GOOD_FIXES,
+        switch_good_s: float = SWITCH_GOOD_S,
+        corridor_chord_m: float = CORRIDOR_CHORD_M,
+        recover_s: float = RECOVER_S,
+        underground_stops: list | None = None,
     ) -> None:
         self.radius_m = radius_m
         self.min_speed_mps = min_speed_mps
@@ -1327,6 +1412,15 @@ class RideMatcher:
         self.reboard_cooldown_s = float(reboard_cooldown_s)
         self.switch_fixes = None if switch_fixes is None else max(1, int(switch_fixes))
         self.switch_min_s = float(switch_min_s)
+        self.good_accuracy_m = float(good_accuracy_m)
+        self.good_fix_age_s = float(good_fix_age_s)
+        self.hold_exit_fixes = max(1, int(hold_exit_fixes))
+        self.hold_exit_s = float(hold_exit_s)
+        self.switch_good_fixes = max(1, int(switch_good_fixes))
+        self.switch_good_s = float(switch_good_s)
+        self.corridor_chord_m = float(corridor_chord_m)
+        self.recover_s = float(recover_s)
+        self.underground_stops = [str(item) for item in (underground_stops or []) if str(item).strip()]
         self.candidate: str | None = None
         self.match_count = 0
         self.misses = 0
@@ -1415,6 +1509,64 @@ class RideMatcher:
         self.switches: list[dict] = []
         self._switch_first: float | None = None
         self._phone_gap = False
+        self.route_shape: list | None = None
+        self.line_shape: list | None = None
+        self.route_shapes: dict[str, list] = {}
+        self.line_shapes: dict[str, list] = {}
+        self.gps_quality = ""
+        self.gps_accuracy_m = None
+        self.fix_age_s = None
+        self.corridor_gap_m = None
+        self.corridor_source = None
+        self.hold_reason = None
+        self.hold_since = None
+        self.good_fix_streak = 0
+        self._good_since = None
+        self._hold_good = 0
+        self.resumed = 0
+        self.last_end_reason = None
+        self.last_end_ts = None
+        self._recover_train = None
+        self._recover_until = None
+        self._recover_boarded_at = None
+        self._recover_boarded_ts = None
+        self._learned: dict[str, int] = {}
+        self.learned_underground: list[str] = []
+        self.decisions: list[dict] = []
+        self._logged_end: set[str] = set()
+        self._hold_logged = False
+        self._last_acc = None
+        self._weak_kind = ""
+
+    def set_route_shape(self, points: list | None, trainno: str | None = None) -> None:
+        cleaned = _shape_points(points)
+        self.route_shape = cleaned or None
+        if trainno and cleaned:
+            self.route_shapes[str(trainno)] = cleaned
+
+    def set_line_shape(self, points: list | None, line: str | None = None) -> None:
+        cleaned = _shape_points(points)
+        self.line_shape = cleaned or None
+        if line and cleaned:
+            self.line_shapes[str(line)] = cleaned
+
+    def set_underground(self, stops: list | None, learned: list | None = None) -> None:
+        self.underground_stops = [str(item) for item in (stops or []) if str(item).strip()]
+        if learned is not None:
+            self.learned_underground = [str(item) for item in learned if str(item).strip()]
+
+    def note_underground_ride(self, stop: str) -> bool:
+        """Count a weak ride at this stop. Three rides mark it learned. Returns True when newly flagged."""
+        key = _stop_key(stop)
+        if not key:
+            return False
+        self._learned[key] = self._learned.get(key, 0) + 1
+        if self._learned[key] < UNDERGROUND_LEARN_RIDES:
+            return False
+        if any(_stop_key(item) == key for item in self.learned_underground):
+            return False
+        self.learned_underground.append(str(stop))
+        return True
 
     @property
     def riding(self) -> bool:
@@ -1726,6 +1878,8 @@ class RideMatcher:
                 "last_reject_reason": row.get("last_reject_reason"),
                 "stale_reason": row.get("stale_reason"),
                 "heading_source": row.get("heading_source") or "none",
+                "accuracy_m": row.get("accuracy_m"),
+                "fix_age_s": row.get("fix_age_s"),
             }
 
         scored.sort(key=lambda row: row["_dist"])
@@ -1750,6 +1904,8 @@ class RideMatcher:
                         "last_reject_reason": "missing" if not seen else "glitch",
                         "stale_reason": None,
                         "heading_source": "none",
+                        "accuracy_m": None,
+                        "fix_age_s": None,
                     },
                 )
         self.candidates = chosen
@@ -1829,6 +1985,8 @@ class RideMatcher:
                     "stale_reason": stale_reason(train, self._trace.get(train.trainno)),
                     "heading_source": heading_source,
                     "last_reject_reason": reason,
+                    "accuracy_m": None if fix.acc_m is None else round(float(fix.acc_m), 1),
+                    "fix_age_s": None if self.fix_age_s is None else round(float(self.fix_age_s), 1),
                     "_train": train,
                     "_dist": dist,
                     "_limit": limit,
@@ -1854,8 +2012,8 @@ class RideMatcher:
                 if self._ignore_board(train, fix.ts):
                     continue
                 lat, lon, _route_heading, stale, source = views[train.trainno]
-                corridor = _corridor_gap(fix.lat, fix.lon, train.line)
-                if corridor is None or corridor[0] > CORRIDOR_M:
+                corridor = _corridor_gap(fix.lat, fix.lon, train.line, self._shape_for(train), self._line_shape_for(train))
+                if corridor is None or corridor[0] > corridor_limit(corridor[2], self.corridor_chord_m):
                     continue
                 if course is not None and _axis_diff(course, corridor[1]) > 75:
                     continue
@@ -1897,6 +2055,8 @@ class RideMatcher:
                             "stale_reason": stale_reason(train, self._trace.get(train.trainno)),
                             "heading_source": "corridor",
                             "last_reject_reason": None,
+                            "accuracy_m": None if fix.acc_m is None else round(float(fix.acc_m), 1),
+                            "fix_age_s": None if self.fix_age_s is None else round(float(self.fix_age_s), 1),
                             "_train": train,
                             "_dist": reach,
                             "_limit": CORRIDOR_REACH_M,
@@ -2184,6 +2344,17 @@ class RideMatcher:
             "stale_gps": bool(self.stale_gps) if riding else False,
             "ended_reason": self.ended_reason,
             "ended_at": None if self.ended_at is None else datetime.fromtimestamp(self.ended_at, NY).isoformat(),
+            "gps_quality": self.gps_quality or None,
+            "gps_accuracy_m": None if self.gps_accuracy_m is None else round(float(self.gps_accuracy_m), 1),
+            "fix_age_s": None if self.fix_age_s is None else round(float(self.fix_age_s), 1),
+            "hold_reason": self.hold_reason,
+            "hold_since": None if self.hold_since is None else self.hold_since,
+            "good_fix_streak": self.good_fix_streak,
+            "corridor_gap_m": None if self.corridor_gap_m is None else round(float(self.corridor_gap_m), 1),
+            "corridor_source": self.corridor_source,
+            "resumed": self.resumed,
+            "last_end_reason": self.last_end_reason,
+            "last_end_ts": self.last_end_ts,
         }
 
     def _event(self, kind: str, extra: dict | None = None) -> RideEvent:
@@ -2211,8 +2382,8 @@ class RideMatcher:
         self.gps_gap = False
         self.confidence = "estimated" if self._match_via in {"corridor", "estimated"} else "riding"
         self.boarding_match = "schedule" if train.trainno in self._schedule_hits else "trainview"
-        gap = _corridor_gap(fix.lat, fix.lon, train.line)
-        if gap is not None and gap[0] <= CORRIDOR_M:
+        gap = self._measure_corridor(fix, train)
+        if gap is not None and gap[0] <= corridor_limit(gap[2], self.corridor_chord_m):
             self._on_corridor = True
         self.ended_reason = None
         self.ended_at = None
@@ -2246,8 +2417,18 @@ class RideMatcher:
         extra = {"exited_at": exited_at, "duration": duration, "reason": reason}
         self.ended_reason = reason
         self.ended_at = ts
-        if self.riding_train is not None:
+        self.last_end_reason = reason
+        self.last_end_ts = ts
+        real_exit = reason in {"arrived", "terminal", "stationary", "home"}
+        if self.riding_train is not None and real_exit:
             self._cooldown[self.riding_train.trainno] = ts
+        if self.riding_train is not None and not real_exit and reason != "transfer":
+            self._recover_train = self.riding_train.trainno
+            self._recover_until = ts + self.recover_s
+            self._recover_boarded_at = self.boarded_at
+            self._recover_boarded_ts = self.boarded_ts
+        if reason != "transfer":
+            self._clear_hold()
         event = self._event("exited", extra)
         self.events.append(event)
         _LOGGER.debug(
@@ -2325,6 +2506,221 @@ class RideMatcher:
             return None
         return item[1] + self.reboard_cooldown_s
 
+    def _shape_for(self, train: Train | None) -> list | None:
+        if train is None:
+            return self.route_shape
+        return self.route_shapes.get(str(train.trainno)) or self.route_shape
+
+    def _line_shape_for(self, train: Train | None) -> list | None:
+        if train is None:
+            return self.line_shape
+        code = _line_code(train.line) or train.line
+        return self.line_shapes.get(str(code)) or self.line_shapes.get(str(train.line)) or self.line_shape
+
+    def _measure_corridor(self, fix: Fix, train: Train | None) -> tuple[float, float, str] | None:
+        line = "" if train is None else train.line
+        gap = _corridor_gap(fix.lat, fix.lon, line, self._shape_for(train), self._line_shape_for(train))
+        if gap is None:
+            self.corridor_gap_m = None
+            self.corridor_source = None
+            return None
+        self.corridor_gap_m = gap[0]
+        self.corridor_source = gap[2]
+        return gap
+
+    def _gps_quality(self, fix: Fix, now: float, kind: str) -> str:
+        age = max(0.0, float(now) - float(fix.ts))
+        self.fix_age_s = age
+        self.gps_accuracy_m = fix.acc_m
+        weak = kind != "ok"
+        if fix.acc_m is None or fix.acc_m > self.good_accuracy_m:
+            weak = True
+        if age > self.good_fix_age_s:
+            weak = True
+        if fix.acc_m is not None and fix.acc_m > self.max_accuracy_m:
+            weak = True
+        self.gps_quality = "weak" if weak else "good"
+        self._weak_kind = kind if kind != "ok" else ("accuracy" if weak else "")
+        return self.gps_quality
+
+    def _stop_is_underground(self, name: object) -> bool:
+        text = str(name or "").strip()
+        if not text:
+            return False
+        names = list(self.underground_stops) + list(self.learned_underground)
+        if not names:
+            return False
+        try:
+            from .trips import match_in
+        except ImportError:
+            match_in = _match_stop
+        try:
+            return match_in(names, text) is not None or any(_same_station(text, item, names) for item in names)
+        except Exception:  # noqa: BLE001
+            return any(_stop_key(text) == _stop_key(item) for item in names)
+
+    def _at_underground(self, fix: Fix, train: Train | None) -> str | None:
+        names = []
+        if train is not None:
+            names.extend([train.currentstop, train.nextstop])
+        nearest = self._nearest_stop(fix.lat, fix.lon)
+        if nearest:
+            names.append(nearest)
+        for name in names:
+            if self._stop_is_underground(name):
+                return str(name)
+        return None
+
+    def _trainview_stale(self, train: Train | None, trains_ts: float, now: float) -> bool:
+        if train is None:
+            return True
+        if abs(now - trains_ts) > FRESH_TRAINVIEW_S:
+            return True
+        return position_is_stale(train, self._trace.get(train.trainno))
+
+    def _enter_hold(self, reason: str, ts: float) -> None:
+        if self.lock_state != "holding":
+            self.hold_since = ts
+            self._hold_good = 0
+            self._good_since = None
+            if not self._hold_logged:
+                self._hold_logged = True
+                _LOGGER.debug("SEPTA ride hold enter reason=%s train=%s", reason, self.locked_train)
+        self.hold_reason = reason
+        self.lock_state = "holding"
+
+    def _clear_hold(self) -> None:
+        if self.lock_state == "holding" and self._hold_logged:
+            _LOGGER.debug("SEPTA ride hold leave train=%s", self.locked_train)
+        self.hold_reason = None
+        self.hold_since = None
+        self._hold_good = 0
+        self._good_since = None
+        self._hold_logged = False
+
+    def _note_good_streak(self, fix: Fix) -> None:
+        if self.gps_quality != "good":
+            self.good_fix_streak = 0
+            self._good_since = None
+            self._hold_good = 0
+            return
+        self.good_fix_streak += 1
+        if self._good_since is None:
+            self._good_since = fix.ts
+        if self.lock_state == "holding":
+            self._hold_good += 1
+
+    def _leave_hold(self, fix: Fix) -> bool:
+        if self.lock_state != "holding":
+            return True
+        if self._hold_good < self.hold_exit_fixes:
+            return False
+        if self._good_since is None or fix.ts - self._good_since < self.hold_exit_s:
+            return False
+        self._clear_hold()
+        self.lock_state = "locked"
+        return True
+
+    def _hold_reason_now(self, fix: Fix, train: Train | None, trains_ts: float) -> str | None:
+        if self.gps_quality != "good":
+            if self._at_underground(fix, train) and self._trainview_stale(train, trains_ts, fix.ts):
+                return "underground"
+            if self.gps_quality == "weak" and (self._weak_kind in {"duplicate_ts", "stale_fix"} or (self.fix_age_s or 0) > self.good_fix_age_s):
+                return "trainview_gap" if self._trainview_stale(train, trains_ts, fix.ts) else "weak_gps"
+            return "weak_gps"
+        if self._at_underground(fix, train) and self._trainview_stale(train, trains_ts, fix.ts):
+            return "underground"
+        return None
+
+    def _fresh_following(self, fix: Fix, train: Train | None, speed: float | None, stale: bool) -> bool:
+        if train is None or stale:
+            return False
+        gap = self._measure_corridor(fix, train)
+        if gap is None:
+            return False
+        return gap[0] <= corridor_limit(gap[2], self.corridor_chord_m)
+
+    def _gate_end(self, reason: str, fix: Fix, train: Train, speed: float | None, stale: bool) -> str | None:
+        """Locked rides need good GPS. Corridor and separation also need the train not following."""
+        if self.lock_state == "holding":
+            return None
+        if self.locked_train and self.gps_quality != "good":
+            self._enter_hold(self.hold_reason or "weak_gps", fix.ts)
+            return None
+        if self.locked_train and reason in {"separated", "left_corridor"} and self._fresh_following(fix, train, speed, stale):
+            self._off_count = 0
+            self._apart_count = 0
+            return None
+        if reason not in self._logged_end:
+            self._logged_end.add(reason)
+            self.decisions.append(
+                {
+                    "kind": "end",
+                    "reason": reason,
+                    "distance_m": None if self.distance_m is None else round(self.distance_m),
+                    "corridor_gap_m": None if self.corridor_gap_m is None else round(float(self.corridor_gap_m), 1),
+                    "corridor_source": self.corridor_source,
+                    "gps_quality": self.gps_quality,
+                    "accuracy_m": self.gps_accuracy_m,
+                    "fix_age_s": None if self.fix_age_s is None else round(float(self.fix_age_s), 1),
+                    "ts": fix.ts,
+                }
+            )
+            del self.decisions[:-5]
+            _LOGGER.debug(
+                "SEPTA ride end-check reason=%s dist_m=%s corridor_gap_m=%s source=%s gps=%s acc=%s age=%s",
+                reason,
+                None if self.distance_m is None else round(self.distance_m),
+                None if self.corridor_gap_m is None else round(float(self.corridor_gap_m)),
+                self.corridor_source,
+                self.gps_quality,
+                self.gps_accuracy_m,
+                None if self.fix_age_s is None else round(float(self.fix_age_s), 1),
+            )
+        return reason
+
+    def _recover_open(self, now: float) -> bool:
+        if not self._recover_train or self._recover_until is None:
+            return False
+        if now > self._recover_until:
+            self._recover_train = None
+            return False
+        return True
+
+    def _resume(self, train: Train, fix: Fix, dist: float | None) -> RideEvent | None:
+        if not self._recover_open(fix.ts) or not self._is_recover(train):
+            return None
+        if self.gps_quality != "good":
+            return None
+        if self._match_via in {"corridor", "estimated"}:
+            return None
+        self.boarded_at = self._recover_boarded_at
+        self.boarded_ts = self._recover_boarded_ts
+        event = self._board(train, fix, dist)
+        if event is None:
+            return None
+        self.events = [item for item in self.events if item.kind != "boarded"]
+        self.resumed += 1
+        self.last_reason = "resumed"
+        self._recover_train = None
+        self._recover_until = None
+        self._note("resumed")
+        return None
+
+    def _is_recover(self, train: Train) -> bool:
+        if str(train.trainno) == str(self._recover_train):
+            return True
+        block = str(getattr(train, "block_id", "") or "")
+        return bool(block) and block == str(self._recover_train)
+
+    def _moving_between_stops(self, fix: Fix, speed: float | None) -> bool:
+        if speed is None or speed < self.min_speed_mps:
+            return False
+        if self._dwell_since is not None:
+            return False
+        near = self._near_any_stop(fix.lat, fix.lon) or self._nearest_stop(fix.lat, fix.lon) is not None
+        return not near
+
     def _train_point(self, train: Train, ts: float) -> tuple[float, float, bool]:
         stale = position_is_stale(train, self._trace.get(train.trainno))
         if not stale:
@@ -2337,8 +2733,10 @@ class RideMatcher:
     def _following(self, fix: Fix, train: Train, speed: float | None) -> bool:
         if speed is None or speed < self.min_speed_mps:
             return False
-        gap = _corridor_gap(fix.lat, fix.lon, train.line)
-        return gap is not None and gap[0] <= CORRIDOR_M
+        gap = self._measure_corridor(fix, train)
+        if gap is None:
+            return False
+        return gap[0] <= corridor_limit(gap[2], self.corridor_chord_m)
 
     def _near_any_stop(self, lat: float, lon: float) -> bool:
         for _name, slat, slon in _load_geo()["by_key"].values():
@@ -2401,10 +2799,12 @@ class RideMatcher:
             return None
         if self.boarded_ts is not None and fix.ts - self.boarded_ts > self._ride_limit():
             return "max_duration"
-        if not any(self._is_locked(item) for item in trains) and self.locked_train:
+        if self.locked_train and not any(self._is_locked(item) for item in trains):
             self.lock_state = "estimating"
             self.position_source = "timetable"
             self.stale_gps = True
+            if self.gps_quality != "good" or self._at_underground(fix, train):
+                self._enter_hold("underground" if self._at_underground(fix, train) else "trainview_gap", fix.ts)
             return None
         fresh = next((item for item in trains if item.trainno == train.trainno or self._is_locked(item)), train)
         train = fresh
@@ -2435,24 +2835,26 @@ class RideMatcher:
             self._slow_anchor = None
         if self._slow_since is not None and fix.ts - self._slow_since >= self.slow_seconds:
             if stale:
-                return "slow"
+                return self._gate_end("slow", fix, train, speed, stale)
             if dist >= self.apart_m or self._near_any_stop(fix.lat, fix.lon):
-                return "stationary" if speed is None or speed < 2.0 else "slow"
+                kind = "stationary" if speed is None or speed < 2.0 else "slow"
+                return self._gate_end(kind, fix, train, speed, stale)
         if dist > self.apart_m and stale:
             self._apart_count += 1
         elif not stale or self._following(fix, train, speed):
             self._apart_count = 0
         if self._apart_count >= self.apart_fixes:
-            return "separated"
-        gap = _corridor_gap(fix.lat, fix.lon, train.line)
-        if gap is not None and gap[0] <= CORRIDOR_M:
+            return self._gate_end("separated", fix, train, speed, stale)
+        gap = self._measure_corridor(fix, train)
+        limit = None if gap is None else corridor_limit(gap[2], self.corridor_chord_m)
+        if gap is not None and gap[0] <= limit:
             self._on_corridor = True
             if not stale or self._following(fix, train, speed):
                 self._off_count = 0
-        elif self._on_corridor and gap is not None and gap[0] > CORRIDOR_M:
+        elif self._on_corridor and gap is not None and limit is not None and gap[0] > limit:
             self._off_count += 1
             if self._off_count >= self.apart_fixes:
-                return "left_corridor"
+                return self._gate_end("left_corridor", fix, train, speed, stale)
         if self._end_of_ride_stop(train):
             if self._terminal_since is None:
                 self._terminal_since = fix.ts
@@ -2487,11 +2889,12 @@ class RideMatcher:
         self.riding_train_seen = seen is not None
         if seen is None:
             self.riding_train_missing_polls += 1
-            self.lock_state = "estimating"
+            if self.lock_state != "holding":
+                self.lock_state = "estimating"
             return
         self.riding_train_missing_polls = 0
         self.last_seen_trainview = fix.ts
-        if self.lock_state != "switched":
+        if self.lock_state not in {"switched", "holding"}:
             self.lock_state = "locked"
         lat, lon, _stale = self._train_point(seen, fix.ts)
         if haversine_m(fix.lat, fix.lon, lat, lon) > STICKY_LIMIT_M:
@@ -2499,22 +2902,54 @@ class RideMatcher:
         else:
             self._far_count = 0
 
-    def _switch_allowed(self, new: Train) -> bool:
+    def _switch_allowed(self, new: Train, fix: Fix | None = None) -> bool:
+        if self.lock_state == "holding":
+            self.switch_blocked_reason = "holding"
+            return False
+        if self.gps_quality == "weak" and self.locked_train:
+            self.switch_blocked_reason = "weak_gps"
+            return False
+        if self._match_via == "estimated" or self.position_source == "estimated":
+            self.switch_blocked_reason = "weak_gps"
+            return False
         if self.speed_source == "implausible":
+            self.switch_blocked_reason = "implausible"
             return False
-        if self._same_trip(new.trainno):
+        planned = self._same_trip(new.trainno) or (
+            self.expected and str(self.expected.get("connection_train") or "") == str(new.trainno)
+        )
+        if planned or self._transfer_ready:
+            if self._phone_gap or self._match_via in {"corridor", "estimated"}:
+                self.switch_blocked_reason = "stale_gps"
+                return False
+            far = self._far_count >= self.need_matches
+            terminal = self.riding_train is not None and self._end_of_ride_stop(self.riding_train)
+            if not (far or terminal or planned):
+                self.switch_blocked_reason = "sticky"
+                return False
+            if self._match_via == "corridor":
+                self.switch_blocked_reason = "stale_gps"
+                return False
             return True
-        if self.expected and str(self.expected.get("connection_train") or "") == str(new.trainno):
-            return True
-        if self._phone_gap or self._match_via in {"corridor", "estimated"}:
+        if self._phone_gap or self._match_via == "corridor":
+            self.switch_blocked_reason = "stale_gps"
             return False
-        far = self._far_count >= self.need_matches
-        terminal = self.riding_train is not None and self._end_of_ride_stop(self.riding_train)
-        if not (far or terminal):
+        if self.good_fix_streak < max(self.switch_good_fixes, 1):
+            self.switch_blocked_reason = "sticky" if self.switch_good_fixes > 2 else "weak_gps"
             return False
-        if self._match_via == "corridor":
+        if fix is not None and self.switch_good_s > 0 and (self._good_since is None or fix.ts - self._good_since < self.switch_good_s):
+            self.switch_blocked_reason = "sticky"
             return False
-        return self._transfer_ready
+        seen_dist = self.distance_m
+        if seen_dist is not None and seen_dist <= CORRIDOR_M and self.stale_gps is not True and self.riding_train_seen:
+            self.switch_blocked_reason = "locked_train_fresh"
+            return False
+            self.switch_blocked_reason = "locked_train_fresh"
+            return False
+        if not (self._far_count >= self.need_matches):
+            self.switch_blocked_reason = "sticky"
+            return False
+        return True
 
     def update(self, fix: Fix, trains: list[Train], trains_ts: float, now: float | None = None) -> RideEvent | None:
         self.events = []
@@ -2525,6 +2960,22 @@ class RideMatcher:
         self._phone_gap = bool(self.gps_gap)
         self.trainview_age_s = abs(fix.ts - trains_ts)
         self.fix_gap_s = None if self.last_fix is None else fix.ts - self.last_fix.ts
+        quality = self._gps_quality(fix, self._now, kind)
+        poor = quality == "weak" or (fix.acc_m is not None and fix.acc_m > self.max_accuracy_m) or kind != "ok"
+        if self.riding and poor and kind == "duplicate_ts":
+            self.skipped_fix_count += 1
+            self._note(kind)
+            return None
+        if self.riding and poor:
+            self.skipped_fix_count += 1
+            self._note_good_streak(fix)
+            train = self.riding_train
+            reason = self._hold_reason_now(fix, train, trains_ts) or "weak_gps"
+            self._enter_hold(reason, fix.ts)
+            if self._at_underground(fix, train):
+                self.note_underground_ride(self._at_underground(fix, train) or "")
+            self._note("holding")
+            return None
         if fix.acc_m is not None and fix.acc_m > self.max_accuracy_m:
             self.skipped_fix_count += 1
             self._note("accuracy")
@@ -2535,11 +2986,16 @@ class RideMatcher:
             return None
         if self._now - fix.ts > self.max_fix_age_s:
             self.skipped_fix_count += 1
+            if self.riding:
+                self._enter_hold("trainview_gap", fix.ts)
+                self._note("holding")
+                return None
             self._note("stale_fix")
             return None
         self.accepted_fix_count += 1
         self.last_fix_ts = fix.ts
         self.switch_blocked_reason = None
+        self._note_good_streak(fix)
         speed = self._phone_speed(fix)
         course = self._course(fix, speed)
         self.phone_speed_mph = None if speed is None else round(speed / 0.44704, 1)
@@ -2557,6 +3013,8 @@ class RideMatcher:
         self.last_good_fix_ts = fix.ts
         self.gps_gap = False
         self._note_dwell(fix, speed)
+        if self.riding and self.lock_state == "holding":
+            self._leave_hold(fix)
         moving = speed is not None and speed >= self.min_speed_mps
         if not moving and self.activity_moving and self.speed_source == "none":
             moving = True
@@ -2566,7 +3024,31 @@ class RideMatcher:
             self._fast_count = 0
         best, dist, reject = self._pick(fix, trains, trains_ts, speed, course)
         self._track_riding(trains, fix)
+        if self.riding and self.lock_state == "holding":
+            hold = self._hold_reason_now(fix, self.riding_train, trains_ts)
+            if hold:
+                self._enter_hold(hold, fix.ts)
+                self._note("holding")
+                return None
+            if not self._leave_hold(fix):
+                self._note("holding")
+                return None
         if self.riding:
+            challenger = (
+                best is not None
+                and self.riding_train is not None
+                and best.trainno != self.riding_train.trainno
+                and not self._is_locked(best)
+            )
+            if challenger:
+                locked = next((item for item in trains if item.trainno == self.riding_train.trainno), None)
+                if locked is None:
+                    self.distance_m = 1e9
+                    self.stale_gps = True
+                else:
+                    lat, lon, stale = self._train_point(locked, fix.ts)
+                    self.distance_m = haversine_m(fix.lat, fix.lon, lat, lon)
+                    self.stale_gps = stale
             reason = self._maybe_end(fix, trains, speed, prev_ts)
             if reason:
                 self._note(reason)
@@ -2613,39 +3095,49 @@ class RideMatcher:
             if self.riding:
                 if not self.riding_train_seen:
                     self.misses = 0
-                    self.lock_state = "estimating"
+                    if self.lock_state != "holding":
+                        self.lock_state = "estimating"
                     self.position_source = "timetable"
                     self.stale_gps = True
                     self.switch_blocked_reason = "locked_train_missing"
                     self._note("riding")
                     return None
+                if self.lock_state == "holding":
+                    self._note("holding")
+                    return None
                 self.misses += 1
                 if self.misses >= 3:
+                    if self.lock_state == "holding" or (self.locked_train and self.gps_quality != "good"):
+                        self._enter_hold(self.hold_reason or "weak_gps", fix.ts)
+                        self._note("holding")
+                        return None
                     return self._exit(fix.ts, "misses")
             return None
         self._hold_miss = 0
         self.misses = 0
-        self.distance_m = dist
+        if not (self.riding and best is not None and self.riding_train is not None and best.trainno != self.riding_train.trainno and not self._is_locked(best)):
+            self.distance_m = dist
         if self.riding and (best.trainno == self.riding_train.trainno or self._is_locked(best)):
             self.riding_train = best
             self.switch_count = 0
             self.switch_train = None
             self._switch_first = None
             self.last_seen_trainview = fix.ts
-            if self.lock_state != "switched":
+            if self.lock_state not in {"switched", "holding"}:
                 self.lock_state = "locked"
             self.confidence = "estimated" if self._match_via in {"corridor", "estimated"} else "riding"
             self._maybe_handover()
             self._note("riding")
             return None
         if self.riding and best.trainno != self.riding_train.trainno:
-            if not self._switch_allowed(best):
-                if self._phone_gap or self._match_via in {"corridor", "estimated"}:
-                    self.switch_blocked_reason = "stale_gps"
-                elif self._far_count >= self.need_matches and not self._transfer_ready:
-                    self.switch_blocked_reason = "not_at_station"
-                else:
-                    self.switch_blocked_reason = "sticky" if self.speed_source != "implausible" else "implausible"
+            if not self._switch_allowed(best, fix):
+                if not self.switch_blocked_reason:
+                    if self._phone_gap or self._match_via in {"corridor", "estimated"}:
+                        self.switch_blocked_reason = "stale_gps"
+                    elif self._far_count >= self.need_matches and not self._transfer_ready:
+                        self.switch_blocked_reason = "not_at_station"
+                    else:
+                        self.switch_blocked_reason = "sticky" if self.speed_source != "implausible" else "implausible"
                 self.switch_train = None
                 self.switch_count = 0
                 self._switch_first = None
@@ -2700,6 +3192,17 @@ class RideMatcher:
                 self.match_count = 1
         self.confidence = "candidate"
         if self.match_count >= self.need_matches:
+            if self._recover_open(fix.ts):
+                if self._is_recover(best) and self._match_via != "estimated" and self.position_source != "estimated":
+                    resumed = self._resume(best, fix, dist)
+                    self._note("resumed")
+                    return resumed
+                if self._moving_between_stops(fix, speed) or self._match_via == "estimated" or self.position_source == "estimated":
+                    self._note("no_dwell")
+                    for row in self.candidates:
+                        if row["train"] == best.trainno:
+                            row["last_reject_reason"] = "no_dwell"
+                    return None
             self._note("boarded")
             return self._board(best, fix, dist)
         self._note("candidate")
@@ -2727,7 +3230,7 @@ class RideMatcher:
             self._last_seen[seen.trainno] = trains_ts
             self.last_seen_trainview = trains_ts
             self.riding_train_missing_polls = 0
-            if self.lock_state != "switched":
+            if self.lock_state not in {"switched", "holding"}:
                 self.lock_state = "locked"
             self._maybe_handover()
             if self._stop_rows:

@@ -66,6 +66,11 @@
           "ride_request_updates": "Ask the phone for a fresh location near a station",
           "ride_activity_sensor": "Phone activity sensor (optional)",
           "ride_expected": "Expected train entity (optional)",
+          "good_accuracy_m": "Good GPS accuracy (meters)",
+          "good_fix_age_s": "Good GPS fix age (seconds)",
+          "corridor_chord_m": "Straight-line corridor width when the route shape is missing (meters)",
+          "recover_s": "Seconds to resume the same train after a false end",
+          "underground_stops": "Underground stops (comma-separated, optional)",
           "configure_dynamic": "Set up Going Home and day trains"
         }
       },

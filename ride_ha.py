@@ -16,7 +16,11 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_state_change_event, async_track_time_interval
 
 from .const import (
+    CONF_CORRIDOR_CHORD,
+    CONF_GOOD_ACCURACY,
+    CONF_GOOD_FIX_AGE,
     CONF_HOME_STATION,
+    CONF_RECOVER_S,
     CONF_RIDE_ACTIVITY,
     CONF_RIDE_MATCHES,
     CONF_RIDE_MAX_ACCURACY,
@@ -24,11 +28,16 @@ from .const import (
     CONF_RIDE_RADIUS,
     CONF_RIDE_REQUEST,
     CONF_RIDE_TRACKER,
+    CONF_UNDERGROUND_STOPS,
+    CORRIDOR_CHORD_M,
     DEFAULT_RIDE_MATCHES,
     DEFAULT_RIDE_MAX_ACCURACY,
     DEFAULT_RIDE_MIN_SPEED,
     DEFAULT_RIDE_RADIUS,
     DOMAIN,
+    GOOD_ACCURACY_M,
+    GOOD_FIX_AGE_S,
+    RECOVER_S,
     RIDE_FAST_SCAN,
     RRSCHEDULES_URL,
     TRAINVIEW_URL,
@@ -150,6 +159,14 @@ class RiderController:
         self.matcher.max_accuracy_m = float(
             self._pick(CONF_RIDE_MAX_ACCURACY, DEFAULT_RIDE_MAX_ACCURACY) or DEFAULT_RIDE_MAX_ACCURACY
         )
+        self.matcher.good_accuracy_m = float(self._pick(CONF_GOOD_ACCURACY, GOOD_ACCURACY_M) or GOOD_ACCURACY_M)
+        self.matcher.good_fix_age_s = float(self._pick(CONF_GOOD_FIX_AGE, GOOD_FIX_AGE_S) or GOOD_FIX_AGE_S)
+        self.matcher.corridor_chord_m = float(self._pick(CONF_CORRIDOR_CHORD, CORRIDOR_CHORD_M) or CORRIDOR_CHORD_M)
+        self.matcher.recover_s = float(self._pick(CONF_RECOVER_S, RECOVER_S) or RECOVER_S)
+        raw_stops = self._pick(CONF_UNDERGROUND_STOPS, []) or []
+        if isinstance(raw_stops, str):
+            raw_stops = [part.strip() for part in raw_stops.split(",") if part.strip()]
+        self.matcher.set_underground(list(raw_stops), self.matcher.learned_underground)
         self.matcher.preferred_line = self._preferred_line()
         self._apply_entity_hint()
 
@@ -572,11 +589,16 @@ class RiderController:
         keeper = getattr(self.coordinator, "rail_schedule", None)
         cache = getattr(keeper, "shapes", None) if keeper is not None else None
         train_stops = []
+        points = []
         try:
             info = lookup_train(cache, train.trainno)
             train_stops = list((info or {}).get("stops") or [])
+            points = list((info or {}).get("points") or [])
         except Exception:  # noqa: BLE001
             train_stops = []
+            points = []
+        if points:
+            self.matcher.set_route_shape(points, train.trainno)
         try:
             from .ride import _load_geo
 

@@ -224,7 +224,7 @@ def test_integration_version_matches_manifest():
     manifest = json.loads((ROOT / "manifest.json").read_text())
     assert module.integration_version() == ""
     module.set_integration_version(manifest["version"])
-    assert module.integration_version() == manifest["version"] == "1.13.15"
+    assert module.integration_version() == manifest["version"] == "1.13.16"
     assert "manifest.json" not in (ROOT / "const.py").read_text()
     assert "async_get_integration" in (ROOT / "__init__.py").read_text()
 

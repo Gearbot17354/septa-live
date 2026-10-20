@@ -11,6 +11,7 @@ from homeassistant.helpers.selector import selector
 
 from .const import (
     CONF_BUS_DEST,
+    CONF_CORRIDOR_CHORD,
     CONF_DAY_WINDOW,
     CONF_DEFAULT_CITY,
     CONF_DESTINATION,
@@ -18,12 +19,15 @@ from .const import (
     CONF_EVENT_LOOKAHEAD,
     CONF_EVENT_WALK_SPEED,
     CONF_GEOCODE,
+    CONF_GOOD_ACCURACY,
+    CONF_GOOD_FIX_AGE,
     CONF_GOING_HOME_COUNT,
     CONF_HOME_STATION,
     CONF_MAX_TRAINS,
     CONF_METRO_DEST,
     CONF_METRO_STATION,
     CONF_NEAR_RADIUS,
+    CONF_RECOVER_S,
     CONF_RIDE_ACTIVITY,
     CONF_RIDE_MATCHES,
     CONF_RIDE_MAX_ACCURACY,
@@ -43,6 +47,7 @@ from .const import (
     CONF_TRANSFER_MIN,
     CONF_TROLLEY_DEST,
     CONF_TROLLEY_STATION,
+    CONF_UNDERGROUND_STOPS,
     CONF_WALK,
     DEFAULT_DAY_WINDOW,
     DEFAULT_DESTINATION,
@@ -64,6 +69,10 @@ from .const import (
     DEFAULT_STATION,
     DEFAULT_TRANSFER_MIN,
     DEFAULT_WALK,
+    CORRIDOR_CHORD_M,
+    GOOD_ACCURACY_M,
+    GOOD_FIX_AGE_S,
+    RECOVER_S,
     DOMAIN,
     METRO_STATIONS,
     STATIONS,
@@ -347,6 +356,30 @@ class SeptaOptionsFlow(config_entries.OptionsFlow):
                     CONF_RIDE_REQUEST,
                     default=bool(entry.options.get(CONF_RIDE_REQUEST, False)),
                 ): BOOL_SELECTOR,
+                vol.Optional(
+                    CONF_GOOD_ACCURACY,
+                    default=int(entry.options.get(CONF_GOOD_ACCURACY, GOOD_ACCURACY_M)),
+                ): vol.All(vol.Coerce(int), vol.Range(min=10, max=200)),
+                vol.Optional(
+                    CONF_GOOD_FIX_AGE,
+                    default=int(entry.options.get(CONF_GOOD_FIX_AGE, GOOD_FIX_AGE_S)),
+                ): vol.All(vol.Coerce(int), vol.Range(min=15, max=600)),
+                vol.Optional(
+                    CONF_CORRIDOR_CHORD,
+                    default=int(entry.options.get(CONF_CORRIDOR_CHORD, CORRIDOR_CHORD_M)),
+                ): vol.All(vol.Coerce(int), vol.Range(min=300, max=2000)),
+                vol.Optional(
+                    CONF_RECOVER_S,
+                    default=int(entry.options.get(CONF_RECOVER_S, RECOVER_S)),
+                ): vol.All(vol.Coerce(int), vol.Range(min=30, max=1800)),
+                vol.Optional(
+                    CONF_UNDERGROUND_STOPS,
+                    description={
+                        "suggested_value": ", ".join(entry.options.get(CONF_UNDERGROUND_STOPS) or [])
+                        if isinstance(entry.options.get(CONF_UNDERGROUND_STOPS), list)
+                        else str(entry.options.get(CONF_UNDERGROUND_STOPS) or "")
+                    },
+                ): TEXT_SELECTOR,
                 vol.Optional("configure_dynamic", default=False): BOOL_SELECTOR,
             }
         )

@@ -116,6 +116,11 @@ CONF_RIDE_MIN_SPEED: Final = "ride_min_speed_mph"
 CONF_RIDE_MATCHES: Final = "ride_matches"
 CONF_RIDE_MAX_ACCURACY: Final = "ride_max_accuracy_m"
 CONF_RIDE_REQUEST: Final = "ride_request_updates"
+CONF_GOOD_ACCURACY: Final = "good_accuracy_m"
+CONF_GOOD_FIX_AGE: Final = "good_fix_age_s"
+CONF_CORRIDOR_CHORD: Final = "corridor_chord_m"
+CONF_RECOVER_S: Final = "recover_s"
+CONF_UNDERGROUND_STOPS: Final = "underground_stops"
 
 DEFAULT_RIDE_RADIUS: Final = 300
 DEFAULT_RIDE_MIN_SPEED: Final = 15
@@ -146,6 +151,17 @@ BOARD_WINDOW_MIN: Final = 10
 MAX_PLAUSIBLE_MPH: Final = 90
 MIN_DERIVED_DT_S: Final = 20
 STICKY_LIMIT_M: Final = 2000
+
+# GPS quality and the shape corridor. A locked ride holds through weak fixes.
+GOOD_ACCURACY_M: Final = 50
+GOOD_FIX_AGE_S: Final = 90
+HOLD_EXIT_GOOD_FIXES: Final = 3
+HOLD_EXIT_S: Final = 60
+SWITCH_GOOD_FIXES: Final = 4
+SWITCH_GOOD_S: Final = 90
+CORRIDOR_CHORD_M: Final = 600
+RECOVER_S: Final = 300
+UNDERGROUND_LEARN_RIDES: Final = 3
 
 DEFAULT_STATION: Final = "Lansdale"
 DEFAULT_DESTINATION: Final = "Jefferson Station"

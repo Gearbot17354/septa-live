@@ -121,12 +121,14 @@ The riding sensor keeps `ended_reason` and `ended_at` after the ride. `septa_liv
 | `slow` | Under 5 mph for 3 minutes. An estimated train position cannot keep the ride alive |
 | `stationary` | The same slow end, when the phone is barely moving and a live GPS train has left |
 | `separated` | Two fixes more than 600 m from an estimated train |
-| `left_corridor` | Two fixes more than 300 m off the line you were on |
+| `left_corridor` | Two good fixes off the route shape (300 m), or off the straight station-to-station line (600 m) when no shape is loaded |
 | `terminal` | The train's current stop is the end of its run |
 | `max_duration` | Longer than 3 hours, or the scheduled trip plus an hour |
 | `misses`, `transfer`, `train_gone`, `no_fix`, `home` | Unchanged |
 
-The same train cannot be boarded again for 10 minutes. A different train can, and a planned transfer is not blocked. Diagnostics show `cooldown_train` and `cooldown_until`.
+A locked ride holds (`lock_state: holding`) through a weak GPS fix, a tunnel stop, or a gap in TrainView. It does not switch trains or end for leaving the corridor until several good fixes agree. The corridor is the train's route shape when one is loaded, and a wider straight line between stations only when it is not. A ride that ends by mistake (not an arrival, the terminal, or getting off) is not cooled down: the same train can resume for 5 minutes with the original boarded time. A different train cannot be boarded in that window while the phone is moving between stops. New attributes: `gps_quality`, `gps_accuracy_m`, `fix_age_s`, `hold_reason`, `hold_since`, `good_fix_streak`, `corridor_gap_m`, `corridor_source`, `resumed`, `last_end_reason`, `last_end_ts`. Options can set the good-GPS accuracy and age, the straight-line corridor width, the resume window, and extra underground stops.
+
+The same train cannot be boarded again for 10 minutes after a real exit (`arrived`, `terminal`, `stationary`, or `home`). A different train can, and a planned transfer is not blocked. Diagnostics show `cooldown_train`, `cooldown_until`, learned underground stops, and the last end or switch decisions.
 
 Thresholds live in `const.py`: `ARRIVAL_RADIUS_M` 250, `SLOW_MPH` 5, `SLOW_SECONDS` 180, `APART_M` 600, `APART_FIXES` 2, `MAX_RIDE_SECONDS` 3 hours, `REBOARD_COOLDOWN_S` 600. The station file and the timetable are read off the event loop at startup.
 

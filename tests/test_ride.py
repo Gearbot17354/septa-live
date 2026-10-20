@@ -660,12 +660,14 @@ def test_estimated_train_separates_after_two_far_fixes():
 
 
 def test_leaving_the_corridor_ends_the_ride():
+    # Updated for 1.13.16: with no route shape the corridor is the station chord
+    # and the tolerance is CORRIDOR_CHORD_M (600). 550 m no longer ends the ride.
     phone = (39.98139, -75.14944)
     here = train("8", phone[0], phone[1], 342, line="Lansdale/Doylestown", current="Temple University")
     matcher = R.RideMatcher(need_matches=1, min_speed_mps=5, radius_m=300)
     matcher.update(fix(phone[0], phone[1], 0, speed=20, course=342), [here], 0)
     assert matcher.riding is True
-    east = -75.14944 + (550 / 85_000)
+    east = -75.14944 + (750 / 85_000)
     moved = train("8", phone[0], east, 342, line="Lansdale/Doylestown", current="Temple University")
     first = matcher.update(fix(phone[0], east, 20, speed=20, course=90), [moved], 20)
     assert first is None and matcher.riding is True

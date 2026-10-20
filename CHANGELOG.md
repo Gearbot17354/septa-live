@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.13.16
+
+### Fixed
+
+- A ride stays on the train you boarded through tunnels and weak GPS, no longer ends on curved track (the route line is used instead of straight lines between stations), and never jumps to another train between stops; if a ride ends by mistake it resumes on the same train.
+
+### Added
+
+- GPS-quality / hold attributes and the optional underground-stops setting.
+
 ## 1.13.15
 
 ### Fixed
